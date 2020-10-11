@@ -5,15 +5,15 @@
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 use clap::{App, Arg, SubCommand};
 // #[macro_use]
-use async_std::prelude::*;
 use async_std::io::{BufReader, BufWriter};
 use async_std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use async_std::prelude::*;
 use futures::future::Either;
 use futures::{self, Future, FutureExt, *};
 use quinn::TransportConfig;
 use std::{
-  path::Path,
+  path::{Path, PathBuf},
   sync::Arc,
   task::{Context, Poll},
 };
@@ -28,6 +28,23 @@ fn validate_existing_file(v: String) -> Result<(), String> {
   } else {
     Ok(())
   }
+}
+
+fn parse_socketaddr(v: &str) -> Result<SocketAddr> {
+  use std::convert::TryFrom;
+  use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+  ToSocketAddrs::to_socket_addrs(v)
+    .map_err(|e| e.into())
+    .and_then(|mut items| {
+      items.nth(0).ok_or(anyhow::Error::msg(
+        "No addresses were resolved from the given host",
+      ))
+    })
+    .into()
+}
+
+fn validate_socketaddr(v: String) -> Result<(), String> {
+  parse_socketaddr(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
 mod util;
@@ -46,19 +63,22 @@ fn main() {
             .long("authority")
             .short("a")
             .validator(validate_existing_file)
-            .takes_value(true),
-        )
-        .arg(
-          Arg::with_name("port")
-            .long("port")
-            .short("p")
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("server")
-            .long("server")
-            .short("s")
+          Arg::with_name("driver")
+            .long("driver")
+            .short("d")
+            .validator(validate_socketaddr)
+            .takes_value(true)
+            .required(true),
+        )
+        .arg(
+          Arg::with_name("target")
+            .long("target")
+            .short("t")
+            .validator(validate_socketaddr)
             .takes_value(true)
             .required(true),
         ),
@@ -83,10 +103,23 @@ fn main() {
             .takes_value(true)
             .required(true),
         )
+        // Port that will accept traffic to be forwarded to clients
         .arg(
-          Arg::with_name("port")
-            .long("port")
-            .short("p")
+          Arg::with_name("tcp")
+            .long("bind")
+            .short("b")
+            .validator(validate_socketaddr)
+            .default_value("127.0.0.1:8080")
+            .takes_value(true)
+            .required(true),
+        )
+        // PPort that will accept tunneling clients to receive forwarded connections
+        .arg(
+          Arg::with_name("quic")
+            .long("quic")
+            .short("q")
+            .validator(validate_socketaddr)
+            .default_value("127.0.0.1:9090")
             .takes_value(true)
             .required(true),
         ),
@@ -115,17 +148,14 @@ fn main() {
 async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
   match matches.subcommand() {
     ("server", Some(opts)) => {
-      println!("Running as server");
-      let config = server_arg_handling(
-        Path::new(opts.value_of("cert").unwrap()),
-        Path::new(opts.value_of("key").unwrap()),
-      )
-      .await?;
+      let config = server_arg_handling(opts).await?;
+      println!("Running as server with config {:#?}", &config);
       server_main(config).await
     }
-    ("client", Some(_opts)) => {
-      println!("Running as client");
-      client_main().await
+    ("client", Some(opts)) => {
+      let config = client_arg_handling(opts).await?;
+      println!("Running as client with config {:#?}", &config);
+      client_main(config).await
     }
     ("cert", Some(opts)) => {
       println!("Generating certs...");
@@ -137,21 +167,24 @@ async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
   }
 }
 
-async fn server_arg_handling(cert_path: &Path, key_path: &Path) -> Result<quinn::ServerConfig> {
-  let cert_der = std::fs::read(cert_path).context("Failed reading cert file")?;
-  let priv_der = std::fs::read(key_path).context("Failed reading private key file")?;
-  let priv_key =
-    quinn::PrivateKey::from_der(&priv_der).context("Quinn .der parsing of private key failed")?;
-  let mut config = quinn::ServerConfigBuilder::default();
-  config.use_stateless_retry(true);
-  let mut transport_config = TransportConfig::default();
-  transport_config.stream_window_uni(0);
-  let mut server_config = quinn::ServerConfig::default();
-  server_config.transport = Arc::new(transport_config);
-  let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
-  let cert = quinn::Certificate::from_der(&cert_der)?;
-  cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
-  Ok(cfg_builder.build())
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct ServerArgs {
+  pub cert: PathBuf,
+  pub key: PathBuf,
+  pub quinn_bind_ip: std::net::SocketAddr,
+  pub tcp_bind_ip: std::net::SocketAddr,
+}
+
+async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<ServerArgs> {
+  let cert_path = Path::new(args.value_of("cert").unwrap()).to_path_buf();
+  let key_path = Path::new(args.value_of("key").unwrap()).to_path_buf();
+
+  Ok(ServerArgs {
+    cert: cert_path,
+    key: key_path,
+    quinn_bind_ip: parse_socketaddr(args.value_of("quic").unwrap())?,
+    tcp_bind_ip: parse_socketaddr(args.value_of("tcp").unwrap())?,
+  })
 }
 
 fn async_tcpstream_as_evented_fd<'a>(
@@ -269,26 +302,33 @@ async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> Resul
   Ok(())
 }
 
-type ProxyConnectionProvider<'a, 'b> = dyn Fn(SocketAddr) -> future::BoxFuture<'a, (SocketAddr, future::BoxFuture<'b, Result<TcpStream>>)>;
+type ProxyConnectionProvider<'a, 'b> =
+  dyn Fn(
+    SocketAddr,
+  ) -> future::BoxFuture<'a, (SocketAddr, future::BoxFuture<'b, Result<TcpStream>>)>;
 
-async fn handle_connection(source: TcpStream, listen_port: SocketAddr, build_proxy_connection: &ProxyConnectionProvider<'_, '_>) -> Result<()> {
+async fn handle_connection(
+  source: TcpStream,
+  listen_port: SocketAddr,
+  build_proxy_connection: &ProxyConnectionProvider<'_, '_>,
+) -> Result<()> {
   println!("Received connection from port {}", listen_port.port());
-  use async_std::prelude::*;
   use anyhow::Error;
+  use async_std::prelude::*;
   use futures::future::BoxFuture;
   use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
-  use std::{pin::Pin, boxed::Box};
+  use std::{boxed::Box, pin::Pin};
   let (proxy_target, await_connection) = build_proxy_connection(source.peer_addr().unwrap()).await;
   let proxy_connect_res = {
-    let timeout_future: Pin<Box<BoxFuture<Result<()>>>> =
-      Box::pin(async_std::future::timeout(
+    let timeout_future: Pin<Box<BoxFuture<Result<()>>>> = Box::pin(
+      async_std::future::timeout(
         std::time::Duration::from_millis(5000),
         future::pending::<Result<()>>(),
       )
-        .map(|_| Err(anyhow::Error::msg("Timeout occurred")))
-        .fuse()
-        .boxed()
-      );
+      .map(|_| Err(anyhow::Error::msg("Timeout occurred")))
+      .fuse()
+      .boxed(),
+    );
     let mut watcher_fd_holder: i32 = 0;
     let watcher: Pin<Box<BoxFuture<Result<(), Error>>>> = Box::pin(
       PollerVortex {
@@ -298,11 +338,13 @@ async fn handle_connection(source: TcpStream, listen_port: SocketAddr, build_pro
       .fuse()
       .boxed(),
     );
-    use futures::future::{Abortable, AbortHandle, AbortRegistration, FutureExt};
-    let abort_handler: Pin<Box<BoxFuture<Result<(), Error>>>> = Box::pin(futures::future::try_select(watcher, timeout_future)
-      .map(|_| -> Result<()> { Err(anyhow::Error::msg("Aborted by handler")) })
-      .fuse()
-      .boxed());
+    use futures::future::{AbortHandle, AbortRegistration, Abortable, FutureExt};
+    let abort_handler: Pin<Box<BoxFuture<Result<(), Error>>>> = Box::pin(
+      futures::future::try_select(watcher, timeout_future)
+        .map(|_| -> Result<()> { Err(anyhow::Error::msg("Aborted by handler")) })
+        .fuse()
+        .boxed(),
+    );
     let proxy_connect_res: Result<TcpStream> =
       match futures::future::try_select(await_connection, abort_handler).await {
         Ok(Either::Left((proxy_if_successful, resume_watcher))) => {
@@ -362,7 +404,24 @@ async fn accept_loop(
   Ok(())
 }
 
-async fn server_main(config: quinn::ServerConfig) -> Result<()> {
+async fn server_main(config: ServerArgs) -> Result<()> {
+  let quinn_config = {
+    let cert_der = std::fs::read(config.cert).context("Failed reading cert file")?;
+    let priv_der = std::fs::read(config.key).context("Failed reading private key file")?;
+    let priv_key =
+      quinn::PrivateKey::from_der(&priv_der).context("Quinn .der parsing of private key failed")?;
+    let mut config = quinn::ServerConfigBuilder::default();
+    config.use_stateless_retry(true);
+    let mut transport_config = TransportConfig::default();
+    transport_config.stream_window_uni(0);
+    let mut server_config = quinn::ServerConfig::default();
+    server_config.transport = Arc::new(transport_config);
+    let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
+    let cert = quinn::Certificate::from_der(&cert_der)?;
+    cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
+    cfg_builder.build()
+  };
+
   let mut runtime = Runtime::new().unwrap();
   let res: Result<()> = runtime.block_on(async {
     let mut listener = TcpListener::bind(SocketAddr::new(
@@ -373,17 +432,21 @@ async fn server_main(config: quinn::ServerConfig) -> Result<()> {
     let local_addr = listener
       .local_addr()
       .context("Failed to get local address for socket")?;
-    accept_loop(
-      &mut listener,
-      &local_addr,
-      &|_peer| {
-        // let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(213,136,8,188)), 23); // Blinkenlights
-        let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(216, 58, 217, 46)), 80);
-        async move {
-          (addr, TcpStream::connect(addr).map_err(|e| e.into()).fuse().boxed())
-        }.boxed()
+    accept_loop(&mut listener, &local_addr, &|_peer| {
+      // let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(213,136,8,188)), 23); // Blinkenlights
+      let addr = SocketAddr::new(IpAddr::from(Ipv4Addr::new(216, 58, 217, 46)), 80);
+      async move {
+        (
+          addr,
+          TcpStream::connect(addr)
+            .map_err(|e| e.into())
+            .fuse()
+            .boxed(),
+        )
       }
-    ).await?;
+      .boxed()
+    })
+    .await?;
     Ok(())
   });
   res
@@ -393,7 +456,23 @@ async fn server_main(config: quinn::ServerConfig) -> Result<()> {
   // )))
 }
 
-async fn client_main() -> Result<()> {
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct ClientArgs {
+  pub authority_cert: PathBuf,
+  pub driver_host: std::net::SocketAddr,
+  pub proxy_target_host: std::net::SocketAddr,
+}
+
+async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<ClientArgs> {
+  let cert_path = Path::new(args.value_of("authority").unwrap()).to_path_buf();
+  Ok(ClientArgs {
+    authority_cert: cert_path,
+    driver_host: parse_socketaddr(args.value_of("driver").unwrap())?,
+    proxy_target_host: parse_socketaddr(args.value_of("target").unwrap())?,
+  })
+}
+
+async fn client_main(config: ClientArgs) -> Result<()> {
   Ok(())
 }
 
