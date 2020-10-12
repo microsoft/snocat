@@ -1,17 +1,19 @@
 #![feature(nll)]
 #![feature(async_closure)]
+#![feature(label_break_value)]
+#![feature(str_split_once)]
 #![allow(unused_imports)]
 
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 use clap::{App, Arg, SubCommand};
 // #[macro_use]
 use async_std::io::{BufReader, BufWriter};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::prelude::*;
 use futures::future::Either;
 use futures::{self, Future, FutureExt, *};
 use quinn::TransportConfig;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   path::{Path, PathBuf},
   sync::Arc,
@@ -22,12 +24,13 @@ use tokio::runtime::Runtime;
 use tracing::{error, info, info_span};
 use tracing_futures::Instrument as _;
 
-mod client;
 mod certgen;
+mod client;
+mod common;
 mod server;
 mod util;
 
-use util::{parse_socketaddr, validate_existing_file, validate_socketaddr};
+use util::{parse_socketaddr, validate_existing_file, validate_ipaddr, validate_socketaddr};
 
 // Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {
@@ -92,19 +95,27 @@ fn main() {
             .takes_value(true)
             .required(true),
         )
-        // Port that will accept traffic to be forwarded to clients
         .arg(
           Arg::with_name("tcp")
-            .long("bind")
-            .short("b")
-            .validator(validate_socketaddr)
-            .default_value("127.0.0.1:8080")
+            .long("bindip")
+            .short("i")
+            .validator(validate_ipaddr)
+            .default_value("127.0.0.1")
             .takes_value(true)
             .required(true),
         )
-        // PPort that will accept tunneling clients to receive forwarded connections
+        .arg(
+          Arg::with_name("bind_range")
+            .long("ports")
+            .short("p")
+            .validator(validate_ipaddr)
+            .default_value("8080")
+            .takes_value(true)
+            .required(true),
+        )
         .arg(
           Arg::with_name("quic")
+            .help("Port that will accept tunneling clients to receive forwarded connections")
             .long("quic")
             .short("q")
             .validator(validate_socketaddr)

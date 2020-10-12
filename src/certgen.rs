@@ -1,17 +1,17 @@
 use crate::util::{self, parse_socketaddr};
-use anyhow::{Error as AnyErr, Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
+use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use futures::future;
 use futures::future::*;
+use quinn::{
+  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
+  ServerConfig, ServerConfigBuilder, TransportConfig,
+};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   path::{Path, PathBuf},
   sync::Arc,
   task::{Context, Poll},
-};
-use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
 };
 
 pub async fn certgen_main(output_base_path: String, host_san: String) -> Result<()> {
@@ -29,12 +29,11 @@ pub async fn certgen_main(output_base_path: String, host_san: String) -> Result<
     path.with_file_name(path.file_name().unwrap().to_str().unwrap().to_string() + ".pub.der"),
     &cert_der,
   )
-    .context("Failed writing public key")?;
+  .context("Failed writing public key")?;
   fs::write(
     path.with_file_name(path.file_name().unwrap().to_str().unwrap().to_string() + ".priv.der"),
     &priv_der,
   )
-    .context("Failed writing private key")?;
+  .context("Failed writing private key")?;
   Ok(())
 }
-

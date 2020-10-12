@@ -7,11 +7,13 @@ edition = "2018"
 
 [dependencies]
 anyhow = "^1.0.33"
+async-signals = "0.3.1"
 clap = "2.33.3"
 async-compat = "0.1.4"
 async-std = { version = "1.6", features=["attributes"] }
 futures = "0.3"
 futures-io = "0.3"
+libc = "0.2.79"
 quinn = "0.6"
 rcgen = "0.8"
 tracing = "^0.1.21"
