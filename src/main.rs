@@ -22,6 +22,8 @@ use tokio::runtime::Runtime;
 use tracing::{error, info, info_span};
 use tracing_futures::Instrument as _;
 
+mod util;
+
 fn validate_existing_file(v: String) -> Result<(), String> {
   if !Path::new(&v).exists() {
     Err(String::from("A file must exist at the given path"))
@@ -47,8 +49,7 @@ fn validate_socketaddr(v: String) -> Result<(), String> {
   parse_socketaddr(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
-mod util;
-
+// Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {
   let app = App::new(env!("CARGO_PKG_NAME"))
     .version(env!("CARGO_PKG_VERSION"))
@@ -71,6 +72,14 @@ fn main() {
             .long("driver")
             .short("d")
             .validator(validate_socketaddr)
+            .takes_value(true)
+            .required(true),
+        )
+        .arg(
+          Arg::with_name("driver-san")
+            .long("driver-san")
+            .visible_alias("san")
+            .short("s")
             .takes_value(true)
             .required(true),
         )
@@ -155,7 +164,8 @@ async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
     ("client", Some(opts)) => {
       let config = client_arg_handling(opts).await?;
       println!("Running as client with config {:#?}", &config);
-      client_main(config).await
+      let mut runtime = Runtime::new().unwrap();
+      runtime.block_on(client_main(config))
     }
     ("cert", Some(opts)) => {
       println!("Generating certs...");
@@ -414,9 +424,11 @@ async fn server_main(config: ServerArgs) -> Result<()> {
     config.use_stateless_retry(true);
     let mut transport_config = TransportConfig::default();
     transport_config.stream_window_uni(0);
+    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
     let mut server_config = quinn::ServerConfig::default();
     server_config.transport = Arc::new(transport_config);
     let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
+    cfg_builder.protocols(util::ALPN_QUIC_HTTP);
     let cert = quinn::Certificate::from_der(&cert_der)?;
     cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
     cfg_builder.build()
@@ -460,6 +472,7 @@ async fn server_main(config: ServerArgs) -> Result<()> {
 pub struct ClientArgs {
   pub authority_cert: PathBuf,
   pub driver_host: std::net::SocketAddr,
+  pub driver_san: String,
   pub proxy_target_host: std::net::SocketAddr,
 }
 
@@ -468,11 +481,38 @@ async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<ClientArg
   Ok(ClientArgs {
     authority_cert: cert_path,
     driver_host: parse_socketaddr(args.value_of("driver").unwrap())?,
+    driver_san: args.value_of("driver-san").unwrap().into(),
     proxy_target_host: parse_socketaddr(args.value_of("target").unwrap())?,
   })
 }
 
 async fn client_main(config: ClientArgs) -> Result<()> {
+  let cert_der = std::fs::read(config.authority_cert).context("Failed reading cert file")?;
+  let authority = quinn::Certificate::from_der(&cert_der)?;
+  let quinn_config = {
+    let mut qc = quinn::ClientConfigBuilder::default();
+    qc.add_certificate_authority(authority)?;
+    qc.protocols(util::ALPN_QUIC_HTTP);
+    qc.build()
+  };
+
+  let (endpoint, _incoming) = {
+    let mut response_endpoint = quinn::Endpoint::builder();
+    response_endpoint.default_client_config(quinn_config);
+    response_endpoint.bind(&"[::]:0".parse()?)? // Should this be IPv4 if the server is?
+  };
+
+  let connected: quinn::NewConnection = {
+    let connecting: Result<_, _> = endpoint
+      .connect(&config.driver_host, &config.driver_san)
+      .context("Connecting to server")?
+      .await;
+    connecting.context("Finalizing connection to server...")?
+  };
+  println!("Connected to {:?}", &connected.connection.remote_address());
+
+  println!("Disconnecting...");
+  endpoint.wait_idle().await;
   Ok(())
 }
 

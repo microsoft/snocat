@@ -1,5 +1,3 @@
-#![cfg(feature = "rustls")]
-//! Commonly used code in most examples.
 
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
