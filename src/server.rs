@@ -160,16 +160,51 @@ pub trait TunnelManager<'connection> {
   fn shutdown(&mut self) -> BoxFuture<Result<()>>;
 }
 
+struct TcpConnection<'a> {
+  port: u16,
+  addr: SocketAddr,
+  id: AxlClientIdentifier,
+  future: BoxFuture<'a, Result<()>>,
+}
+
+impl<'a> TcpConnection<'a> {
+  fn new(
+    addr: SocketAddr,
+    id: AxlClientIdentifier,
+    future: BoxFuture<'a, Result<()>>,
+  ) -> TcpConnection<'a> {
+    TcpConnection {
+      id,
+      port: addr.port(),
+      addr,
+      future,
+    }
+  }
+}
+
+impl Future for TcpConnection<'_> {
+  type Output = Result<(AxlClientIdentifier, SocketAddr)>;
+
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    let (id, addr) = (self.id.clone(), self.addr);
+    let f = unsafe { self.map_unchecked_mut(|x| &mut x.future) };
+    let res = futures::ready!(f.poll(cx));
+    Poll::Ready(res.map(|_| (id, addr)))
+  }
+}
+
 pub struct TcpRangeBindingTunnelServer<'a> {
   range: std::ops::RangeInclusive<u16>,
+  bind_ip: IpAddr,
   shutdown_in_progress: bool,
   shutdown_notifiers: (triggered::Trigger, triggered::Listener),
-  connections: std::collections::BTreeMap<AxlClientIdentifier, BoxFuture<'a, Result<()>>>,
+  connections: std::collections::BTreeMap<AxlClientIdentifier, TcpConnection<'a>>,
 }
 
 impl<'server> TcpRangeBindingTunnelServer<'server> {
   fn new<T: Into<u16>>(
     bind_port_range: std::ops::RangeInclusive<T>,
+    bind_ip: IpAddr,
   ) -> TcpRangeBindingTunnelServer<'server> {
     let (start, end): (u16, u16) = {
       let (a, b) = bind_port_range.into_inner();
@@ -177,6 +212,7 @@ impl<'server> TcpRangeBindingTunnelServer<'server> {
     };
     TcpRangeBindingTunnelServer {
       range: std::ops::RangeInclusive::new(start, end),
+      bind_ip,
       shutdown_in_progress: false,
       connections: Default::default(),
       shutdown_notifiers: triggered::trigger(),
@@ -189,7 +225,27 @@ impl<'connection, 'server> TunnelManager<'connection> for TcpRangeBindingTunnelS
     &'a mut self,
     tunnel: quinn::NewConnection,
   ) -> BoxFuture<'b, Result<bool>> {
-    todo!()
+    let next_port = self.range.clone().into_iter()
+      .filter(|&test_port| !self.connections.values().any(|v| v.port == test_port))
+      .min()
+      .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &self.range)));
+    let bind_ip = self.bind_ip;
+
+    let next_port = match next_port {
+      Err(e) => return future::ready(Err(e)).boxed(),
+      Ok(p) => p
+    };
+    let bind_addr = SocketAddr::new(bind_ip, next_port);
+    let id = AxlClientIdentifier(tunnel.connection.remote_address().to_string());
+    let f = async move {
+      todo!(); // Handler code here
+    }.boxed();
+    let connection = TcpConnection::new(bind_addr, id.clone(), f);
+    self.connections.insert(id, connection);
+    // TODO: How do we register a connection *after* a conversation with it?
+    // TODO: What cleans up exited connections? Needs some sort of task, probably...
+    // Probably mutex the self.connections field, solving both issues
+    future::ready(Ok(true)).boxed()
   }
 
   // After shutdown, new adoption requests should immediately return a future resolving to Ok(false)
@@ -205,19 +261,20 @@ impl<'connection, 'server> TunnelManager<'connection> for TcpRangeBindingTunnelS
     async move {
       use futures::stream::TryStreamExt;
       // let mut all_futures: futures::stream::FuturesUnordered<BoxFuture<'_, Result<(_, Result<()>)>>> =
-      let mut all_futures: futures::stream::FuturesUnordered<_> =
-        self.connections
-          .values_mut()
-          // .map(move |(k, v)| v.map(move |x| Ok((k, x))).boxed())
-          .collect();
+      let all_futures: futures::stream::FuturesUnordered<_> = self
+        .connections
+        .values_mut()
+        // .map(move |(k, v)| v.map(move |x| Ok((k, x))).boxed())
+        .collect();
 
-      all_futures.try_for_each(async move |_connection_handler_result| {
-        Ok(())
-      }).await?;
+      all_futures
+        .try_for_each(async move |(id, addr)| Ok(()))
+        .await?;
 
       self.connections.clear();
       Ok(())
-    }.boxed()
+    }
+    .boxed()
   }
 }
 
@@ -239,7 +296,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   };
 
   let mut manager: Box<dyn TunnelManager> =
-    Box::new(TcpRangeBindingTunnelServer::new(config.tcp_bind_port_range));
+    Box::new(TcpRangeBindingTunnelServer::new(config.tcp_bind_port_range, config.tcp_bind_ip));
 
   use futures::stream::{self, FuturesUnordered, StreamExt, TryStream, TryStreamExt};
   // Fold is used to weave the manager reference into each closure since it
@@ -250,7 +307,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       let tunnel = connecting.await?;
       // Pass tunnel ownership to the manager
       manager.try_adopt_tunnel(tunnel).await?; // TODO: Disconnect failing connections
-      // tunnel.connection.close()
+                                               // tunnel.connection.close()
 
       Ok(manager)
     })

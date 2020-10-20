@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use anyhow::{Error as AnyErr, Result};
 use async_std::net::TcpStream;
 use futures::future::*;
