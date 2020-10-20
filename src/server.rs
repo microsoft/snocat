@@ -13,9 +13,9 @@ use std::{
   boxed::Box,
   path::{Path, PathBuf},
   pin::Pin,
-  sync::Arc,
   task::{Context, Poll},
 };
+use async_std::{sync::{Arc, Mutex}};
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ServerArgs {
@@ -198,7 +198,7 @@ pub struct TcpRangeBindingTunnelServer<'a> {
   bind_ip: IpAddr,
   shutdown_in_progress: bool,
   shutdown_notifiers: (triggered::Trigger, triggered::Listener),
-  connections: std::collections::BTreeMap<AxlClientIdentifier, TcpConnection<'a>>,
+  connections: Arc<Mutex<std::collections::BTreeMap<AxlClientIdentifier, TcpConnection<'a>>>>,
 }
 
 impl<'server> TcpRangeBindingTunnelServer<'server> {
@@ -225,27 +225,38 @@ impl<'connection, 'server> TunnelManager<'connection> for TcpRangeBindingTunnelS
     &'a mut self,
     tunnel: quinn::NewConnection,
   ) -> BoxFuture<'b, Result<bool>> {
-    let next_port = self.range.clone().into_iter()
-      .filter(|&test_port| !self.connections.values().any(|v| v.port == test_port))
-      .min()
-      .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &self.range)));
+    if self.shutdown_in_progress {
+      // TODO: "Not accepting new tunnel connections because of impending shutdown" message
+      return future::ready(Ok(false)).boxed();
+    }
+    let shutdown_notifier = self.shutdown_notifiers.1.clone();
+    let connections = self.connections.clone();
+    let port_range = self.range.clone();
     let bind_ip = self.bind_ip;
-
-    let next_port = match next_port {
-      Err(e) => return future::ready(Err(e)).boxed(),
-      Ok(p) => p
-    };
-    let bind_addr = SocketAddr::new(bind_ip, next_port);
     let id = AxlClientIdentifier(tunnel.connection.remote_address().to_string());
-    let f = async move {
-      todo!(); // Handler code here
-    }.boxed();
-    let connection = TcpConnection::new(bind_addr, id.clone(), f);
-    self.connections.insert(id, connection);
-    // TODO: How do we register a connection *after* a conversation with it?
-    // TODO: What cleans up exited connections? Needs some sort of task, probably...
-    // Probably mutex the self.connections field, solving both issues
-    future::ready(Ok(true)).boxed()
+
+    async move {
+      // TODO: register a connection *only after* session authentication (make an async authn trait)
+      let next_port: u16 = {
+        let lock = connections.lock().await;
+        port_range.into_iter()
+          .filter(|&test_port| !lock.values().any(|v| v.port == test_port))
+          .min()
+          .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &self.range)))?
+      };
+      let bind_addr = SocketAddr::new(bind_ip, next_port);
+      let handler = async move {
+        todo!(); // Handler code here
+      }.fuse().boxed();
+      let connection = TcpConnection::new(bind_addr, id.clone(), handler);
+      {
+        let mut lock = connections.lock().await;
+        // If the shutdown notifier was triggered between now and the above check, the handler
+        // will immediately complete an await upon it, gracefully closing the connection
+        lock.insert(id, connection);
+      }
+      Ok(true)
+    }.fuse().boxed()
   }
 
   // After shutdown, new adoption requests should immediately return a future resolving to Ok(false)
