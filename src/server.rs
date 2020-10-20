@@ -148,55 +148,9 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
   ),
 >;
 
-pub trait AxlHandler<T: Sized + Send> {
-  fn establish_tunnel<'a>(
-    tunnel: quinn::NewConnection,
-  ) -> BoxFuture<'a, Result<(quinn::NewConnection, T)>>;
-  // fn establish_session(tunnel: quinn::NewConnection) -> BoxFuture<Result<quinn::NewConnection>>;
-}
-
-pub trait AxlServer {
-  fn accept_connections<'a, 'b: 'a, 'c: 'b, T: Sized + Send>(
-    &'a mut self,
-    handler: &'b mut impl AxlHandler<T>,
-  ) -> BoxFuture<'c, Result<()>>;
-}
-
-struct DeferredAxlServer {
-  endpoint: quinn::Endpoint,
-  incoming: quinn::Incoming,
-}
-
-impl DeferredAxlServer {
-  fn new(quinn_config: quinn::ServerConfig, bind_addr: &SocketAddr) -> Result<DeferredAxlServer> {
-    let (endpoint, mut incoming) = {
-      let mut endpoint = quinn::Endpoint::builder();
-      endpoint.listen(quinn_config);
-      endpoint.bind(bind_addr)?
-    };
-
-    Ok(DeferredAxlServer { endpoint, incoming })
-  }
-}
-
-impl AxlServer for DeferredAxlServer {
-  fn accept_connections<'a, 'b: 'a, 'c: 'b, T: Sized + Send>(
-    &'a mut self,
-    handler: &'b mut impl AxlHandler<T>,
-  ) -> BoxFuture<'c, Result<()>> {
-    todo!()
-  }
-}
-
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
 struct AxlClientIdentifier(String);
-
-// impl WebApi {
-//   pub fn request_port_mapping(&mut self, client: AxlClientIdentifier) -> () {
-//     todo!()
-//   }
-// }
 
 pub trait TunnelManager<'connection> {
   fn try_adopt_tunnel<'a, 'b: 'a>(
