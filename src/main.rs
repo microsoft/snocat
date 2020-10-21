@@ -30,7 +30,10 @@ mod common;
 mod server;
 mod util;
 
-use util::{parse_socketaddr, validate_existing_file, validate_ipaddr, validate_socketaddr};
+use util::{
+  parse_socketaddr, validate_existing_file, validate_ipaddr, validate_port_range,
+  validate_socketaddr,
+};
 
 // Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {
@@ -108,7 +111,7 @@ fn main() {
           Arg::with_name("bind_range")
             .long("ports")
             .short("p")
-            .validator(validate_ipaddr)
+            .validator(validate_port_range)
             .default_value("8080")
             .takes_value(true)
             .required(true),

@@ -2,6 +2,7 @@
 use anyhow::{Error as AnyErr, Result};
 use async_std::net::TcpStream;
 use futures::future::*;
+use futures::stream::{self, Stream, StreamExt, SelectAll};
 use futures::AsyncReadExt;
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
@@ -131,6 +132,48 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
     }
   }
   Ok(())
+}
+
+pub fn merge_streams<'a, 'b : 'a, T : 'b>(
+  source: impl futures::stream::Stream<Item = stream::BoxStream<'b, T>> + 'b + std::marker::Send
+) -> stream::BoxStream<'b, T> {
+  let mut source_empty = false;
+  let mut source = Box::pin(source);
+  let mut items = Box::pin(futures::stream::SelectAll::new());
+  futures::stream::poll_fn(move |ctx| -> Poll<Option<T>> {
+    let mut source_ref = source.as_mut();
+    if !source_empty {
+      match Stream::poll_next(source_ref, ctx) {
+        Poll::Ready(Some(new_stream)) => {
+          items.push(new_stream);
+        }
+        Poll::Ready(None) => {
+          source_empty = true;
+          // Mark that we're at the end of the list of streams, so we know when to bail
+        }
+        Poll::Pending => {
+          // Just poll the existing streams, do nothing here
+        }
+      };
+    }
+
+    let mut items_ref = items.as_mut();
+    match Stream::poll_next(items_ref, ctx) {
+      Poll::Ready(Some(item)) => {
+        Poll::Ready(Some(item))
+      }
+      Poll::Ready(None) => {
+        if source_empty {
+          Poll::Ready(None)
+        } else {
+          Poll::Pending
+        }
+      }
+      Poll::Pending => {
+        Poll::Pending
+      }
+    }
+  }).fuse().boxed()
 }
 
 // Utility helpers from quinn/examples/common

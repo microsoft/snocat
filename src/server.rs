@@ -2,8 +2,9 @@ use crate::common::MetaStreamHeader;
 use crate::util::{self, parse_ipaddr, parse_port_range, parse_socketaddr};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use async_std::sync::{Arc, Mutex};
 use futures::future::*;
-use futures::{future, StreamExt};
+use futures::{future, stream::{self, Stream, StreamExt}};
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
@@ -15,7 +16,6 @@ use std::{
   pin::Pin,
   task::{Context, Poll},
 };
-use async_std::{sync::{Arc, Mutex}};
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ServerArgs {
@@ -152,13 +152,9 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
 #[repr(transparent)]
 struct AxlClientIdentifier(String);
 
-pub trait TunnelManager<'connection> {
-  fn try_adopt_tunnel<'a, 'b: 'a>(
-    &'a mut self,
-    tunnel: quinn::NewConnection,
-  ) -> BoxFuture<'b, Result<bool>>;
-  fn shutdown(&mut self) -> BoxFuture<Result<()>>;
-}
+pub enum TunnelServerEvent {}
+
+pub trait TunnelManager: futures::stream::Stream<Item = TunnelServerEvent> {}
 
 struct TcpConnection<'a> {
   port: u16,
@@ -185,6 +181,7 @@ impl<'a> TcpConnection<'a> {
 impl Future for TcpConnection<'_> {
   type Output = Result<(AxlClientIdentifier, SocketAddr)>;
 
+  // TODO: Lift from res<(id, addr)> to (id, addr, res<()>)
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let (id, addr) = (self.id.clone(), self.addr);
     let f = unsafe { self.map_unchecked_mut(|x| &mut x.future) };
@@ -193,19 +190,16 @@ impl Future for TcpConnection<'_> {
   }
 }
 
-pub struct TcpRangeBindingTunnelServer<'a> {
+pub struct TcpRangeBindingTunnelServer {
   range: std::ops::RangeInclusive<u16>,
   bind_ip: IpAddr,
-  shutdown_in_progress: bool,
-  shutdown_notifiers: (triggered::Trigger, triggered::Listener),
-  connections: Arc<Mutex<std::collections::BTreeMap<AxlClientIdentifier, TcpConnection<'a>>>>,
 }
 
-impl<'server> TcpRangeBindingTunnelServer<'server> {
+impl TcpRangeBindingTunnelServer {
   fn new<T: Into<u16>>(
     bind_port_range: std::ops::RangeInclusive<T>,
     bind_ip: IpAddr,
-  ) -> TcpRangeBindingTunnelServer<'server> {
+  ) -> TcpRangeBindingTunnelServer {
     let (start, end): (u16, u16) = {
       let (a, b) = bind_port_range.into_inner();
       (a.into(), b.into())
@@ -213,14 +207,18 @@ impl<'server> TcpRangeBindingTunnelServer<'server> {
     TcpRangeBindingTunnelServer {
       range: std::ops::RangeInclusive::new(start, end),
       bind_ip,
-      shutdown_in_progress: false,
-      connections: Default::default(),
-      shutdown_notifiers: triggered::trigger(),
     }
   }
-}
 
-impl<'connection, 'server> TunnelManager<'connection> for TcpRangeBindingTunnelServer<'server> {
+  fn handle_incoming(
+    &self,
+    stream: impl futures::stream::Stream<Item = quinn::NewConnection>,
+    shutdown_notifier: triggered::Listener,
+  ) -> futures::stream::BoxStream<TunnelServerEvent> {
+    todo!()
+  }
+
+  /*
   fn try_adopt_tunnel<'a, 'b: 'a>(
     &'a mut self,
     tunnel: quinn::NewConnection,
@@ -258,44 +256,7 @@ impl<'connection, 'server> TunnelManager<'connection> for TcpRangeBindingTunnelS
       Ok(true)
     }.fuse().boxed()
   }
-
-  // After shutdown, new adoption requests should immediately return a future resolving to Ok(false)
-  fn shutdown(&mut self) -> BoxFuture<Result<()>> {
-    if self.shutdown_in_progress {
-      return futures::future::ready(Err(AnyErr::msg("Multiple calls to shutdown occurred")))
-        .boxed();
-    }
-    self.shutdown_in_progress = true;
-    assert!(!self.shutdown_notifiers.0.is_triggered());
-    self.shutdown_notifiers.0.trigger();
-
-    async move {
-      use futures::stream::TryStreamExt;
-      // let mut all_futures: futures::stream::FuturesUnordered<BoxFuture<'_, Result<(_, Result<()>)>>> =
-      let all_futures: futures::stream::FuturesUnordered<_> = self
-        .connections
-        .values_mut()
-        // .map(move |(k, v)| v.map(move |x| Ok((k, x))).boxed())
-        .collect();
-
-      all_futures
-        .try_for_each(async move |(id, addr)| Ok(()))
-        .await?;
-
-      self.connections.clear();
-      Ok(())
-    }
-    .boxed()
-  }
-}
-
-impl<'server> std::ops::Drop for TcpRangeBindingTunnelServer<'server> {
-  fn drop(&mut self) {
-    if self.connections.len() > 0 {
-      self.connections.clear(); // Give the connections a chance to do minor sync cleanup themselves
-      panic!("Incorrect shutdown; asynchronous RAII is not available, call .shutdown first");
-    }
-  }
+  */
 }
 
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
@@ -306,6 +267,49 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_ip)?
   };
 
+  use futures::stream;
+
+  let x = stream::unfold(1i32, async move |state| {
+    tokio::time::delay_for(std::time::Duration::from_millis(25)).await;
+    if state <= 10 {
+      Some((state, state + 1))
+    } else {
+      None
+    }
+  }).boxed();
+
+  let y = stream::unfold(-1i32, async move |state| {
+    tokio::time::delay_for(std::time::Duration::from_millis(25)).await;
+    if state >= -10 {
+      Some((state, state - 1))
+    } else {
+      None
+    }
+  }).boxed();
+
+  let x = stream::iter(vec![
+    async { println!("x started"); 0i32 }.into_stream().boxed(),
+    x,
+    async { println!("x exhausted"); 1337i32 }.into_stream().boxed(),
+  ]).flatten().boxed();
+  let y = stream::iter(vec![
+    async { println!("y started"); -0i32 }.into_stream().boxed(),
+    y,
+    async { println!("y exhausted"); -1337i32 }.into_stream().boxed(),
+  ]).flatten().boxed();
+
+  let stream_source: stream::BoxStream<'_, stream::BoxStream<'_, _>> = stream::iter(vec![x, y]).then(async move |i| {
+    async_std::task::sleep(std::time::Duration::from_millis(100)).await;
+    i
+  }).boxed();
+
+  let out = util::merge_streams(stream_source);
+
+  out.for_each(|m| async move {
+    println!("-> {:?}", m);
+  }).await;
+
+  /*
   let mut manager: Box<dyn TunnelManager> =
     Box::new(TcpRangeBindingTunnelServer::new(config.tcp_bind_port_range, config.tcp_bind_ip));
 
@@ -335,6 +339,8 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   // Tell manager to start shutting down tunnels; new adoption requests should return errors
   manager.shutdown().await?;
   Ok(())
+   */
+  todo!()
 }
 
 fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
