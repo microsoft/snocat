@@ -246,10 +246,15 @@ impl TcpRangeBindingTunnelServer {
   ) -> futures::stream::BoxStream<'a, TunnelServerEvent> {
     use futures::stream::{BoxStream, TryStreamExt};
     let streams: BoxStream<BoxStream<TunnelServerEvent>> = stream
+      .take_until(shutdown_notifier.clone())
       .scan(shutdown_notifier.clone(), |notif, connection| {
         let notif = notif.clone();
         async move {
-          Some((connection, notif))
+          if !notif.is_triggered() {
+            Some((connection, notif))
+          } else {
+            None
+          }
         }
       })
       // Convert into a TryStream, within which we'll handle failure reporting later in the pipeline
@@ -325,6 +330,17 @@ impl TcpRangeBindingTunnelServer {
 
       // TODO: Handle connection
 
+      {
+        use futures::AsyncWriteExt;
+        let (mut send, _recv) = tunnel.connection.open_bi().await?;
+        send.write(&[42u8]).await?;
+        send.finish();
+        send.close().await;
+      }
+
+      tunnel.connection.close(quinn::VarInt::from_u32(42), &[42u8]);
+
+
       Ok(true)
     }.fuse().boxed()
   }
@@ -345,7 +361,9 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   ));
 
   use futures::stream::TryStreamExt;
+  let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
   let connections: stream::BoxStream<'_, quinn::NewConnection> = incoming
+    .take_until(shutdown_notifier.clone())
     .map(|x| -> Result<_> { Ok(x) })
     .and_then(async move |connecting| {
       // When a new connection arrives, establish the connection formally, and pass it on
@@ -360,7 +378,6 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .filter_map(async move |x| x.ok()) // only keep the successful connections
     .boxed();
 
-  let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
   let mut events = manager
     .handle_incoming(connections, shutdown_notifier.clone()).fuse();
   {
