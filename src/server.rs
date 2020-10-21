@@ -267,48 +267,6 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_ip)?
   };
 
-  use futures::stream;
-
-  let x = stream::unfold(1i32, async move |state| {
-    tokio::time::delay_for(std::time::Duration::from_millis(25)).await;
-    if state <= 10 {
-      Some((state, state + 1))
-    } else {
-      None
-    }
-  }).boxed();
-
-  let y = stream::unfold(-1i32, async move |state| {
-    tokio::time::delay_for(std::time::Duration::from_millis(25)).await;
-    if state >= -10 {
-      Some((state, state - 1))
-    } else {
-      None
-    }
-  }).boxed();
-
-  let x = stream::iter(vec![
-    async { println!("x started"); 0i32 }.into_stream().boxed(),
-    x,
-    async { println!("x exhausted"); 1337i32 }.into_stream().boxed(),
-  ]).flatten().boxed();
-  let y = stream::iter(vec![
-    async { println!("y started"); -0i32 }.into_stream().boxed(),
-    y,
-    async { println!("y exhausted"); -1337i32 }.into_stream().boxed(),
-  ]).flatten().boxed();
-
-  let stream_source: stream::BoxStream<'_, stream::BoxStream<'_, _>> = stream::iter(vec![x, y]).then(async move |i| {
-    async_std::task::sleep(std::time::Duration::from_millis(100)).await;
-    i
-  }).boxed();
-
-  let out = util::merge_streams(stream_source);
-
-  out.for_each(|m| async move {
-    println!("-> {:?}", m);
-  }).await;
-
   /*
   let mut manager: Box<dyn TunnelManager> =
     Box::new(TcpRangeBindingTunnelServer::new(config.tcp_bind_port_range, config.tcp_bind_ip));

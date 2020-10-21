@@ -19,7 +19,7 @@ rcgen = "0.8"
 tracing = "^0.1.21"
 tracing-futures = "^0.2.4"
 trust-dns-client = "^0.19.5"
-tokio = { version = "^0.2.22", features=["tcp", "mio", "io-util", "io-driver", "signal", "stream"] }
+tokio = { version = "^0.2.22", features=["tcp", "mio", "io-util", "io-driver", "signal", "stream", "macros"] }
 triggered = "0.1.1"
 yamux = "0.8"
 mio = { version = "0.6.22" }

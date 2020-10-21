@@ -244,3 +244,72 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+
+
+#[cfg(test)]
+mod tests {
+  #[tokio::test]
+  async fn test_stream_merging() {
+    use futures::{future::FutureExt, stream::{self, Stream, StreamExt}};
+
+    let x = stream::unfold(1i32, async move |state| {
+      if state <= 5 {
+        Some((state, state + 1))
+      } else {
+        None
+      }
+    }).boxed();
+
+    let y = stream::unfold(15, async move |state| {
+      if state <= 17 {
+        Some((state, state + 1))
+      } else {
+        None
+      }
+    }).boxed();
+
+    let z = stream::unfold(-1i32, async move |state| {
+      if state >= -10 {
+        Some((state, state - 1))
+      } else {
+        None
+      }
+    }).boxed();
+
+    let (trigger_z_end, listener_z_end) = triggered::trigger();
+    let (trigger_x_3, listener_x_3) = triggered::trigger();
+    let first = stream::iter(vec![
+      async { println!("x started"); None }.into_stream().boxed(),
+      x.map(|x| Some(x)).inspect(|v| {
+        if *v == Some(3i32) && !trigger_x_3.is_triggered() {
+          trigger_x_3.trigger()
+        }
+      }).boxed(),
+      async { println!("x exhausted"); None }.into_stream().boxed(),
+      async { listener_z_end.await; println!("y started"); None }.into_stream().boxed(),
+      y.map(|x| Some(x)).boxed(),
+      async { println!("y exhausted"); None }.into_stream().boxed(),
+    ]).flatten().filter_map(async move |x| x).boxed();
+    let second = stream::iter(vec![
+      async { listener_x_3.await; println!("z started"); None }.into_stream().boxed(),
+      z.map(|x| Some(x)).boxed(),
+      async { println!("z exhausted"); trigger_z_end.trigger(); None }.into_stream().boxed(),
+    ]).flatten().filter_map(async move |x| x).boxed();
+
+    let stream_source: stream::BoxStream<'_, stream::BoxStream<'_, _>> = stream::iter(vec![first, second]).boxed();
+    let out: stream::BoxStream<'_, i32> = super::merge_streams(stream_source);
+
+    let mut items = Vec::new();
+    out.fold(&mut items, async move |i, m| {
+      println!("-> {:?}", &m);
+      i.push(m.clone());
+      i
+    }).await;
+
+    let pos_of = |x: i32| items.iter().position(|&v| v == x).unwrap();
+    assert_eq!(pos_of(-1), pos_of(3) + 1, "Z must start directly after X reaches 3");
+    assert_eq!(pos_of(15), pos_of(-10) + 1, "Y must start after Z ends");
+    assert_eq!(pos_of(-2), pos_of(4) + 1, "Z must start directly after X reaches 3");
+    assert_eq!(pos_of(5), pos_of(-2) + 1, "X must end just after Z reaches -2");
+  }
+}
