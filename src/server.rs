@@ -160,27 +160,28 @@ struct AxlClientIdentifier(String);
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub enum TunnelServerEvent {
   DebugMessage(String),
-  Open(AxlClientIdentifier, SocketAddr),
+  Open(SocketAddr),
+  Identified(AxlClientIdentifier, SocketAddr),
   Close(AxlClientIdentifier, SocketAddr),
 }
 
-pub trait TunnelManager<U: Stream<Item = quinn::NewConnection>> {
-  fn handle_incoming(
-    &self,
-    stream: U,
-    shutdown_notifier: triggered::Listener,
-  ) -> futures::stream::BoxStream<TunnelServerEvent>;
-}
-
-impl TunnelManager<stream::BoxStream<'_, quinn::NewConnection>> for TcpRangeBindingTunnelServer {
-  fn handle_incoming(
-    &self,
-    stream: stream::BoxStream<'_, quinn::NewConnection>,
-    shutdown_notifier: triggered::Listener,
-  ) -> stream::BoxStream<'_, TunnelServerEvent> {
-    TcpRangeBindingTunnelServer::handle_incoming(self, stream, shutdown_notifier)
-  }
-}
+// pub trait TunnelManager<'stream, U: Stream<Item = quinn::NewConnection> + 'stream> {
+//   fn handle_incoming<'a>(
+//     &'a self,
+//     stream: U,
+//     shutdown_notifier: triggered::Listener,
+//   ) -> futures::stream::BoxStream<'b, TunnelServerEvent>;
+// }
+//
+// impl TunnelManager<stream::BoxStream<'_, quinn::NewConnection>> for TcpRangeBindingTunnelServer {
+//   fn handle_incoming<'a, 'b : 'a>(
+//     &'a self,
+//     stream: stream::BoxStream<'b, quinn::NewConnection>,
+//     shutdown_notifier: triggered::Listener,
+//   ) -> stream::BoxStream<'b, TunnelServerEvent> {
+//     TcpRangeBindingTunnelServer::handle_incoming(self, stream, shutdown_notifier)
+//   }
+// }
 
 struct TcpConnection<'a> {
   port: u16,
@@ -219,10 +220,11 @@ impl Future for TcpConnection<'_> {
 pub struct TcpRangeBindingTunnelServer {
   range: std::ops::RangeInclusive<u16>,
   bind_ip: IpAddr,
+  bound_ports: Arc<Mutex<std::collections::HashSet<u16>>>,
 }
 
 impl TcpRangeBindingTunnelServer {
-  fn new<T: Into<u16>>(
+  pub fn new<T: Into<u16>>(
     bind_port_range: std::ops::RangeInclusive<T>,
     bind_ip: IpAddr,
   ) -> TcpRangeBindingTunnelServer {
@@ -233,26 +235,27 @@ impl TcpRangeBindingTunnelServer {
     TcpRangeBindingTunnelServer {
       range: std::ops::RangeInclusive::new(start, end),
       bind_ip,
+      bound_ports: Default::default(),
     }
   }
 
-  fn handle_incoming(
-    &self,
-    stream: impl futures::stream::Stream<Item = quinn::NewConnection>,
+  pub fn handle_incoming<'a>(
+    &'a self,
+    stream: impl futures::stream::Stream<Item = quinn::NewConnection> + Send + 'a,
     shutdown_notifier: triggered::Listener,
-  ) -> futures::stream::BoxStream<TunnelServerEvent> {
-    use futures::stream::TryStreamExt;
-    let x = stream
+  ) -> futures::stream::BoxStream<'a, TunnelServerEvent> {
+    use futures::stream::{BoxStream, TryStreamExt};
+    let streams: BoxStream<BoxStream<TunnelServerEvent>> = stream
       .scan(shutdown_notifier.clone(), |notif, connection| {
         let notif = notif.clone();
         async move {
-          Some((notif, connection))
+          Some((connection, notif))
         }
       })
       // Convert into a TryStream, within which we'll handle failure reporting later in the pipeline
       .map(|x| -> Result<_, AnyErr> { Ok(x) })
       // Filter out new connections during shutdown
-      .try_filter(|(notifier, conn): &(triggered::Listener, quinn::NewConnection)| {
+      .try_filter(|(conn, notifier): &(quinn::NewConnection, triggered::Listener)| {
         let triggered = notifier.is_triggered();
         let addr = conn.connection.remote_address();
         async move {
@@ -264,58 +267,68 @@ impl TcpRangeBindingTunnelServer {
           true
         }
       })
+      .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
+        let addr = conn.connection.remote_address();
+        // TODO: Build identifier based on handshake / authentication session
+        let id = AxlClientIdentifier(addr.to_string());
+        let handler_id = id.clone();
+        let handler =
+          stream::once(
+            self.handle_connection(id.clone(), conn, notifier)
+              .map(move |x| match x {
+                Err(e) => TunnelServerEvent::Close(handler_id.clone(), addr),
+                Ok(res) => TunnelServerEvent::Close(handler_id.clone(), addr)
+              })
+          ).fuse().boxed();
+        Ok(stream::iter(vec![
+          stream::once(future::ready(TunnelServerEvent::Open(addr))).boxed(),
+          stream::once(future::ready(TunnelServerEvent::Identified(id.clone(), addr))).boxed(),
+          handler,
+        ]).flatten().boxed())
+      })
+      .filter_map(|x: Result<_, _>| {
+        future::ready(match x {
+          Ok(s) => Some(s),
+          Err(e) => {
+            eprintln!("Failure in connection {:#?}", e);
+            None
+          }
+        })
+      })
+      .boxed()
       ;
 
-    todo!()
-    // stream::iter(vec![
-    //   stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Hello"))]).boxed(),
-    //   stream::unfold(shutdown_notifier, async move |notif| {
-    //     notif.await;
-    //     println!("Graceful shutdown of handler...");
-    //     None
-    //   }).boxed(),
-    //   stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Goodbye"))]).boxed(),
-    // ]).flatten().boxed()
+    util::merge_streams(streams)
   }
 
-  /*
-  fn try_adopt_tunnel<'a, 'b: 'a>(
-    &'a mut self,
+  fn handle_connection(
+    &self,
+    id: AxlClientIdentifier,
     tunnel: quinn::NewConnection,
-  ) -> BoxFuture<'b, Result<bool>> {
-    if self.shutdown_in_progress {
-      return future::ready(Ok(false)).boxed();
-    }
-    let shutdown_notifier = self.shutdown_notifiers.1.clone();
-    let connections = self.connections.clone();
+    shutdown_notifier: triggered::Listener,
+  ) -> BoxFuture<Result<bool>> {
     let port_range = self.range.clone();
     let bind_ip = self.bind_ip;
-    let id = AxlClientIdentifier(tunnel.connection.remote_address().to_string());
+    let bound_ports = self.bound_ports.clone();
 
     async move {
       // TODO: register a connection *only after* session authentication (make an async authn trait)
       let next_port: u16 = {
-        let lock = connections.lock().await;
+        let lock = bound_ports.lock().await;
         port_range.into_iter()
-          .filter(|&test_port| !lock.values().any(|v| v.port == test_port))
+          .filter(|test_port| !lock.contains(test_port))
           .min()
           .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &self.range)))?
       };
       let bind_addr = SocketAddr::new(bind_ip, next_port);
-      let handler = async move {
-        todo!(); // Handler code here
-      }.fuse().boxed();
-      let connection = TcpConnection::new(bind_addr, id.clone(), handler);
-      {
-        let mut lock = connections.lock().await;
-        // If the shutdown notifier was triggered between now and the above check, the handler
-        // will immediately complete an await upon it, gracefully closing the connection
-        lock.insert(id, connection);
-      }
+      println!("Bound client on address {:?}", bind_addr);
+
+      // TODO: Handle connection
+
       Ok(true)
     }.fuse().boxed()
   }
-  */
+
 }
 
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
@@ -326,7 +339,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_addr)?
   };
 
-  let mut manager: Box<dyn TunnelManager<_>> = Box::new(TcpRangeBindingTunnelServer::new(
+  let mut manager/*: Box<dyn TunnelManager<_>>*/ = Box::new(TcpRangeBindingTunnelServer::new(
     config.tcp_bind_port_range,
     config.tcp_bind_ip,
   ));
