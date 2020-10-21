@@ -6,6 +6,8 @@ use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
   future,
+  pin_mut,
+  select_biased,
   stream::{self, Stream, StreamExt},
 };
 use quinn::{
@@ -151,10 +153,11 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
   ),
 >;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 #[repr(transparent)]
 struct AxlClientIdentifier(String);
 
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub enum TunnelServerEvent {}
 
 pub trait TunnelManager<U: Stream<Item = quinn::NewConnection>> {
@@ -308,22 +311,40 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .boxed();
 
   let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
-  manager.handle_incoming(connections, shutdown_notifier);
-
-  /*
-  // Wait for SIGINT; begin graceful shutdown if we receive one
+  let mut events = manager
+    .handle_incoming(connections, shutdown_notifier.clone()).fuse();
   {
-    // Wrap it in brackets to destroy the watcher afterward, so a second ctrl-c ends the process immediately
     let mut signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
-    let signal = signal_watcher.next().await.unwrap();
-    assert_eq!(signal, libc::SIGINT);
+    let sigint_watcher = signal_watcher.next().fuse();
+    pin_mut!(sigint_watcher);
+    loop {
+      select_biased! {
+        // Wait for SIGINT; begin graceful shutdown if we receive one
+        signal = sigint_watcher => {
+          match signal {
+            None => { println!("`None` returned from signal watcher??"); },
+            Some(s) => {
+              assert_eq!(s, libc::SIGINT);
+              println!("Shutdown triggered");
+              // Tell manager to start shutting down tunnels; new adoption requests should return errors
+              trigger_shutdown.trigger();
+            }
+          }
+        }
+        ev = events.next() => {
+          match ev {
+            None => break,
+            Some(e) => {
+              println!("Event: {:#?}", e);
+            }
+          }
+        }
+        complete => break,
+      }
+    }
   }
 
-  // Tell manager to start shutting down tunnels; new adoption requests should return errors
-  manager.shutdown().await?;
   Ok(())
-   */
-  todo!()
 }
 
 fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
