@@ -4,7 +4,10 @@ use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
 use futures::future::*;
-use futures::{future, stream::{self, Stream, StreamExt}};
+use futures::{
+  future,
+  stream::{self, Stream, StreamExt},
+};
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
@@ -154,7 +157,23 @@ struct AxlClientIdentifier(String);
 
 pub enum TunnelServerEvent {}
 
-pub trait TunnelManager: futures::stream::Stream<Item = TunnelServerEvent> {}
+pub trait TunnelManager<U: Stream<Item = quinn::NewConnection>> {
+  fn handle_incoming(
+    &self,
+    stream: U,
+    shutdown_notifier: triggered::Listener,
+  ) -> futures::stream::BoxStream<TunnelServerEvent>;
+}
+
+impl TunnelManager<stream::BoxStream<'_, quinn::NewConnection>> for TcpRangeBindingTunnelServer {
+  fn handle_incoming(
+    &self,
+    stream: stream::BoxStream<'_, quinn::NewConnection>,
+    shutdown_notifier: triggered::Listener,
+  ) -> stream::BoxStream<'_, TunnelServerEvent> {
+    TcpRangeBindingTunnelServer::handle_incoming(self, stream, shutdown_notifier)
+  }
+}
 
 struct TcpConnection<'a> {
   port: u16,
@@ -267,25 +286,31 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_ip)?
   };
 
-  /*
-  let mut manager: Box<dyn TunnelManager> =
-    Box::new(TcpRangeBindingTunnelServer::new(config.tcp_bind_port_range, config.tcp_bind_ip));
+  let mut manager: Box<dyn TunnelManager<_>> = Box::new(TcpRangeBindingTunnelServer::new(
+    config.tcp_bind_port_range,
+    config.tcp_bind_ip,
+  ));
 
-  use futures::stream::{self, FuturesUnordered, StreamExt, TryStream, TryStreamExt};
-  // Fold is used to weave the manager reference into each closure since it
-  // otherwise worries about multiple potentially-concurrent mut references
-  incoming
+  use futures::stream::TryStreamExt;
+  let connections: stream::BoxStream<'_, quinn::NewConnection> = incoming
     .map(|x| -> Result<_> { Ok(x) })
-    .try_fold(&mut manager, async move |manager, connecting| {
+    .and_then(async move |connecting| {
+      // When a new connection arrives, establish the connection formally, and pass it on
       let tunnel = connecting.await?;
-      // Pass tunnel ownership to the manager
-      manager.try_adopt_tunnel(tunnel).await?; // TODO: Disconnect failing connections
-                                               // tunnel.connection.close()
-
-      Ok(manager)
+      // TODO: Protocol header can occur here, or as part of the later "binding" phase
+      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
+      Ok(tunnel)
     })
-    .await?;
+    .inspect_err(|e| {
+      eprintln!("Connection failure during stream pickup: {:#?}", e);
+    })
+    .filter_map(async move |x| x.ok()) // only keep the successful connections
+    .boxed();
 
+  let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
+  manager.handle_incoming(connections, shutdown_notifier);
+
+  /*
   // Wait for SIGINT; begin graceful shutdown if we receive one
   {
     // Wrap it in brackets to destroy the watcher afterward, so a second ctrl-c ends the process immediately
