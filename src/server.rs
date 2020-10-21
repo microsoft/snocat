@@ -169,6 +169,7 @@ pub enum TunnelServerEvent {
   Open(SocketAddr),
   Identified(AxlClientIdentifier, SocketAddr),
   Close(AxlClientIdentifier, SocketAddr),
+  Failure(AxlClientIdentifier, SocketAddr, String),
 }
 
 // pub trait TunnelManager<'stream, U: Stream<Item = quinn::NewConnection> + 'stream> {
@@ -278,24 +279,24 @@ impl TcpRangeBindingTunnelServer {
           true
         }
       })
-      .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
+      .and_then(async move |(mut conn, mut notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
         let addr = conn.connection.remote_address();
         // TODO: Build identifier based on handshake / authentication session
-        let id = AxlClientIdentifier(addr.to_string());
-        let handler_id = id.clone();
-        let handler =
-          stream::once(
+        use async_stream::stream as sgen;
+
+        Ok(sgen! {
+          yield TunnelServerEvent::Open(addr);
+          let id = self.handle_identification(&mut conn, &mut notifier).await.unwrap();// TODO: Fallible
+          yield TunnelServerEvent::Identified(id.clone(), addr);
+          let handler_id = id.clone();
+          let res =
             self.handle_connection(id.clone(), conn, notifier)
               .map(move |x| match x {
-                Err(e) => TunnelServerEvent::Close(handler_id.clone(), addr),
+                Err(e) => TunnelServerEvent::Failure(handler_id.clone(), addr, e.to_string()),
                 Ok(res) => TunnelServerEvent::Close(handler_id.clone(), addr)
-              })
-          ).fuse().boxed();
-        Ok(stream::iter(vec![
-          stream::once(future::ready(TunnelServerEvent::Open(addr))).boxed(),
-          stream::once(future::ready(TunnelServerEvent::Identified(id.clone(), addr))).boxed(),
-          handler,
-        ]).flatten().boxed())
+              }).await;
+          yield res;
+        }.boxed())
       })
       .filter_map(|x: Result<_, _>| {
         future::ready(match x {
@@ -310,6 +311,14 @@ impl TcpRangeBindingTunnelServer {
       ;
 
     util::merge_streams(streams)
+  }
+
+  async fn handle_identification(
+    &self,
+    tunnel: &mut quinn::NewConnection,
+    shutdown_notifier: &mut triggered::Listener,
+  ) -> Result<AxlClientIdentifier> {
+    Ok(AxlClientIdentifier(tunnel.connection.remote_address().to_string()))
   }
 
   fn handle_connection(
@@ -336,18 +345,19 @@ impl TcpRangeBindingTunnelServer {
 
       // TODO: Handle connection
 
-      {
-        use futures::AsyncWriteExt;
-        let (mut send, _recv) = tunnel.connection.open_bi().await?;
-        send.write(&[42u8]).await?;
-        send.finish();
-        send.close().await;
-      }
+      // {
+      //   use futures::AsyncWriteExt;
+      //   let (mut send, _recv) = tunnel.connection.open_bi().await?;
+      //   send.write(&[42u8]).await?;
+      //   send.finish();
+      //   send.close().await;
+      // }
 
-      tunnel.connection.close(quinn::VarInt::from_u32(42), &[42u8]);
+      tunnel.connection.close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
 
 
-      Ok(true)
+      Err(AnyErr::msg("Fake handler error"))
+      // Ok(true)
     }.fuse().boxed()
   }
 

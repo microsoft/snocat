@@ -8,6 +8,7 @@ edition = "2018"
 [dependencies]
 anyhow = "^1.0.33"
 async-signals = "0.3.1"
+async-stream = "0.3.0"
 clap = "2.33.3"
 async-compat = "0.1.4"
 async-std = { version = "1.6", features=["attributes"] }
