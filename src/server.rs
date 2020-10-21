@@ -158,7 +158,11 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
 struct AxlClientIdentifier(String);
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
-pub enum TunnelServerEvent {}
+pub enum TunnelServerEvent {
+  DebugMessage(String),
+  // Open(AxlClientIdentifier, SocketAddr),
+  // Close(AxlClientIdentifier, SocketAddr),
+}
 
 pub trait TunnelManager<U: Stream<Item = quinn::NewConnection>> {
   fn handle_incoming(
@@ -237,11 +241,15 @@ impl TcpRangeBindingTunnelServer {
     stream: impl futures::stream::Stream<Item = quinn::NewConnection>,
     shutdown_notifier: triggered::Listener,
   ) -> futures::stream::BoxStream<TunnelServerEvent> {
-    stream::unfold(shutdown_notifier, async move |notif| {
-      notif.await;
-      println!("Graceful shutdown of handler...");
-      None
-    }).boxed()
+    stream::iter(vec![
+      stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Hello"))]).boxed(),
+      stream::unfold(shutdown_notifier, async move |notif| {
+        notif.await;
+        println!("Graceful shutdown of handler...");
+        None
+      }).boxed(),
+      stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Goodbye"))]).boxed(),
+    ]).flatten().boxed()
   }
 
   /*
