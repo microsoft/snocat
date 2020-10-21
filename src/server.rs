@@ -319,34 +319,18 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .handle_incoming(connections, shutdown_notifier.clone()).fuse();
   {
     let mut signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
-    let sigint_watcher = signal_watcher.next().fuse();
-    pin_mut!(sigint_watcher);
-    loop {
-      select_biased! {
-        // Wait for SIGINT; begin graceful shutdown if we receive one
-        signal = sigint_watcher => {
-          match signal {
-            None => { println!("`None` returned from signal watcher??"); },
-            Some(s) => {
-              assert_eq!(s, libc::SIGINT);
-              println!("\nShutdown triggered");
-              // Tell manager to start shutting down tunnels; new adoption requests should return errors
-              trigger_shutdown.trigger();
-            }
-          }
-        }
-        ev = events.next() => {
-          match ev {
-            None => break, // Stream ended; break, as we can ignore the shutdown handler now
-            Some(e) => {
-              // A stream event occurred- just print it for now
-              println!("Event: {:#?}", e);
-            }
-          }
-        }
-        complete => break,
-      }
-    }
+    let signal_watcher = signal_watcher.filter(|&x| future::ready(x == libc::SIGINT)).take(1).map(|_| {
+      println!("\nShutdown triggered");
+      // Tell manager to start shutting down tunnels; new adoption requests should return errors
+      trigger_shutdown.trigger();
+      None
+    }).fuse();
+    futures::stream::select(signal_watcher, events.map(|e| Some(e)))
+      .filter_map(|x| future::ready(x))
+      .for_each(async move |ev| {
+        println!("Event: {:#?}", ev);
+      })
+      .await;
   }
 
   Ok(())
