@@ -153,9 +153,15 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
   ),
 >;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
 struct AxlClientIdentifier(String);
+
+impl std::fmt::Debug for AxlClientIdentifier {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "(axl ({}))", self.0)
+  }
+}
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub enum TunnelServerEvent {
