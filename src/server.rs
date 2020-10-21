@@ -26,7 +26,7 @@ use std::{
 pub struct ServerArgs {
   pub cert: PathBuf,
   pub key: PathBuf,
-  pub quinn_bind_ip: std::net::SocketAddr,
+  pub quinn_bind_addr: std::net::SocketAddr,
   pub tcp_bind_ip: std::net::IpAddr,
   pub tcp_bind_port_range: std::ops::RangeInclusive<u16>,
 }
@@ -38,7 +38,7 @@ pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<Serve
   Ok(ServerArgs {
     cert: cert_path,
     key: key_path,
-    quinn_bind_ip: parse_socketaddr(args.value_of("quic").unwrap())?,
+    quinn_bind_addr: parse_socketaddr(args.value_of("quic").unwrap())?,
     tcp_bind_ip: parse_ipaddr(args.value_of("tcp").unwrap())?,
     tcp_bind_port_range: parse_port_range(args.value_of("bind_range").unwrap())?,
   })
@@ -237,7 +237,11 @@ impl TcpRangeBindingTunnelServer {
     stream: impl futures::stream::Stream<Item = quinn::NewConnection>,
     shutdown_notifier: triggered::Listener,
   ) -> futures::stream::BoxStream<TunnelServerEvent> {
-    todo!()
+    stream::unfold(shutdown_notifier, async move |notif| {
+      notif.await;
+      println!("Graceful shutdown of handler...");
+      None
+    }).boxed()
   }
 
   /*
@@ -286,7 +290,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   let (_endpoint, incoming) = {
     let mut endpoint = quinn::Endpoint::builder();
     endpoint.listen(quinn_config);
-    endpoint.bind(&config.quinn_bind_ip)?
+    endpoint.bind(&config.quinn_bind_addr)?
   };
 
   let mut manager: Box<dyn TunnelManager<_>> = Box::new(TcpRangeBindingTunnelServer::new(
@@ -325,7 +329,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
             None => { println!("`None` returned from signal watcher??"); },
             Some(s) => {
               assert_eq!(s, libc::SIGINT);
-              println!("Shutdown triggered");
+              println!("\nShutdown triggered");
               // Tell manager to start shutting down tunnels; new adoption requests should return errors
               trigger_shutdown.trigger();
             }
@@ -333,8 +337,9 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
         }
         ev = events.next() => {
           match ev {
-            None => break,
+            None => break, // Stream ended; break, as we can ignore the shutdown handler now
             Some(e) => {
+              // A stream event occurred- just print it for now
               println!("Event: {:#?}", e);
             }
           }
