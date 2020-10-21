@@ -253,16 +253,11 @@ impl TcpRangeBindingTunnelServer {
   ) -> futures::stream::BoxStream<'a, TunnelServerEvent> {
     use futures::stream::{BoxStream, TryStreamExt};
     let streams: BoxStream<BoxStream<TunnelServerEvent>> = stream
+      // Drop new connections once shutdown has been requested
       .take_until(shutdown_notifier.clone())
+      // Mix a copy of the shutdown notifier into each element of the stream
       .scan(shutdown_notifier.clone(), |notif, connection| {
-        let notif = notif.clone();
-        async move {
-          if !notif.is_triggered() {
-            Some((connection, notif))
-          } else {
-            None
-          }
-        }
+        future::ready(Some((connection, notif.clone())))
       })
       // Convert into a TryStream, within which we'll handle failure reporting later in the pipeline
       .map(|x| -> Result<_, AnyErr> { Ok(x) })
