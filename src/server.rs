@@ -160,8 +160,8 @@ struct AxlClientIdentifier(String);
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub enum TunnelServerEvent {
   DebugMessage(String),
-  // Open(AxlClientIdentifier, SocketAddr),
-  // Close(AxlClientIdentifier, SocketAddr),
+  Open(AxlClientIdentifier, SocketAddr),
+  Close(AxlClientIdentifier, SocketAddr),
 }
 
 pub trait TunnelManager<U: Stream<Item = quinn::NewConnection>> {
@@ -241,15 +241,41 @@ impl TcpRangeBindingTunnelServer {
     stream: impl futures::stream::Stream<Item = quinn::NewConnection>,
     shutdown_notifier: triggered::Listener,
   ) -> futures::stream::BoxStream<TunnelServerEvent> {
-    stream::iter(vec![
-      stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Hello"))]).boxed(),
-      stream::unfold(shutdown_notifier, async move |notif| {
-        notif.await;
-        println!("Graceful shutdown of handler...");
-        None
-      }).boxed(),
-      stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Goodbye"))]).boxed(),
-    ]).flatten().boxed()
+    use futures::stream::TryStreamExt;
+    let x = stream
+      .scan(shutdown_notifier.clone(), |notif, connection| {
+        let notif = notif.clone();
+        async move {
+          Some((notif, connection))
+        }
+      })
+      // Convert into a TryStream, within which we'll handle failure reporting later in the pipeline
+      .map(|x| -> Result<_, AnyErr> { Ok(x) })
+      // Filter out new connections during shutdown
+      .try_filter(|(notifier, conn): &(triggered::Listener, quinn::NewConnection)| {
+        let triggered = notifier.is_triggered();
+        let addr = conn.connection.remote_address();
+        async move {
+          if triggered {
+            // TODO: "Not accepting new tunnel connections because of impending shutdown" message
+            eprintln!("Refusing connection from {:?} because shutdown is already in progress", addr);
+            return false;
+          }
+          true
+        }
+      })
+      ;
+
+    todo!()
+    // stream::iter(vec![
+    //   stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Hello"))]).boxed(),
+    //   stream::unfold(shutdown_notifier, async move |notif| {
+    //     notif.await;
+    //     println!("Graceful shutdown of handler...");
+    //     None
+    //   }).boxed(),
+    //   stream::iter(vec![TunnelServerEvent::DebugMessage(String::from("Goodbye"))]).boxed(),
+    // ]).flatten().boxed()
   }
 
   /*
@@ -258,7 +284,6 @@ impl TcpRangeBindingTunnelServer {
     tunnel: quinn::NewConnection,
   ) -> BoxFuture<'b, Result<bool>> {
     if self.shutdown_in_progress {
-      // TODO: "Not accepting new tunnel connections because of impending shutdown" message
       return future::ready(Ok(false)).boxed();
     }
     let shutdown_notifier = self.shutdown_notifiers.1.clone();
