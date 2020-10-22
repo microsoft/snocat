@@ -8,6 +8,7 @@ use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
 };
+use std::boxed::Box;
 use std::path::Path;
 use std::task::{Context, Poll};
 use std::{error::Error, net::SocketAddr, sync::Arc};

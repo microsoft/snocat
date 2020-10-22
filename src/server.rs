@@ -5,9 +5,7 @@ use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
-  future,
-  pin_mut,
-  select_biased,
+  future, pin_mut, select_biased,
   stream::{self, Stream, StreamExt},
 };
 use quinn::{
@@ -143,7 +141,7 @@ async fn accept_loop(
   Ok(())
 }
 
-type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
+type ProxyConnectionProvider<'a, 'b, 'c> = dyn Fn(
   SocketAddr, // Peer address
 ) -> future::BoxFuture<
   'a,
@@ -155,7 +153,7 @@ type ProxyConnectionProvider<'a, 'b, 'c: 'b> = dyn Fn(
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
-struct AxlClientIdentifier(String);
+pub struct AxlClientIdentifier(String);
 
 impl std::fmt::Debug for AxlClientIdentifier {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -313,7 +311,9 @@ impl TcpRangeBindingTunnelServer {
     tunnel: &mut quinn::NewConnection,
     shutdown_notifier: &mut triggered::Listener,
   ) -> Result<AxlClientIdentifier> {
-    Ok(AxlClientIdentifier(tunnel.connection.remote_address().to_string()))
+    Ok(AxlClientIdentifier(
+      tunnel.connection.remote_address().to_string(),
+    ))
   }
 
   fn handle_connection(
@@ -330,10 +330,16 @@ impl TcpRangeBindingTunnelServer {
       // TODO: register a connection *only after* session authentication (make an async authn trait)
       let next_port: u16 = {
         let lock = bound_ports.lock().await;
-        port_range.into_iter()
+        port_range
+          .into_iter()
           .filter(|test_port| !lock.contains(test_port))
           .min()
-          .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &self.range)))?
+          .ok_or_else(|| {
+            AnyErr::msg(format!(
+              "No free ports available in range {:?}",
+              &self.range
+            ))
+          })?
       };
       let bind_addr = SocketAddr::new(bind_ip, next_port);
       println!("Bound client on address {:?}", bind_addr);
@@ -348,14 +354,16 @@ impl TcpRangeBindingTunnelServer {
       //   send.close().await;
       // }
 
-      tunnel.connection.close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
-
+      tunnel
+        .connection
+        .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
 
       Err(AnyErr::msg("Fake handler error"))
       // Ok(true)
-    }.fuse().boxed()
+    }
+    .fuse()
+    .boxed()
   }
-
 }
 
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
@@ -390,15 +398,20 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .boxed();
 
   let mut events = manager
-    .handle_incoming(connections, shutdown_notifier.clone()).fuse();
+    .handle_incoming(connections, shutdown_notifier.clone())
+    .fuse();
   {
     let mut signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
-    let signal_watcher = signal_watcher.filter(|&x| future::ready(x == libc::SIGINT)).take(1).map(|_| {
-      println!("\nShutdown triggered");
-      // Tell manager to start shutting down tunnels; new adoption requests should return errors
-      trigger_shutdown.trigger();
-      None
-    }).fuse();
+    let signal_watcher = signal_watcher
+      .filter(|&x| future::ready(x == libc::SIGINT))
+      .take(1)
+      .map(|_| {
+        println!("\nShutdown triggered");
+        // Tell manager to start shutting down tunnels; new adoption requests should return errors
+        trigger_shutdown.trigger();
+        None
+      })
+      .fuse();
     futures::stream::select(signal_watcher, events.map(|e| Some(e)))
       .filter_map(|x| future::ready(x))
       .for_each(async move |ev| {
