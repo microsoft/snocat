@@ -135,14 +135,14 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
   Ok(())
 }
 
-pub fn merge_streams<'a, 'b: 'a, T: 'b>(
-  source: impl futures::stream::Stream<Item = stream::BoxStream<'b, T>> + 'b + std::marker::Send,
-) -> stream::BoxStream<'b, T> {
+pub fn merge_streams<'a, T: 'a>(
+  source: impl futures::stream::Stream<Item = stream::BoxStream<'a, T>> + 'a + std::marker::Send,
+) -> stream::BoxStream<'a, T> {
   let mut source_empty = false;
   let mut source = Box::pin(source);
   let mut items = Box::pin(futures::stream::SelectAll::new());
   futures::stream::poll_fn(move |ctx| -> Poll<Option<T>> {
-    let mut source_ref = source.as_mut();
+    let source_ref = source.as_mut();
     if !source_empty {
       match Stream::poll_next(source_ref, ctx) {
         Poll::Ready(Some(new_stream)) => {
@@ -158,7 +158,7 @@ pub fn merge_streams<'a, 'b: 'a, T: 'b>(
       };
     }
 
-    let mut items_ref = items.as_mut();
+    let items_ref = items.as_mut();
     match Stream::poll_next(items_ref, ctx) {
       Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
       Poll::Ready(None) => {
