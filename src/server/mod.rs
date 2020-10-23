@@ -1,4 +1,9 @@
+mod deferred;
+
 use crate::common::MetaStreamHeader;
+use crate::server::deferred::{
+  AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
+};
 use crate::util::{self, parse_ipaddr, parse_port_range, parse_socketaddr};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -44,128 +49,98 @@ pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<Serve
   })
 }
 
-async fn handle_connection(
+#[tracing::instrument]
+async fn handle_connection<Provider: ProxyConnectionProvider>(
   source: TcpStream,
   listen_port: SocketAddr,
-  build_proxy_connection: &ProxyConnectionProvider<'_, '_, '_>,
+  proxy_connection_provider: Provider,
 ) -> Result<()> {
   let peer_addr = source.peer_addr().context("Error fetching peer address")?;
-  println!(
+  tracing::info!(
     "Received connection on port {} from {:#?}",
     listen_port.port(),
     &peer_addr
   );
-  let (proxy_target, await_connection) = build_proxy_connection(peer_addr).await;
-  let proxy_connect_res = {
-    let timeout_future: Pin<Box<BoxFuture<Result<()>>>> = Box::pin(
-      async_std::future::timeout(
-        std::time::Duration::from_millis(5000),
-        future::pending::<Result<()>>(),
-      )
-      .map(|_| Err(anyhow::Error::msg("Timeout occurred")))
-      .fuse()
-      .boxed(),
-    );
-    let mut watcher_fd_holder: i32 = 0;
-    let watcher: Pin<Box<BoxFuture<Result<(), AnyErr>>>> = Box::pin(
-      util::PollerVortex::new(util::async_tcpstream_as_evented_fd(
-        &source,
-        &mut watcher_fd_holder,
-      ))
-      .map(|r| r.context("Client disconnected"))
-      .fuse()
-      .boxed(),
-    );
-    use futures::future::{AbortHandle, AbortRegistration, Abortable, FutureExt};
-    let abort_handler: Pin<Box<BoxFuture<Result<(), AnyErr>>>> = Box::pin(
-      futures::future::try_select(watcher, timeout_future)
-        .map(|_| -> Result<()> { Err(anyhow::Error::msg("Aborted by handler")) })
-        .fuse()
-        .boxed(),
-    );
-    let proxy_connect_res: Result<TcpStream> =
-      match futures::future::try_select(await_connection, abort_handler).await {
-        Ok(Either::Left((proxy_if_successful, resume_watcher))) => {
-          println!("Connected- dropping resumption of watcher");
-          std::mem::drop(resume_watcher);
-          println!("Watcher dropped");
-          // Ok(proxy_if_successful)
-          todo!()
-        }
-        Ok(Either::Right(_)) => Err(anyhow::Error::msg("Timeout awaiting connection to proxy")),
-        Err(Either::Left((e, _))) => Err(e).context("Failure trying to connect to proxy"),
-        Err(Either::Right((e, _))) => {
-          Err(e).context("Failure in source stream while connecting to proxy")
-        }
-      };
-    proxy_connect_res
-  };
-  let proxy_res = match proxy_connect_res {
-    Ok(proxy) => {
-      println!("Beginning proxying...");
-      util::proxy_tcp_streams(source, proxy).await
-    }
-    Err(e) => Err(e),
-  };
-  if let Err(e) = proxy_res {
-    eprintln!(
-      "Proxy execution from port {} to {:?} failed with error:\n{:#?}",
-      listen_port.port(),
-      proxy_target,
-      e
-    );
-  }
-  println!("Closed connection on port {}", listen_port.port());
-  Ok(())
+  let (proxy_target, proxy_connection) =
+    proxy_connection_provider.open_connection(peer_addr).await?;
+  tracing::info!("Beginning proxying...");
+  // let proxy_res = util::proxy_tcp_streams(source, proxy).await;
+  // if let Err(e) = proxy_res {
+  //   tracing::error!(
+  //     "Proxy execution from port {} to {:?} failed with error:\n{:#?}",
+  //     listen_port.port(),
+  //     proxy_target,
+  //     e
+  //   );
+  // }
+  // tracing::info!("Closed connection on port {}", listen_port.port());
+  // Ok(())
+  todo!()
 }
 
 // Accept connections from a TCP socket and forward them to new connections over AXL
 // Watch for failures on BuildConnection, which is responsible for timeout logic if needed
-async fn accept_loop(
+async fn accept_loop<Provider: ProxyConnectionProvider>(
   listener: &mut TcpListener,
-  addr: &SocketAddr,
-  build_connection: &ProxyConnectionProvider<'_, '_, '_>,
+  addr: SocketAddr,
+  proxy_provider: Provider,
 ) -> Result<()> {
   use async_std::prelude::*;
   use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
   listener
     .incoming()
-    .map_err(|e| e.into())
-    .try_for_each_concurrent(None, async move |stream| -> Result<()> {
-      Ok(
-        handle_connection(stream, addr.clone(), build_connection)
-          .await
-          .context("Error handling connection")?,
-      )
+    .map_err(|e| -> AnyErr { e.into() })
+    .scan((proxy_provider, addr), |baggage, res: Result<_, _>| {
+      future::ready(match res {
+        Ok(conn) => Some(Ok((conn, baggage.clone()))),
+        Err(e) => Some(Err(e)),
+      })
+    })
+    .try_for_each_concurrent(None, move |(stream, (prov, addr))| {
+      async move {
+        Ok(
+          handle_connection(stream, addr.clone(), prov)
+            .await
+            .context("Error handling connection")?,
+        )
+      }
+      .boxed()
     })
     .await
     .context("Failure running acceptance loop")?;
   Ok(())
 }
 
-type ProxyConnectionProvider<'a, 'b, 'c> = dyn Fn(
-  SocketAddr, // Peer address
-) -> future::BoxFuture<
-  'a,
-  (
-    MetaStreamHeader,
-    future::BoxFuture<'b, Result<&'c quinn::NewConnection>>,
-  ),
->;
+type ProxyConnectionOutput = (MetaStreamHeader, (quinn::SendStream, quinn::RecvStream));
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
-#[repr(transparent)]
-pub struct AxlClientIdentifier(Arc<String>);
+trait ProxyConnectionProvider: Send + Sync + Clone + std::fmt::Debug {
+  fn open_connection(&self, peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>>;
+}
 
-impl AxlClientIdentifier {
-  pub fn new<T: std::convert::Into<String>>(t: T) -> AxlClientIdentifier {
-    AxlClientIdentifier(t.into().into())
+#[derive(Clone)]
+struct BasicProxyConnectionProvider {
+  conn: quinn::Connection,
+}
+
+impl BasicProxyConnectionProvider {
+  pub fn new(conn: quinn::Connection) -> BasicProxyConnectionProvider {
+    BasicProxyConnectionProvider { conn }
   }
 }
 
-impl std::fmt::Debug for AxlClientIdentifier {
+impl ProxyConnectionProvider for BasicProxyConnectionProvider {
+  fn open_connection(&self, _peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>> {
+    async move {
+      let (send, recv) = self.conn.open_bi().await?;
+      Ok((MetaStreamHeader::new(), (send, recv)))
+    }
+    .boxed()
+  }
+}
+
+impl std::fmt::Debug for BasicProxyConnectionProvider {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "(axl ({}))", self.0)
+    f.write_str("<BasicProxyConnectionProvider>")
   }
 }
 
@@ -201,24 +176,6 @@ impl Future for TcpConnection<'_> {
     let res = futures::ready!(f.poll(cx));
     Poll::Ready(res.map(|_| (id, addr)))
   }
-}
-
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
-pub enum TunnelServerEvent {
-  DebugMessage(String),
-  Open(SocketAddr),
-  Identified(AxlClientIdentifier, SocketAddr),
-  Close(AxlClientIdentifier, SocketAddr),
-  Failure(SocketAddr, String),
-}
-
-pub trait TunnelManager: Send + std::fmt::Debug + Sync {
-  fn handle_connection<'connection, 'manager: 'connection>(
-    &'manager self,
-    events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
-    tunnel: quinn::NewConnection,
-    shutdown_notifier: triggered::Listener,
-  ) -> futures::future::BoxFuture<'connection, Result<()>>;
 }
 
 #[derive(Debug)]
@@ -276,24 +233,28 @@ impl TcpTunnelManager {
         })?
     };
     let bind_addr = SocketAddr::new(bind_ip, next_port);
-    info!("Bound client on address {:?}", bind_addr);
+    tracing::info!(
+      "Binding client {:?} ({:?}) on address {:?}",
+      id,
+      remote_addr,
+      bind_addr
+    );
+    let mut listener = TcpListener::bind(bind_addr).await?;
+    let quinn::NewConnection {
+      connection: conn,
+      bi_streams: _bi,
+      ..
+    } = tunnel;
 
-    // TODO: Handle connection
+    let connection_provider = BasicProxyConnectionProvider::new(conn);
+    accept_loop(&mut listener, bind_addr, connection_provider).await?;
 
-    // {
-    //   use futures::AsyncWriteExt;
-    //   let (mut send, _recv) = tunnel.connection.open_bi().await?;
-    //   send.write(&[42u8]).await?;
-    //   send.finish();
-    //   send.close().await;
-    // }
+    // tunnel
+    //   .connection
+    //   .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
 
-    tunnel
-      .connection
-      .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
-
-    Err(AnyErr::msg("Fake handler error"))
-    // Ok(true)
+    // Err(AnyErr::msg("Fake handler error"))
+    Ok(())
   }
 }
 
@@ -305,93 +266,6 @@ impl TunnelManager for TcpTunnelManager {
     shutdown_notifier: triggered::Listener,
   ) -> futures::future::BoxFuture<'connection, Result<()>> {
     TcpTunnelManager::handle_connection(self, events, tunnel, shutdown_notifier).boxed()
-  }
-}
-
-#[derive(Debug)]
-pub struct ConcurrentDeferredTunnelServer<Manager>
-where
-  Manager: TunnelManager + Send + Sync + std::fmt::Debug,
-{
-  manager: Manager,
-}
-
-impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manager> {
-  pub fn new(manager: Manager) -> ConcurrentDeferredTunnelServer<Manager> {
-    ConcurrentDeferredTunnelServer { manager }
-  }
-
-  #[tracing::instrument(skip(stream, shutdown_notifier))]
-  pub fn handle_incoming<'a>(
-    &'a self,
-    stream: impl futures::stream::Stream<Item = quinn::NewConnection> + Send + 'a,
-    shutdown_notifier: triggered::Listener,
-  ) -> futures::stream::BoxStream<'a, TunnelServerEvent> {
-    use futures::stream::{BoxStream, TryStreamExt};
-    let streams = stream
-      // Drop new connections once shutdown has been requested
-      .take_until(shutdown_notifier.clone())
-      // Mix a copy of the shutdown notifier into each element of the stream
-      .scan(shutdown_notifier.clone(), |notif, connection| {
-        future::ready(Some((connection, notif.clone())))
-      })
-      // Convert into a TryStream, within which we'll handle failure reporting later in the pipeline
-      .map(|x| -> Result<_, AnyErr> { Ok(x) })
-      // Filter out new connections during shutdown
-      .try_filter(|(conn, notifier): &(quinn::NewConnection, triggered::Listener)| {
-        let triggered = notifier.is_triggered();
-        let addr = conn.connection.remote_address();
-        async move {
-          if triggered {
-            // TODO: "Not accepting new tunnel connections because of impending shutdown" message
-            eprintln!("Refusing connection from {:?} because shutdown is already in progress", addr);
-            return false;
-          }
-          true
-        }
-      })
-      .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
-        Ok(generate_stream(move |yielder| self.connection_lifecycle(yielder, conn, notifier)).boxed())
-      })
-      .filter_map(|x: Result<_, _>| {
-        future::ready(match x {
-          Ok(s) => Some(s),
-          Err(e) => {
-            eprintln!("Failure in connection {:#?}", e);
-            None
-          }
-        })
-      })
-      .map(|stream: BoxStream<TunnelServerEvent>| stream) // no-op to aid type inference in IDEs
-      ;
-
-    util::merge_streams(streams)
-  }
-
-  #[tracing::instrument(skip(z, tunnel, shutdown_notifier))]
-  fn connection_lifecycle(
-    &self,
-    mut z: gen_z::Yielder<TunnelServerEvent>,
-    tunnel: quinn::NewConnection,
-    shutdown_notifier: triggered::Listener,
-  ) -> BoxFuture<()> {
-    let addr = tunnel.connection.remote_address();
-    async move {
-      // TODO: Build identifier based on handshake / authentication session
-      z.send(TunnelServerEvent::Open(addr)).await;
-      let err = self
-        .manager
-        .handle_connection(&mut z, tunnel, shutdown_notifier)
-        .map(move |x| match x {
-          Err(e) => Some(TunnelServerEvent::Failure(addr, e.to_string())),
-          Ok(_res) => None,
-        })
-        .await;
-      if let Some(err) = err {
-        z.send(err).await;
-      }
-    }
-    .boxed()
   }
 }
 
@@ -415,8 +289,8 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .and_then(async move |connecting| {
       // When a new connection arrives, establish the connection formally, and pass it on
       let tunnel = connecting.await?; // Performs TLS handshake and migration
-      // TODO: Protocol header can occur here, or as part of the later "binding" phase
-      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
+                                      // TODO: Protocol header can occur here, or as part of the later "binding" phase
+                                      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
       Ok(tunnel)
     })
     .inspect_err(|e| {

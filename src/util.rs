@@ -2,6 +2,7 @@
 use anyhow::{Error as AnyErr, Result};
 use async_std::net::TcpStream;
 use futures::future::*;
+use futures::io::{AsyncRead, AsyncWrite};
 use futures::stream::{self, SelectAll, Stream, StreamExt};
 use futures::AsyncReadExt;
 use quinn::{
@@ -77,11 +78,17 @@ pub fn validate_port_range(v: String) -> Result<(), String> {
   parse_port_range(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
-pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> Result<()> {
-  let (mut reader, mut writer) = (&mut source).split();
-  let (mut proxy_reader, mut proxy_writer) = (&mut proxy).split();
-  let proxy_i2o = Box::pin(async_std::io::copy(&mut reader, &mut proxy_writer).fuse());
-  let proxy_o2i = Box::pin(async_std::io::copy(&mut proxy_reader, &mut writer).fuse());
+pub async fn proxy_generic_streams<
+  SenderA: AsyncWrite + Unpin,
+  ReaderA: AsyncRead + Unpin,
+  SenderB: AsyncWrite + Unpin,
+  ReaderB: AsyncRead + Unpin,
+>(
+  (mut sender_a, mut reader_a): (&mut SenderA, &mut ReaderA),
+  (mut sender_b, mut reader_b): (&mut SenderB, &mut ReaderB),
+) -> Either<(), ()> {
+  let proxy_i2o = Box::pin(async_std::io::copy(&mut reader_a, &mut sender_b).fuse());
+  let proxy_o2i = Box::pin(async_std::io::copy(&mut reader_b, &mut sender_a).fuse());
   let res: Either<(), ()> = match futures::future::try_select(proxy_i2o, proxy_o2i).await {
     Ok(Either::Left((_i2o, resume_o2i))) => {
       println!("Source connection closed gracefully, shutting down proxy");
@@ -110,6 +117,17 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
       Either::Left(())
     }
   };
+  res
+}
+
+pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> Result<()> {
+  let (mut reader, mut writer) = (&mut source).split();
+  let (mut proxy_reader, mut proxy_writer) = (&mut proxy).split();
+  let res = proxy_generic_streams(
+    (&mut proxy_writer, &mut reader),
+    (&mut writer, &mut proxy_reader),
+  )
+  .await;
   std::mem::drop(reader);
   std::mem::drop(writer);
   std::mem::drop(proxy_reader);
