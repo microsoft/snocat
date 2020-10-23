@@ -7,13 +7,13 @@ use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
 };
-use tracing::instrument;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   path::{Path, PathBuf},
   sync::Arc,
   task::{Context, Poll},
 };
+use tracing::instrument;
 
 #[instrument]
 pub async fn certgen_main(output_base_path: String, host_san: String) -> Result<()> {

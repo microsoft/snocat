@@ -1,4 +1,3 @@
-use tracing::{instrument, trace, info};
 use crate::common::MetaStreamHeader;
 use crate::util::{self, parse_ipaddr, parse_port_range, parse_socketaddr};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
@@ -21,6 +20,7 @@ use std::{
   pin::Pin,
   task::{Context, Poll},
 };
+use tracing::{info, instrument, trace};
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ServerArgs {
@@ -169,33 +169,6 @@ impl std::fmt::Debug for AxlClientIdentifier {
   }
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
-pub enum TunnelServerEvent {
-  DebugMessage(String),
-  Open(SocketAddr),
-  Identified(AxlClientIdentifier, SocketAddr),
-  Close(AxlClientIdentifier, SocketAddr),
-  Failure(AxlClientIdentifier, SocketAddr, String),
-}
-
-// pub trait TunnelManager<'stream, U: Stream<Item = quinn::NewConnection> + 'stream> {
-//   fn handle_incoming<'a>(
-//     &'a self,
-//     stream: U,
-//     shutdown_notifier: triggered::Listener,
-//   ) -> futures::stream::BoxStream<'b, TunnelServerEvent>;
-// }
-//
-// impl TunnelManager<stream::BoxStream<'_, quinn::NewConnection>> for TcpRangeBindingTunnelServer {
-//   fn handle_incoming<'a, 'b : 'a>(
-//     &'a self,
-//     stream: stream::BoxStream<'b, quinn::NewConnection>,
-//     shutdown_notifier: triggered::Listener,
-//   ) -> stream::BoxStream<'b, TunnelServerEvent> {
-//     TcpRangeBindingTunnelServer::handle_incoming(self, stream, shutdown_notifier)
-//   }
-// }
-
 struct TcpConnection<'a> {
   port: u16,
   addr: SocketAddr,
@@ -230,27 +203,122 @@ impl Future for TcpConnection<'_> {
   }
 }
 
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
+pub enum TunnelServerEvent {
+  DebugMessage(String),
+  Open(SocketAddr),
+  Identified(AxlClientIdentifier, SocketAddr),
+  Close(AxlClientIdentifier, SocketAddr),
+  Failure(SocketAddr, String),
+}
+
+pub trait TunnelManager: Send + std::fmt::Debug + Sync {
+  fn handle_connection<'connection, 'manager: 'connection>(
+    &'manager self,
+    events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
+    tunnel: quinn::NewConnection,
+    shutdown_notifier: triggered::Listener,
+  ) -> futures::future::BoxFuture<'connection, Result<()>>;
+}
+
 #[derive(Debug)]
-pub struct TcpRangeBindingTunnelServer {
+pub struct TcpTunnelManager {
   range: std::ops::RangeInclusive<u16>,
   bind_ip: IpAddr,
   bound_ports: Arc<Mutex<std::collections::HashSet<u16>>>,
 }
 
-impl TcpRangeBindingTunnelServer {
+impl TcpTunnelManager {
   pub fn new<T: Into<u16>>(
     bind_port_range: std::ops::RangeInclusive<T>,
     bind_ip: IpAddr,
-  ) -> TcpRangeBindingTunnelServer {
+  ) -> TcpTunnelManager {
     let (start, end): (u16, u16) = {
       let (a, b) = bind_port_range.into_inner();
       (a.into(), b.into())
     };
-    TcpRangeBindingTunnelServer {
+    TcpTunnelManager {
       range: std::ops::RangeInclusive::new(start, end),
       bind_ip,
       bound_ports: Default::default(),
     }
+  }
+
+  async fn handle_connection(
+    &self,
+    z: &mut gen_z::Yielder<TunnelServerEvent>,
+    tunnel: quinn::NewConnection,
+    shutdown_notifier: triggered::Listener,
+  ) -> Result<()> {
+    let port_range = self.range.clone();
+    let bind_ip = self.bind_ip;
+    let bound_ports = self.bound_ports.clone();
+    if shutdown_notifier.is_triggered() {
+      return Err(AnyErr::msg("Connection aborted due to pre-closure"));
+    }
+
+    let remote_addr = tunnel.connection.remote_address();
+    let id = AxlClientIdentifier::new(remote_addr.to_string());
+    z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
+      .await;
+    // TODO: register a connection *only after* session authentication (make an async authn trait)
+    let next_port: u16 = {
+      let lock = bound_ports.lock().await;
+      port_range
+        .into_iter()
+        .filter(|test_port| !lock.contains(test_port))
+        .min()
+        .ok_or_else(|| {
+          AnyErr::msg(format!(
+            "No free ports available in range {:?}",
+            &self.range
+          ))
+        })?
+    };
+    let bind_addr = SocketAddr::new(bind_ip, next_port);
+    info!("Bound client on address {:?}", bind_addr);
+
+    // TODO: Handle connection
+
+    // {
+    //   use futures::AsyncWriteExt;
+    //   let (mut send, _recv) = tunnel.connection.open_bi().await?;
+    //   send.write(&[42u8]).await?;
+    //   send.finish();
+    //   send.close().await;
+    // }
+
+    tunnel
+      .connection
+      .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
+
+    Err(AnyErr::msg("Fake handler error"))
+    // Ok(true)
+  }
+}
+
+impl TunnelManager for TcpTunnelManager {
+  fn handle_connection<'connection, 'manager: 'connection>(
+    &'manager self,
+    events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
+    tunnel: quinn::NewConnection,
+    shutdown_notifier: triggered::Listener,
+  ) -> futures::future::BoxFuture<'connection, Result<()>> {
+    TcpTunnelManager::handle_connection(self, events, tunnel, shutdown_notifier).boxed()
+  }
+}
+
+#[derive(Debug)]
+pub struct ConcurrentDeferredTunnelServer<Manager>
+where
+  Manager: TunnelManager + Send + Sync + std::fmt::Debug,
+{
+  manager: Manager,
+}
+
+impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manager> {
+  pub fn new(manager: Manager) -> ConcurrentDeferredTunnelServer<Manager> {
+    ConcurrentDeferredTunnelServer { manager }
   }
 
   #[tracing::instrument(skip(stream, shutdown_notifier))]
@@ -260,7 +328,7 @@ impl TcpRangeBindingTunnelServer {
     shutdown_notifier: triggered::Listener,
   ) -> futures::stream::BoxStream<'a, TunnelServerEvent> {
     use futures::stream::{BoxStream, TryStreamExt};
-    let streams: BoxStream<BoxStream<TunnelServerEvent>> = stream
+    let streams = stream
       // Drop new connections once shutdown has been requested
       .take_until(shutdown_notifier.clone())
       // Mix a copy of the shutdown notifier into each element of the stream
@@ -283,7 +351,7 @@ impl TcpRangeBindingTunnelServer {
         }
       })
       .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
-        Ok(generate_stream(async move |yielder| self.connection_lifecycle(yielder, conn, notifier).await).boxed())
+        Ok(generate_stream(move |yielder| self.connection_lifecycle(yielder, conn, notifier)).boxed())
       })
       .filter_map(|x: Result<_, _>| {
         future::ready(match x {
@@ -294,95 +362,35 @@ impl TcpRangeBindingTunnelServer {
           }
         })
       })
-      .boxed()
+      .map(|stream: BoxStream<TunnelServerEvent>| stream) // no-op to aid type inference in IDEs
       ;
 
     util::merge_streams(streams)
   }
 
   #[tracing::instrument(skip(z, tunnel, shutdown_notifier))]
-  async fn connection_lifecycle(
+  fn connection_lifecycle(
     &self,
     mut z: gen_z::Yielder<TunnelServerEvent>,
-    mut tunnel: quinn::NewConnection,
-    shutdown_notifier: triggered::Listener,
-  ) -> () {
-    let addr = tunnel.connection.remote_address();
-    // TODO: Build identifier based on handshake / authentication session
-    z.send(TunnelServerEvent::Open(addr));
-    let id = self
-      .handle_identification(&mut tunnel, &shutdown_notifier)
-      .await
-      .unwrap(); // TODO: Fallible
-    z.send(TunnelServerEvent::Identified(id.clone(), addr));
-    let handler_id = id.clone();
-    let res = self
-      .handle_connection(&mut z, id.clone(), tunnel, shutdown_notifier)
-      .map(move |x| match x {
-        Err(e) => TunnelServerEvent::Failure(handler_id.clone(), addr, e.to_string()),
-        Ok(res) => TunnelServerEvent::Close(handler_id.clone(), addr),
-      })
-      .await;
-    z.send(res).await;
-  }
-
-  async fn handle_identification(
-    &self,
-    tunnel: &mut quinn::NewConnection,
-    shutdown_notifier: &triggered::Listener,
-  ) -> Result<AxlClientIdentifier> {
-    Ok(AxlClientIdentifier::new(
-      tunnel.connection.remote_address().to_string(),
-    ))
-  }
-
-  fn handle_connection(
-    &self,
-    z: &mut gen_z::Yielder<TunnelServerEvent>,
-    id: AxlClientIdentifier,
     tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,
-  ) -> BoxFuture<Result<bool>> {
-    let port_range = self.range.clone();
-    let bind_ip = self.bind_ip;
-    let bound_ports = self.bound_ports.clone();
-
+  ) -> BoxFuture<()> {
+    let addr = tunnel.connection.remote_address();
     async move {
-      // TODO: register a connection *only after* session authentication (make an async authn trait)
-      let next_port: u16 = {
-        let lock = bound_ports.lock().await;
-        port_range
-          .into_iter()
-          .filter(|test_port| !lock.contains(test_port))
-          .min()
-          .ok_or_else(|| {
-            AnyErr::msg(format!(
-              "No free ports available in range {:?}",
-              &self.range
-            ))
-          })?
-      };
-      let bind_addr = SocketAddr::new(bind_ip, next_port);
-      info!("Bound client on address {:?}", bind_addr);
-
-      // TODO: Handle connection
-
-      // {
-      //   use futures::AsyncWriteExt;
-      //   let (mut send, _recv) = tunnel.connection.open_bi().await?;
-      //   send.write(&[42u8]).await?;
-      //   send.finish();
-      //   send.close().await;
-      // }
-
-      tunnel
-        .connection
-        .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
-
-      Err(AnyErr::msg("Fake handler error"))
-      // Ok(true)
+      // TODO: Build identifier based on handshake / authentication session
+      z.send(TunnelServerEvent::Open(addr)).await;
+      let err = self
+        .manager
+        .handle_connection(&mut z, tunnel, shutdown_notifier)
+        .map(move |x| match x {
+          Err(e) => Some(TunnelServerEvent::Failure(addr, e.to_string())),
+          Ok(_res) => None,
+        })
+        .await;
+      if let Some(err) = err {
+        z.send(err).await;
+      }
     }
-    .fuse()
     .boxed()
   }
 }
@@ -396,10 +404,8 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_addr)?
   };
 
-  let mut manager/*: Box<dyn TunnelManager<_>>*/ = Box::new(TcpRangeBindingTunnelServer::new(
-    config.tcp_bind_port_range,
-    config.tcp_bind_ip,
-  ));
+  let manager = TcpTunnelManager::new(config.tcp_bind_port_range, config.tcp_bind_ip);
+  let server = Box::new(ConcurrentDeferredTunnelServer::new(manager));
 
   use futures::stream::TryStreamExt;
   let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
@@ -408,7 +414,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .map(|x| -> Result<_> { Ok(x) })
     .and_then(async move |connecting| {
       // When a new connection arrives, establish the connection formally, and pass it on
-      let tunnel = connecting.await?;
+      let tunnel = connecting.await?; // Performs TLS handshake and migration
       // TODO: Protocol header can occur here, or as part of the later "binding" phase
       // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
       Ok(tunnel)
@@ -419,11 +425,11 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .filter_map(async move |x| x.ok()) // only keep the successful connections
     .boxed();
 
-  let mut events = manager
+  let events = server
     .handle_incoming(connections, shutdown_notifier.clone())
     .fuse();
   {
-    let mut signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
+    let signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
     let signal_watcher = signal_watcher
       .filter(|&x| future::ready(x == libc::SIGINT))
       .take(1)
@@ -457,6 +463,7 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
   let mut server_config = quinn::ServerConfig::default();
   server_config.transport = Arc::new(transport_config);
+  server_config.migration(true);
   let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
   cfg_builder.protocols(util::ALPN_QUIC_HTTP);
   let cert = quinn::Certificate::from_der(&cert_der)?;
