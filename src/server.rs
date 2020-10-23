@@ -8,6 +8,7 @@ use futures::{
   future, pin_mut, select_biased,
   stream::{self, Stream, StreamExt},
 };
+use gen_z::gen_z as generate_stream;
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
@@ -153,7 +154,13 @@ type ProxyConnectionProvider<'a, 'b, 'c> = dyn Fn(
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
-pub struct AxlClientIdentifier(String);
+pub struct AxlClientIdentifier(Arc<String>);
+
+impl AxlClientIdentifier {
+  pub fn new<T: std::convert::Into<String>>(t: T) -> AxlClientIdentifier {
+    AxlClientIdentifier(t.into().into())
+  }
+}
 
 impl std::fmt::Debug for AxlClientIdentifier {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -272,24 +279,8 @@ impl TcpRangeBindingTunnelServer {
           true
         }
       })
-      .and_then(async move |(mut conn, mut notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
-        let addr = conn.connection.remote_address();
-        // TODO: Build identifier based on handshake / authentication session
-        use async_stream::stream as sgen;
-
-        Ok(sgen! {
-          yield TunnelServerEvent::Open(addr);
-          let id = self.handle_identification(&mut conn, &mut notifier).await.unwrap();// TODO: Fallible
-          yield TunnelServerEvent::Identified(id.clone(), addr);
-          let handler_id = id.clone();
-          let res =
-            self.handle_connection(id.clone(), conn, notifier)
-              .map(move |x| match x {
-                Err(e) => TunnelServerEvent::Failure(handler_id.clone(), addr, e.to_string()),
-                Ok(res) => TunnelServerEvent::Close(handler_id.clone(), addr)
-              }).await;
-          yield res;
-        }.boxed())
+      .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
+        Ok(generate_stream(async move |yielder| self.connection_lifecycle(yielder, conn, notifier).await).boxed())
       })
       .filter_map(|x: Result<_, _>| {
         future::ready(match x {
@@ -306,18 +297,44 @@ impl TcpRangeBindingTunnelServer {
     util::merge_streams(streams)
   }
 
+  async fn connection_lifecycle(
+    &self,
+    mut z: gen_z::Yielder<TunnelServerEvent>,
+    mut tunnel: quinn::NewConnection,
+    shutdown_notifier: triggered::Listener,
+  ) -> () {
+    let addr = tunnel.connection.remote_address();
+    // TODO: Build identifier based on handshake / authentication session
+    z.send(TunnelServerEvent::Open(addr));
+    let id = self
+      .handle_identification(&mut tunnel, &shutdown_notifier)
+      .await
+      .unwrap(); // TODO: Fallible
+    z.send(TunnelServerEvent::Identified(id.clone(), addr));
+    let handler_id = id.clone();
+    let res = self
+      .handle_connection(&mut z, id.clone(), tunnel, shutdown_notifier)
+      .map(move |x| match x {
+        Err(e) => TunnelServerEvent::Failure(handler_id.clone(), addr, e.to_string()),
+        Ok(res) => TunnelServerEvent::Close(handler_id.clone(), addr),
+      })
+      .await;
+    z.send(res).await;
+  }
+
   async fn handle_identification(
     &self,
     tunnel: &mut quinn::NewConnection,
-    shutdown_notifier: &mut triggered::Listener,
+    shutdown_notifier: &triggered::Listener,
   ) -> Result<AxlClientIdentifier> {
-    Ok(AxlClientIdentifier(
+    Ok(AxlClientIdentifier::new(
       tunnel.connection.remote_address().to_string(),
     ))
   }
 
   fn handle_connection(
     &self,
+    z: &mut gen_z::Yielder<TunnelServerEvent>,
     id: AxlClientIdentifier,
     tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,

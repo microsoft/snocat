@@ -248,6 +248,7 @@ dependencies = [
  "futures",
  "futures-io",
  "futures-test",
+ "gen-z",
  "libc",
  "mio",
  "quinn",
@@ -612,6 +613,15 @@ dependencies = [
  "proc-macro-hack",
  "proc-macro-nested",
  "slab",
+]
+
+[[package]]
+name = "gen-z"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e87038e64f38cb7fcd57f54c8d6654ad65712babbf70f38d1834d3150ad2415"
+dependencies = [
+ "futures",
 ]
 
 [[package]]
