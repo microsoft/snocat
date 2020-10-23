@@ -82,6 +82,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .boxed()
     };
 
+    println!("Stream listener installed; waiting for bistreams...");
     let mut connection_id: ConnectionId = 0;
     bi_streams
       .map_err(|e| e.into())

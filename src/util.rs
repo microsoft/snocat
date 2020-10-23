@@ -89,6 +89,7 @@ pub async fn proxy_generic_streams<
 ) -> Either<(), ()> {
   let proxy_i2o = Box::pin(async_std::io::copy(&mut reader_a, &mut sender_b).fuse());
   let proxy_o2i = Box::pin(async_std::io::copy(&mut reader_b, &mut sender_a).fuse());
+  println!("Polling proxy streams...");
   let res: Either<(), ()> = match futures::future::try_select(proxy_i2o, proxy_o2i).await {
     Ok(Either::Left((_i2o, resume_o2i))) => {
       println!("Source connection closed gracefully, shutting down proxy");
@@ -127,7 +128,7 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
     (&mut proxy_writer, &mut reader),
     (&mut writer, &mut proxy_reader),
   )
-  .await;
+    .await;
   std::mem::drop(reader);
   std::mem::drop(writer);
   std::mem::drop(proxy_reader);
@@ -148,6 +149,34 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
           shutdown_failure
         );
       }
+    }
+  }
+  Ok(())
+}
+
+pub async fn proxy_from_tcp_stream<
+  Sender: AsyncWrite + Unpin,
+  Reader: AsyncRead + Unpin,
+>(mut source: TcpStream, (mut proxy_writer, mut proxy_reader): (Sender, Reader)) -> Result<()> {
+  let (mut reader, mut writer) = (&mut source).split();
+  let res = proxy_generic_streams(
+    (&mut proxy_writer, &mut reader),
+    (&mut writer, &mut proxy_reader),
+  )
+  .await;
+  std::mem::drop(reader);
+  std::mem::drop(writer);
+  match res {
+    Either::Left(_) => {
+      if let Err(shutdown_failure) = source.shutdown(async_std::net::Shutdown::Both) {
+        eprintln!(
+          "Failed to shut down source connection with error:\n{:#?}",
+          shutdown_failure
+        );
+      }
+    }
+    Either::Right(_) => {
+      // Close proxy connection somehow?
     }
   }
   Ok(())

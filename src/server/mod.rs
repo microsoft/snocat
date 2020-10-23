@@ -11,6 +11,7 @@ use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
   future, pin_mut, select_biased,
+  future::FutureExt,
   stream::{self, Stream, StreamExt},
 };
 use gen_z::gen_z as generate_stream;
@@ -61,21 +62,23 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
     listen_port.port(),
     &peer_addr
   );
-  let (proxy_target, proxy_connection) =
+  let (proxy_header, mut proxy_connection) =
     proxy_connection_provider.open_connection(peer_addr).await?;
+  tracing::info!("Sending HELO...");
+  // proxy_connection.0.write(&[0u8;0]).await;
+
   tracing::info!("Beginning proxying...");
-  // let proxy_res = util::proxy_tcp_streams(source, proxy).await;
-  // if let Err(e) = proxy_res {
-  //   tracing::error!(
-  //     "Proxy execution from port {} to {:?} failed with error:\n{:#?}",
-  //     listen_port.port(),
-  //     proxy_target,
-  //     e
-  //   );
-  // }
-  // tracing::info!("Closed connection on port {}", listen_port.port());
-  // Ok(())
-  todo!()
+  let proxy_res = util::proxy_from_tcp_stream(source, proxy_connection).await;
+  if let Err(e) = proxy_res {
+    tracing::error!(
+      "Proxy execution from port {} to {:?} failed with error:\n{:#?}",
+      listen_port.port(),
+      proxy_header,
+      e
+    );
+  }
+  tracing::info!("Closed connection on port {}", listen_port.port());
+  Ok(())
 }
 
 // Accept connections from a TCP socket and forward them to new connections over AXL
@@ -220,8 +223,8 @@ impl TcpTunnelManager {
       .await;
     // TODO: register a connection *only after* session authentication (make an async authn trait)
     let next_port: u16 = {
-      let lock = bound_ports.lock().await;
-      port_range
+      let mut lock = bound_ports.lock().await;
+      let port = port_range
         .into_iter()
         .filter(|test_port| !lock.contains(test_port))
         .min()
@@ -230,31 +233,53 @@ impl TcpTunnelManager {
             "No free ports available in range {:?}",
             &self.range
           ))
-        })?
+        })?;
+      lock.insert(port);
+      port
     };
-    let bind_addr = SocketAddr::new(bind_ip, next_port);
-    tracing::info!(
-      "Binding client {:?} ({:?}) on address {:?}",
-      id,
-      remote_addr,
-      bind_addr
-    );
-    let mut listener = TcpListener::bind(bind_addr).await?;
-    let quinn::NewConnection {
-      connection: conn,
-      bi_streams: _bi,
-      ..
-    } = tunnel;
+    let res: Result<(), _> = {
+      let bind_addr = SocketAddr::new(bind_ip, next_port);
+      tracing::info!(
+        "Binding client {:?} ({:?}) on address {:?}",
+        id,
+        remote_addr,
+        bind_addr
+      );
+      let mut listener = TcpListener::bind(bind_addr).await?;
+      let quinn::NewConnection {
+        connection: conn,
+        bi_streams: _bi,
+        ..
+      } = tunnel;
 
-    let connection_provider = BasicProxyConnectionProvider::new(conn);
-    accept_loop(&mut listener, bind_addr, connection_provider).await?;
+
+      // TODO: Periodically attempt to send small amounts of data, in order to trigger a connection failure when the connection has been lost
+      let connection_provider = BasicProxyConnectionProvider::new(conn);
+      future::select(
+        accept_loop(&mut listener, bind_addr, connection_provider).boxed(),
+        shutdown_notifier
+          .map(|_| -> Result<()> { Err(AnyErr::msg("Shutdown aborting acceptance loop")) })
+          .boxed()
+      ).map(|x| match x {
+        Either::Left((x, _)) => x,
+        Either::Right((x, _)) => x
+      }).await
+    };
+
+    // On success or failure, unbind port
+    {
+      let mut lock = bound_ports.lock().await;
+      lock.remove(&next_port);
+      tracing::trace!("Unbound port {}", next_port);
+    }
+
+    res
 
     // tunnel
     //   .connection
     //   .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
 
     // Err(AnyErr::msg("Fake handler error"))
-    Ok(())
   }
 }
 
@@ -334,7 +359,8 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   config.use_stateless_retry(true);
   let mut transport_config = TransportConfig::default();
   transport_config.stream_window_uni(0);
-  transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+  transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+  transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(30)));
   let mut server_config = quinn::ServerConfig::default();
   server_config.transport = Arc::new(transport_config);
   server_config.migration(true);
