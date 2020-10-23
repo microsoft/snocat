@@ -1,3 +1,4 @@
+use tracing::{instrument, trace, info};
 use crate::common::MetaStreamHeader;
 use crate::util::{self, parse_ipaddr, parse_port_range, parse_socketaddr};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
@@ -229,6 +230,7 @@ impl Future for TcpConnection<'_> {
   }
 }
 
+#[derive(Debug)]
 pub struct TcpRangeBindingTunnelServer {
   range: std::ops::RangeInclusive<u16>,
   bind_ip: IpAddr,
@@ -251,6 +253,7 @@ impl TcpRangeBindingTunnelServer {
     }
   }
 
+  #[tracing::instrument(skip(stream, shutdown_notifier))]
   pub fn handle_incoming<'a>(
     &'a self,
     stream: impl futures::stream::Stream<Item = quinn::NewConnection> + Send + 'a,
@@ -297,6 +300,7 @@ impl TcpRangeBindingTunnelServer {
     util::merge_streams(streams)
   }
 
+  #[tracing::instrument(skip(z, tunnel, shutdown_notifier))]
   async fn connection_lifecycle(
     &self,
     mut z: gen_z::Yielder<TunnelServerEvent>,
@@ -359,7 +363,7 @@ impl TcpRangeBindingTunnelServer {
           })?
       };
       let bind_addr = SocketAddr::new(bind_ip, next_port);
-      println!("Bound client on address {:?}", bind_addr);
+      info!("Bound client on address {:?}", bind_addr);
 
       // TODO: Handle connection
 
@@ -383,6 +387,7 @@ impl TcpRangeBindingTunnelServer {
   }
 }
 
+#[tracing::instrument]
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   let quinn_config = build_quinn_config(&config)?;
   let (_endpoint, incoming) = {
@@ -409,7 +414,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       Ok(tunnel)
     })
     .inspect_err(|e| {
-      eprintln!("Connection failure during stream pickup: {:#?}", e);
+      tracing::error!("Connection failure during stream pickup: {:#?}", e);
     })
     .filter_map(async move |x| x.ok()) // only keep the successful connections
     .boxed();
@@ -423,7 +428,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .filter(|&x| future::ready(x == libc::SIGINT))
       .take(1)
       .map(|_| {
-        println!("\nShutdown triggered");
+        tracing::debug!("\nShutdown triggered");
         // Tell manager to start shutting down tunnels; new adoption requests should return errors
         trigger_shutdown.trigger();
         None
@@ -432,7 +437,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     futures::stream::select(signal_watcher, events.map(|e| Some(e)))
       .filter_map(|x| future::ready(x))
       .for_each(async move |ev| {
-        println!("Event: {:#?}", ev);
+        tracing::trace!("Event: {:#?}", ev);
       })
       .await;
   }

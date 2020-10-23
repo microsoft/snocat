@@ -22,7 +22,7 @@ use std::{
 };
 use tokio::io::PollEvented;
 use tokio::runtime::Runtime;
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, trace};
 use tracing_futures::Instrument as _;
 
 mod certgen;
@@ -38,6 +38,16 @@ use util::{
 
 // Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {
+  // let collector = tracing_subscriber::fmt()
+  //   .with_max_level(tracing::Level::TRACE)
+  //   .finish();
+  let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("quinn=warn,quinn_proto=warn,info"));
+  let collector = tracing_subscriber::fmt()
+    .with_env_filter(env_filter)
+    .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+    .finish();
+  tracing::subscriber::set_global_default(collector).expect("Logger init must succeed");
   let app = App::new(env!("CARGO_PKG_NAME"))
     .version(env!("CARGO_PKG_VERSION"))
     .about(env!("CARGO_PKG_DESCRIPTION"))
@@ -144,8 +154,8 @@ fn main() {
   let matches = app.get_matches();
   let mode = matches.subcommand_name().unwrap_or("<No subcommand?>");
   match async_std::task::block_on(main_args_handler(&matches)) {
-    Err(err) => eprintln!("{0} failed with error:\n{1:#?}", mode, err),
-    Ok(_) => println!("{} exited successfully", mode),
+    Err(err) => tracing::error!("{0} failed with error:\n{1:#?}", mode, err),
+    Ok(_) => tracing::info!("{} exited successfully", mode),
   }
 }
 
