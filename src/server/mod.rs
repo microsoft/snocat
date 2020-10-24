@@ -10,8 +10,9 @@ use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
-  future, pin_mut, select_biased,
+  future,
   future::FutureExt,
+  pin_mut, select_biased,
   stream::{self, Stream, StreamExt},
 };
 use gen_z::gen_z as generate_stream;
@@ -50,34 +51,40 @@ pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<Serve
   })
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(source, proxy_connection_provider), err)]
 async fn handle_connection<Provider: ProxyConnectionProvider>(
   source: TcpStream,
-  listen_port: SocketAddr,
+  if_addr: SocketAddr,
   proxy_connection_provider: Provider,
 ) -> Result<()> {
   let peer_addr = source.peer_addr().context("Error fetching peer address")?;
-  tracing::info!(
-    "Received connection on port {} from {:#?}",
-    listen_port.port(),
-    &peer_addr
-  );
+  tracing::info!(peer_addr = ?peer_addr, "Peer address identified as {:?}", peer_addr);
   let (proxy_header, mut proxy_connection) =
     proxy_connection_provider.open_connection(peer_addr).await?;
+
   tracing::info!("Sending HELO...");
-  // proxy_connection.0.write(&[0u8;0]).await;
+  let mut buffer = [0u8; 64];
+  use std::io::Write;
+  write!(&mut buffer[..], "HELO").unwrap();
+  proxy_connection.0.write_all(&buffer).await?;
+  buffer = [0u8; 64];
+  proxy_connection.1.read_exact(&mut buffer).await?;
+  let read_string = std::str::from_utf8(&buffer).unwrap();
+  println!("Received header response: {}", read_string);
 
   tracing::info!("Beginning proxying...");
-  let proxy_res = util::proxy_from_tcp_stream(source, proxy_connection).await;
+  let proxy_res =
+    util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1)).await;
   if let Err(e) = proxy_res {
     tracing::error!(
-      "Proxy execution from port {} to {:?} failed with error:\n{:#?}",
-      listen_port.port(),
+      header = ?proxy_header,
+      err = ?e,
+      "Proxy failure for {:?}: {:#?}",
       proxy_header,
-      e
+      e,
     );
   }
-  tracing::info!("Closed connection on port {}", listen_port.port());
+  tracing::info!("Connection closed");
   Ok(())
 }
 
@@ -249,21 +256,54 @@ impl TcpTunnelManager {
       let quinn::NewConnection {
         connection: conn,
         bi_streams: _bi,
+        uni_streams: uni,
         ..
       } = tunnel;
 
-
       // TODO: Periodically attempt to send small amounts of data, in order to trigger a connection failure when the connection has been lost
       let connection_provider = BasicProxyConnectionProvider::new(conn);
-      future::select(
-        accept_loop(&mut listener, bind_addr, connection_provider).boxed(),
-        shutdown_notifier
-          .map(|_| -> Result<()> { Err(AnyErr::msg("Shutdown aborting acceptance loop")) })
+      let res: Result<(), AnyErr> = {
+        let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
+        streams.push(
+          accept_loop(&mut listener, bind_addr, connection_provider)
+            .fuse()
+            .into_stream()
+            .boxed(),
+        );
+        // Watch for SIGINT and close the acceptance loop
+        // This is a bit early of placement for this check- Live connections may be abruptly closed by
+        // this design, and the connection handlers themselves should be watching for shutdown notifications.
+        // The accept loop should gracefully handle its own shutdown notification requests.
+        // TODO: Pass shutdown_notifier as a parameter instead
+        streams.push(
+          shutdown_notifier
+            .map(|_| -> Result<(), AnyErr> {
+              Err(AnyErr::msg("Shutdown aborting acceptance loop"))
+            })
+            .into_stream()
+            .boxed(),
+        );
+        // Waiting for errors on uni-streams allows us to watch for a peer disconnection
+        streams.push(
+          uni
+            .filter_map(async move |x| x.err())
+            .take(1)
+            .map(|x| Err(x).context("Peer disconnected"))
+            .fuse()
+            .boxed(),
+        );
+
+        stream::select_all(streams)
           .boxed()
-      ).map(|x| match x {
-        Either::Left((x, _)) => x,
-        Either::Right((x, _)) => x
-      }).await
+          .next()
+          .await
+          .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))
+      };
+      res
+      // .map(|x| match x {
+      //   Either::Left((x, _)) => x,
+      //   Either::Right((x, _)) => x
+      // }).await
     };
 
     // On success or failure, unbind port
@@ -294,7 +334,15 @@ impl TunnelManager for TcpTunnelManager {
   }
 }
 
-#[tracing::instrument]
+#[tracing::instrument(
+    skip(config),
+    fields(
+      addr=?config.tcp_bind_ip,
+      ports=?config.tcp_bind_port_range,
+      quinn=?config.quinn_bind_addr,
+    ),
+    err
+)]
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   let quinn_config = build_quinn_config(&config)?;
   let (_endpoint, incoming) = {
@@ -360,12 +408,15 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   let mut transport_config = TransportConfig::default();
   transport_config.stream_window_uni(0);
   transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-  transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(30)));
+  transport_config
+    .max_idle_timeout(Some(std::time::Duration::from_secs(30)))
+    .unwrap();
   let mut server_config = quinn::ServerConfig::default();
   server_config.transport = Arc::new(transport_config);
   server_config.migration(true);
   let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
   cfg_builder.protocols(util::ALPN_QUIC_HTTP);
+  cfg_builder.enable_keylog();
   let cert = quinn::Certificate::from_der(&cert_der)?;
   cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
   Ok(cfg_builder.build())

@@ -78,31 +78,42 @@ pub fn validate_port_range(v: String) -> Result<(), String> {
   parse_port_range(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
+pub async fn proxy_stream<Send: AsyncWrite + Unpin, Recv: AsyncRead + Unpin>(
+  recv: &mut Recv,
+  send: &mut Send,
+) -> Result<u64> {
+  use futures::io::AsyncWriteExt;
+  futures::io::copy(recv, send).map_err(Into::into).await
+}
+
+#[tracing::instrument(skip(a, b))]
 pub async fn proxy_generic_streams<
   SenderA: AsyncWrite + Unpin,
   ReaderA: AsyncRead + Unpin,
   SenderB: AsyncWrite + Unpin,
   ReaderB: AsyncRead + Unpin,
 >(
-  (mut sender_a, mut reader_a): (&mut SenderA, &mut ReaderA),
-  (mut sender_b, mut reader_b): (&mut SenderB, &mut ReaderB),
+  a: (&mut SenderA, &mut ReaderA),
+  b: (&mut SenderB, &mut ReaderB),
 ) -> Either<(), ()> {
-  let proxy_i2o = Box::pin(async_std::io::copy(&mut reader_a, &mut sender_b).fuse());
-  let proxy_o2i = Box::pin(async_std::io::copy(&mut reader_b, &mut sender_a).fuse());
-  println!("Polling proxy streams...");
-  let res: Either<(), ()> = match futures::future::try_select(proxy_i2o, proxy_o2i).await {
+  let (sender_a, reader_a) = a;
+  let (sender_b, reader_b) = b;
+  let proxy_a2b = Box::pin(proxy_stream(reader_a, sender_b).fuse());
+  let proxy_b2a = Box::pin(proxy_stream(reader_b, sender_a).fuse());
+  tracing::trace!("polling");
+  let res: Either<(), ()> = match futures::future::try_select(proxy_a2b, proxy_b2a).await {
     Ok(Either::Left((_i2o, resume_o2i))) => {
-      println!("Source connection closed gracefully, shutting down proxy");
+      tracing::debug!("Source connection closed gracefully, shutting down proxy");
       std::mem::drop(resume_o2i); // Kill the copier, allowing us to send end-of-connection
       Either::Right(())
     }
     Ok(Either::Right((_o2i, resume_i2o))) => {
-      println!("Proxy connection closed gracefully, shutting down source");
+      tracing::debug!("Proxy connection closed gracefully, shutting down source");
       std::mem::drop(resume_i2o); // Kill the copier, allowing us to send end-of-connection
       Either::Left(())
     }
     Err(Either::Left((e_i2o, resume_o2i))) => {
-      println!(
+      tracing::debug!(
         "Source connection died with error {:#?}, shutting down proxy connection",
         e_i2o
       );
@@ -110,7 +121,7 @@ pub async fn proxy_generic_streams<
       Either::Right(())
     }
     Err(Either::Right((e_o2i, resume_i2o))) => {
-      println!(
+      tracing::debug!(
         "Proxy connection died with error {:#?}, shutting down source connection",
         e_o2i
       );
@@ -122,21 +133,18 @@ pub async fn proxy_generic_streams<
 }
 
 pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> Result<()> {
-  let (mut reader, mut writer) = (&mut source).split();
-  let (mut proxy_reader, mut proxy_writer) = (&mut proxy).split();
-  let res = proxy_generic_streams(
-    (&mut proxy_writer, &mut reader),
-    (&mut writer, &mut proxy_reader),
-  )
-    .await;
-  std::mem::drop(reader);
-  std::mem::drop(writer);
-  std::mem::drop(proxy_reader);
-  std::mem::drop(proxy_writer);
+  let res: Either<_, _> = {
+    let (mut reader, mut writer) = (&mut source).split();
+    let (mut proxy_reader, mut proxy_writer) = (&mut proxy).split();
+    proxy_generic_streams(
+      (&mut writer, &mut reader),
+      (&mut proxy_writer, &mut proxy_reader),
+    ).await
+  };
   match res {
     Either::Left(_) => {
       if let Err(shutdown_failure) = source.shutdown(async_std::net::Shutdown::Both) {
-        eprintln!(
+        tracing::error!(
           "Failed to shut down source connection with error:\n{:#?}",
           shutdown_failure
         );
@@ -144,7 +152,7 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
     }
     Either::Right(_) => {
       if let Err(shutdown_failure) = proxy.shutdown(async_std::net::Shutdown::Both) {
-        eprintln!(
+        tracing::error!(
           "Failed to shut down proxy connection with error:\n{:#?}",
           shutdown_failure
         );
@@ -154,22 +162,18 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
   Ok(())
 }
 
-pub async fn proxy_from_tcp_stream<
-  Sender: AsyncWrite + Unpin,
-  Reader: AsyncRead + Unpin,
->(mut source: TcpStream, (mut proxy_writer, mut proxy_reader): (Sender, Reader)) -> Result<()> {
-  let (mut reader, mut writer) = (&mut source).split();
-  let res = proxy_generic_streams(
-    (&mut proxy_writer, &mut reader),
-    (&mut writer, &mut proxy_reader),
-  )
-  .await;
-  std::mem::drop(reader);
-  std::mem::drop(writer);
+pub async fn proxy_from_tcp_stream<Sender: AsyncWrite + Unpin, Reader: AsyncRead + Unpin>(
+  mut source: TcpStream,
+  proxy: (&mut Sender, &mut Reader),
+) -> Result<()> {
+  let res: Either<_, _> = {
+    let (mut reader, mut writer) = (&mut source).split();
+    proxy_generic_streams((&mut writer, &mut reader), proxy).await
+  };
   match res {
     Either::Left(_) => {
       if let Err(shutdown_failure) = source.shutdown(async_std::net::Shutdown::Both) {
-        eprintln!(
+        tracing::error!(
           "Failed to shut down source connection with error:\n{:#?}",
           shutdown_failure
         );
@@ -224,71 +228,6 @@ pub fn merge_streams<'a, T: 'a>(
 
 // Utility helpers from quinn/examples/common
 
-/// Constructs a QUIC endpoint configured for use a client only.
-///
-/// ## Args
-///
-/// - server_certs: list of trusted certificates.
-#[allow(unused)]
-pub fn make_client_endpoint(
-  bind_addr: SocketAddr,
-  server_certs: &[&[u8]],
-) -> Result<Endpoint, Box<dyn Error>> {
-  let client_cfg = configure_client(server_certs)?;
-  let mut endpoint_builder = Endpoint::builder();
-  endpoint_builder.default_client_config(client_cfg);
-  let (endpoint, _incoming) = endpoint_builder.bind(&bind_addr)?;
-  Ok(endpoint)
-}
-
-/// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
-/// and port.
-///
-/// ## Returns
-///
-/// - a sream of incoming QUIC connections
-/// - server certificate serialized into DER format
-#[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Incoming, Vec<u8>), Box<dyn Error>> {
-  let (server_config, server_cert) = configure_server()?;
-  let mut endpoint_builder = Endpoint::builder();
-  endpoint_builder.listen(server_config);
-  let (_endpoint, incoming) = endpoint_builder.bind(&bind_addr)?;
-  Ok((incoming, server_cert))
-}
-
-/// Builds default quinn client config and trusts given certificates.
-///
-/// ## Args
-///
-/// - server_certs: a list of trusted certificates in DER format.
-fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Error>> {
-  let mut cfg_builder = ClientConfigBuilder::default();
-  for cert in server_certs {
-    cfg_builder.add_certificate_authority(Certificate::from_der(&cert)?)?;
-  }
-  Ok(cfg_builder.build())
-}
-
-/// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
-  let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-  let cert_der = cert.serialize_der().unwrap();
-  let priv_key = cert.serialize_private_key_der();
-  let priv_key = PrivateKey::from_der(&priv_key)?;
-
-  let mut transport_config = TransportConfig::default();
-  transport_config.stream_window_uni(0);
-  let mut server_config = ServerConfig::default();
-  server_config.transport = Arc::new(transport_config);
-  let mut cfg_builder = ServerConfigBuilder::new(server_config);
-  let cert = Certificate::from_der(&cert_der)?;
-  cfg_builder.certificate(CertificateChain::from_certs(vec![cert]), priv_key)?;
-
-  Ok((cfg_builder.build(), cert_der))
-}
-
-#[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
 
 #[cfg(test)]

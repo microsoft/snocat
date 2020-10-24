@@ -42,10 +42,10 @@ fn main() {
   //   .with_max_level(tracing::Level::TRACE)
   //   .finish();
   let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("quinn=warn,quinn_proto=warn,info"));
+    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("quinn=warn,quinn_proto=warn,debug"));
   let collector = tracing_subscriber::fmt()
     .with_env_filter(env_filter)
-    .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+    // .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
     .finish();
   tracing::subscriber::set_global_default(collector).expect("Logger init must succeed");
   let app = App::new(env!("CARGO_PKG_NAME"))

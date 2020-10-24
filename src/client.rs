@@ -41,6 +41,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   let authority = quinn::Certificate::from_der(&cert_der)?;
   let quinn_config = {
     let mut qc = quinn::ClientConfigBuilder::default();
+    qc.enable_keylog();
     qc.add_certificate_authority(authority)?;
     qc.protocols(util::ALPN_QUIC_HTTP);
     qc.build()
@@ -118,30 +119,43 @@ type ProxyConnectionProvider<'a, 'b> = dyn Fn(
   ),
 >;
 
+#[tracing::instrument(skip(send, recv, build_proxy_connection), err)]
 async fn handle_connection(
   id: ConnectionId,
   (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
   build_proxy_connection: &ProxyConnectionProvider<'_, '_>,
 ) -> Result<()> {
-  println!(
-    "Received new connection {} from driver... Loading metadata header...",
-    id
+  tracing::info!(
+    target: "new connection",
+    id = ?id
   );
-  let header = MetaStreamHeader::read_from_stream(&mut recv).await?;
+  // let header = MetaStreamHeader::read_from_stream(&mut recv).await?;
+  tracing::trace!("Loading metadata header");
+  use std::io::Write;
+  let mut header = [0u8; 64];
+  recv.read_exact(&mut header).await?; // TODO: Actually read the header
+  let first_zero = header.iter().position(|x| *x == 0).unwrap_or(32);
+  let read_string = std::str::from_utf8(&header[0..first_zero])
+    .unwrap()
+    .to_string();
+  tracing::debug!("Received header: {}", read_string);
+  header = [0u8; 64];
+  write!(&mut header[..], "{}/{}", &read_string, &read_string).unwrap();
+  send.write_all(&header).await?;
+  send.flush().await?;
 
-  println!("Header received for connection {}: {:#?}", id, header);
-  let (header, await_connection): (MetaStreamHeader, _) = build_proxy_connection(header).await;
-  println!("Establishing proxy for connection {}...", id);
+  let header = MetaStreamHeader::new();
+
+  tracing::debug!("Header received for connection {}: {:#?}", id, header);
+  let (_header, await_connection): (MetaStreamHeader, _) = build_proxy_connection(header).await;
+  tracing::debug!("Establishing proxy for connection {}...", id);
   let connection: TcpStream = await_connection.await?;
 
-  let (mut reader, mut writer) = connection.split();
+  tracing::trace!("Proxying...");
+  util::proxy_from_tcp_stream(connection, (&mut send, &mut recv)).await?;
 
-  future::try_join(
-    async_std::io::copy(&mut recv, &mut writer).fuse(),
-    async_std::io::copy(&mut reader, &mut send).fuse(),
-  )
-  .await?;
+  // util::proxy_stream((&mut recv, &mut send)).await; // Echo server
 
-  println!("Closed connection {}", id);
+  tracing::info!("Closed connection {}", id);
   Ok(())
 }
