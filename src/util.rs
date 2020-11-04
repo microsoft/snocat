@@ -226,8 +226,7 @@ pub fn merge_streams<'a, T: 'a>(
   .boxed()
 }
 
-// Utility helpers from quinn/examples/common
-
+// HTTP protocol constant from quinn/examples/common
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
 
 #[cfg(test)]
