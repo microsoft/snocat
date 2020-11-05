@@ -31,7 +31,7 @@ mod common;
 mod server;
 mod util;
 
-use util::{
+use util::validators::{
   parse_socketaddr, validate_existing_file, validate_ipaddr, validate_port_range,
   validate_socketaddr,
 };

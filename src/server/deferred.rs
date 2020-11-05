@@ -1,5 +1,5 @@
 use crate::common::MetaStreamHeader;
-use crate::util::{self, parse_ipaddr, parse_port_range, parse_socketaddr};
+use crate::util::{self, validators::{parse_ipaddr, parse_port_range, parse_socketaddr}};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
@@ -113,7 +113,7 @@ impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manage
       .map(|stream: BoxStream<TunnelServerEvent>| stream) // no-op to aid type inference in IDEs
       ;
 
-    util::merge_streams(streams)
+    util::merge_streams::merge_streams(streams)
   }
 
   #[tracing::instrument(skip(z, tunnel, shutdown_notifier))]
