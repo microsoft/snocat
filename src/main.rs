@@ -20,7 +20,6 @@ use std::{
   sync::Arc,
   task::{Context, Poll},
 };
-use tokio::runtime::Runtime;
 use tracing::{error, info, info_span, trace};
 use tracing_futures::Instrument as _;
 
@@ -167,14 +166,12 @@ async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
     ("server", Some(opts)) => {
       let config = server::server_arg_handling(opts).await?;
       tracing::info!("Running as server with config {:#?}", config);
-      let mut runtime = Runtime::new().unwrap();
-      runtime.block_on(server::server_main(config))
+      server::server_main(config).await
     }
     ("client", Some(opts)) => {
       let config = client::client_arg_handling(opts).await?;
       tracing::info!("Running as client with config {:#?}", config);
-      let mut runtime = Runtime::new().unwrap();
-      runtime.block_on(client::client_main(config))
+      client::client_main(config).await
     }
     ("cert", Some(opts)) => {
       tracing::info!("Generating certs...");
