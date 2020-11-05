@@ -379,9 +379,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .handle_incoming(connections, shutdown_notifier.clone())
     .fuse();
   {
-    let signal_watcher = async_signals::Signals::new(vec![libc::SIGINT])?;
-    let signal_watcher = signal_watcher
-      .filter(|&x| future::ready(x == libc::SIGINT))
+    let signal_watcher = tokio::signal::ctrl_c().into_stream()
       .take(1)
       .map(|_| {
         tracing::debug!("\nShutdown triggered");

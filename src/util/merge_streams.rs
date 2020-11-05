@@ -12,7 +12,6 @@ use std::boxed::Box;
 use std::path::Path;
 use std::task::{Context, Poll};
 use std::{error::Error, net::SocketAddr, sync::Arc};
-use tokio::io::PollEvented;
 
 pub fn merge_streams<'a, T: 'a>(
   source: impl futures::stream::Stream<Item = stream::BoxStream<'a, T>> + 'a + std::marker::Send,

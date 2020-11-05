@@ -13,7 +13,6 @@ use std::boxed::Box;
 use std::path::Path;
 use std::task::{Context, Poll};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::io::PollEvented;
 
 pub(crate) mod merge_streams;
 pub(crate) mod validators;

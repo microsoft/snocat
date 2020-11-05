@@ -20,7 +20,6 @@ use std::{
   sync::Arc,
   task::{Context, Poll},
 };
-use tokio::io::PollEvented;
 use tokio::runtime::Runtime;
 use tracing::{error, info, info_span, trace};
 use tracing_futures::Instrument as _;
