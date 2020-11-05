@@ -157,7 +157,7 @@ fn main() {
   match async_std::task::block_on(handler) {
     Err(err) => {
       tracing::error!(mode = mode, err = ?err, "dispatch_command_failure");
-    },
+    }
     Ok(_) => tracing::info!("{} exited successfully", mode),
   }
 }
