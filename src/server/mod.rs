@@ -387,7 +387,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .into_stream()
       .take(1)
       .map(|_| {
-        tracing::debug!("\nShutdown triggered");
+        tracing::warn!("Shutdown triggered");
         // Tell manager to start shutting down tunnels; new adoption requests should return errors
         trigger_shutdown.trigger();
         None
