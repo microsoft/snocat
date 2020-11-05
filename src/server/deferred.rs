@@ -92,14 +92,13 @@ impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manage
       .try_filter(|(conn, notifier): &(quinn::NewConnection, triggered::Listener)| {
         let triggered = notifier.is_triggered();
         let addr = conn.connection.remote_address();
-        async move {
-          if triggered {
-            // TODO: "Not accepting new tunnel connections because of impending shutdown" message
-            eprintln!("Refusing connection from {:?} because shutdown is already in progress", addr);
-            return false;
-          }
+        future::ready(if triggered {
+          conn.connection.close(quinn::VarInt::from_u32(1), "shutdown pending".as_bytes());
+          tracing::warn!(?addr, "Refusing connection due to impending shutdown");
+          false
+        } else {
           true
-        }
+        })
       })
       .and_then(async move |(conn, notifier): (quinn::NewConnection, triggered::Listener)| -> Result<stream::BoxStream<'_, TunnelServerEvent>> {
         Ok(generate_stream(move |yielder| self.connection_lifecycle(yielder, conn, notifier)).boxed())
@@ -108,7 +107,7 @@ impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manage
         future::ready(match x {
           Ok(s) => Some(s),
           Err(e) => {
-            eprintln!("Failure in connection {:#?}", e);
+            tracing::warn!("Failure in tunnel connection: {:#?}", e);
             None
           }
         })
