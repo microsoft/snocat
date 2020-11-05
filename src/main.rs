@@ -153,8 +153,11 @@ fn main() {
     .setting(clap::AppSettings::SubcommandRequiredElseHelp);
   let matches = app.get_matches();
   let mode = matches.subcommand_name().unwrap_or("<No subcommand?>");
-  match async_std::task::block_on(main_args_handler(&matches)) {
-    Err(err) => tracing::error!("{0} failed with error:\n{1:#?}", mode, err),
+  let handler = main_args_handler(&matches);
+  match async_std::task::block_on(handler) {
+    Err(err) => {
+      tracing::error!(mode = mode, err = ?err, "dispatch_command_failure");
+    },
     Ok(_) => tracing::info!("{} exited successfully", mode),
   }
 }
@@ -163,18 +166,18 @@ async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
   match matches.subcommand() {
     ("server", Some(opts)) => {
       let config = server::server_arg_handling(opts).await?;
-      println!("Running as server with config {:#?}", &config);
+      tracing::info!("Running as server with config {:#?}", config);
       let mut runtime = Runtime::new().unwrap();
       runtime.block_on(server::server_main(config))
     }
     ("client", Some(opts)) => {
       let config = client::client_arg_handling(opts).await?;
-      println!("Running as client with config {:#?}", &config);
+      tracing::info!("Running as client with config {:#?}", config);
       let mut runtime = Runtime::new().unwrap();
       runtime.block_on(client::client_main(config))
     }
     ("cert", Some(opts)) => {
-      println!("Generating certs...");
+      tracing::info!("Generating certs...");
       let path_raw = opts.value_of("path").expect("Path argument is required");
       let san = opts.value_of("san").expect("SAN argument must exist");
       certgen::certgen_main(path_raw.into(), san.into()).await

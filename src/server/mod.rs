@@ -73,7 +73,11 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   buffer = [0u8; 64];
   proxy_connection.1.read_exact(&mut buffer).await?;
   let read_string = std::str::from_utf8(&buffer).unwrap();
-  println!("Received header response: {}", read_string);
+  if !read_string.starts_with("HELO/HELO\0") {
+    tracing::trace!(raw = read_string, "bad_client_ack");
+    return Err(AnyErr::msg("Invalid client ack"));
+  }
+  tracing::trace!("client_ack");
 
   tracing::info!("Beginning proxying...");
   let proxy_res =
@@ -391,7 +395,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     futures::stream::select(signal_watcher, events.map(|e| Some(e)))
       .filter_map(|x| future::ready(x))
       .for_each(async move |ev| {
-        tracing::trace!("Event: {:#?}", ev);
+        tracing::trace!(event = ?ev);
       })
       .await;
   }
