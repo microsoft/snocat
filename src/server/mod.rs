@@ -161,40 +161,6 @@ impl std::fmt::Debug for BasicProxyConnectionProvider {
   }
 }
 
-struct TcpConnection<'a> {
-  port: u16,
-  addr: SocketAddr,
-  id: AxlClientIdentifier,
-  future: BoxFuture<'a, Result<()>>,
-}
-
-impl<'a> TcpConnection<'a> {
-  fn new(
-    addr: SocketAddr,
-    id: AxlClientIdentifier,
-    future: BoxFuture<'a, Result<()>>,
-  ) -> TcpConnection<'a> {
-    TcpConnection {
-      id,
-      port: addr.port(),
-      addr,
-      future,
-    }
-  }
-}
-
-impl Future for TcpConnection<'_> {
-  type Output = Result<(AxlClientIdentifier, SocketAddr)>;
-
-  // TODO: Lift from res<(id, addr)> to (id, addr, res<()>)
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let (id, addr) = (self.id.clone(), self.addr);
-    let f = unsafe { self.map_unchecked_mut(|x| &mut x.future) };
-    let res = futures::ready!(f.poll(cx));
-    Poll::Ready(res.map(|_| (id, addr)))
-  }
-}
-
 #[derive(Debug)]
 pub struct TcpTunnelManager {
   range: std::ops::RangeInclusive<u16>,
