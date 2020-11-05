@@ -64,9 +64,9 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .await;
     connecting.context("Finalizing connection to server...")?
   };
-  println!("Connected to {:?}", &connection.remote_address());
+  tracing::info!(remote = ?connection.remote_address(), "connected");
 
-  println!("Setting up stream handling...");
+  tracing::debug!("Setting up stream handling...");
   {
     let config = Arc::clone(&config);
     let build_connection_handler = &move |stream_header: MetaStreamHeader| {
@@ -83,12 +83,12 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .boxed()
     };
 
-    println!("Stream listener installed; waiting for bistreams...");
+    tracing::info!("Stream listener installed; waiting for bistreams...");
     let mut connection_id: ConnectionId = 0;
     bi_streams
       .map_err(|e| e.into())
       .try_for_each_concurrent(None, |(send, recv)| {
-        println!("New bidirectional stream received, allocating handler coroutine...");
+        tracing::info!("New bidirectional stream received, allocating handler coroutine...");
         handle_connection(
           {
             let tmp = connection_id;
@@ -102,7 +102,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .await?;
   }
 
-  println!("Disconnecting...");
+  tracing::info!("Disconnecting...");
   endpoint.wait_idle().await;
   Ok(())
 }
