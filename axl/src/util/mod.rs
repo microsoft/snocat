@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 use std::{net::SocketAddr, sync::Arc};
 
 pub(crate) mod merge_streams;
-pub(crate) mod validators;
+pub mod validators;
 
 // HTTP protocol constant from quinn/examples/common
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
