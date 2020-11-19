@@ -26,8 +26,8 @@ use tracing_futures::Instrument as _;
 use axl::{client, common, server, util};
 
 use util::validators::{
-    parse_socketaddr, validate_existing_file, validate_ipaddr, validate_port_range,
-    validate_socketaddr,
+    parse_socketaddr, parse_ipaddr, parse_port_range,
+    validate_existing_file, validate_ipaddr, validate_port_range, validate_socketaddr
 };
 
 mod certgen;
@@ -159,15 +159,38 @@ fn main() {
     }
 }
 
+pub async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<client::ClientArgs> {
+    let cert_path = Path::new(args.value_of("authority").unwrap()).to_path_buf();
+    Ok(client::ClientArgs {
+        authority_cert: cert_path,
+        driver_host: parse_socketaddr(args.value_of("driver").unwrap())?,
+        driver_san: args.value_of("driver-san").unwrap().into(),
+        proxy_target_host: parse_socketaddr(args.value_of("target").unwrap())?,
+    })
+}
+
+pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<server::ServerArgs> {
+    let cert_path = Path::new(args.value_of("cert").unwrap()).to_path_buf();
+    let key_path = Path::new(args.value_of("key").unwrap()).to_path_buf();
+
+    Ok(server::ServerArgs {
+        cert: cert_path,
+        key: key_path,
+        quinn_bind_addr: parse_socketaddr(args.value_of("quic").unwrap())?,
+        tcp_bind_ip: parse_ipaddr(args.value_of("tcp").unwrap())?,
+        tcp_bind_port_range: parse_port_range(args.value_of("bind_range").unwrap())?,
+    })
+}
+
 async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
     match matches.subcommand() {
         ("server", Some(opts)) => {
-            let config = server::server_arg_handling(opts).await?;
+            let config = server_arg_handling(opts).await?;
             tracing::info!("Running as server with config {:#?}", config);
             server::server_main(config).await
         }
         ("client", Some(opts)) => {
-            let config = client::client_arg_handling(opts).await?;
+            let config = client_arg_handling(opts).await?;
             tracing::info!("Running as client with config {:#?}", config);
             client::client_main(config).await
         }

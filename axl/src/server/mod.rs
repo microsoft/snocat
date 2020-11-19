@@ -41,19 +41,6 @@ pub struct ServerArgs {
   pub tcp_bind_port_range: std::ops::RangeInclusive<u16>,
 }
 
-pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<ServerArgs> {
-  let cert_path = Path::new(args.value_of("cert").unwrap()).to_path_buf();
-  let key_path = Path::new(args.value_of("key").unwrap()).to_path_buf();
-
-  Ok(ServerArgs {
-    cert: cert_path,
-    key: key_path,
-    quinn_bind_addr: parse_socketaddr(args.value_of("quic").unwrap())?,
-    tcp_bind_ip: parse_ipaddr(args.value_of("tcp").unwrap())?,
-    tcp_bind_port_range: parse_port_range(args.value_of("bind_range").unwrap())?,
-  })
-}
-
 #[tracing::instrument(skip(source, proxy_connection_provider), err)]
 async fn handle_connection<Provider: ProxyConnectionProvider>(
   source: TcpStream,

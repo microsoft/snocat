@@ -25,16 +25,6 @@ pub struct ClientArgs {
   pub proxy_target_host: std::net::SocketAddr,
 }
 
-pub async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<ClientArgs> {
-  let cert_path = Path::new(args.value_of("authority").unwrap()).to_path_buf();
-  Ok(ClientArgs {
-    authority_cert: cert_path,
-    driver_host: parse_socketaddr(args.value_of("driver").unwrap())?,
-    driver_san: args.value_of("driver-san").unwrap().into(),
-    proxy_target_host: parse_socketaddr(args.value_of("target").unwrap())?,
-  })
-}
-
 pub async fn client_main(config: ClientArgs) -> Result<()> {
   let config = Arc::new(config);
   let cert_der = std::fs::read(&config.authority_cert).context("Failed reading cert file")?;

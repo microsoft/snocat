@@ -6,7 +6,6 @@
 #![allow(unused_imports)]
 
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
-use clap::{App, Arg, SubCommand};
 // #[macro_use]
 use async_std::io::{BufReader, BufWriter};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
