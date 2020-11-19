@@ -23,12 +23,14 @@ use std::{
 use tracing::{error, info, info_span, trace};
 use tracing_futures::Instrument as _;
 
-use axl::{certgen, client, common, server, util};
+use axl::{client, common, server, util};
 
 use util::validators::{
     parse_socketaddr, validate_existing_file, validate_ipaddr, validate_port_range,
     validate_socketaddr,
 };
+
+mod certgen;
 
 // Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {

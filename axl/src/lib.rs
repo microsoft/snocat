@@ -26,7 +26,6 @@ use tracing_futures::Instrument as _;
 pub mod common;
 pub mod util;
 
-pub mod certgen;
 pub mod client;
 pub mod server;
 
