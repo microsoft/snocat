@@ -180,7 +180,6 @@ dependencies = [
  "gen-z",
  "log",
  "quinn",
- "rcgen",
  "tokio",
  "tracing",
  "tracing-futures",
