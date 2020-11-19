@@ -179,6 +179,8 @@ dependencies = [
  "gen-z",
  "log",
  "quinn",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-futures",
