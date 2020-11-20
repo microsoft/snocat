@@ -35,9 +35,36 @@ pub async fn write_frame<T: tokio::io::AsyncWrite + Unpin>(s: &mut T, buffer: &[
     .context("Failed writing frame contents")
 }
 
+pub async fn read_framed_json<
+  'a,
+  TStream: tokio::io::AsyncRead + Unpin + 'a,
+  TOutput: serde::de::DeserializeOwned,
+>(
+  s: &'a mut TStream,
+) -> Result<TOutput> {
+  let buffer = read_frame_vec(s)
+    .await
+    .context("Failure reading framed json from stream")?;
+  let x =
+    serde_json::from_slice::<TOutput>(&buffer).context("Failure deserializing framed json")?;
+  Ok(x)
+}
+
+pub async fn write_framed_json<TStream: tokio::io::AsyncWrite + Unpin, TInput: serde::Serialize>(
+  s: &mut TStream,
+  value: TInput,
+) -> Result<()> {
+  let buffer = serde_json::to_vec(&value)
+    .context("Failure serializing frame contents")?
+    .into_boxed_slice(); // Drop the ability to resize the buffer
+  write_frame(s, &buffer)
+    .await
+    .context("Failure writing json frame to stream")
+}
+
 #[cfg(test)]
 mod tests {
-  use crate::util::framed::{read_frame_vec, write_frame};
+  use crate::util::framed::{read_frame_vec, read_framed_json, write_frame, write_framed_json};
 
   #[async_std::test]
   async fn stream_framed_roundtrip() {
@@ -70,5 +97,20 @@ mod tests {
     assert_eq!(&buffer[std::mem::size_of::<u32>()..], &test_data[..]);
     // Input and output data should be the same
     assert_eq!(test_data, deserialized);
+  }
+
+  #[async_std::test]
+  async fn stream_json_serialization_roundtrip() {
+    let buffer: Vec<u8> = Vec::new();
+    let mut cursor = std::io::Cursor::new(buffer);
+    let original = (6f32, String::from("a"), 2u8, 12f64);
+    write_framed_json(&mut cursor, &original)
+      .await
+      .expect("Writing to stream must succeed");
+    cursor.set_position(0);
+    let deserialized = read_framed_json(&mut cursor)
+      .await
+      .expect("Reading header from stream must succeed");
+    assert_eq!(original, deserialized);
   }
 }
