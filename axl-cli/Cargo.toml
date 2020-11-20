@@ -24,6 +24,6 @@ triggered = "~0.1.1"
 
 [dev-dependencies]
 
-[[bin]]
-name = "axl"
-path = "src/main.rs"
+#[[bin]]
+#name = "axl"
+#path = "src/main.rs"
