@@ -1,5 +1,6 @@
+#[warn(unused_imports)]
 #[allow(dead_code)]
-use anyhow::{Error as AnyErr, Result};
+use anyhow::Result;
 use async_std::net::TcpStream;
 use futures::future::*;
 use futures::io::{AsyncRead, AsyncWrite};
@@ -14,6 +15,7 @@ use std::path::Path;
 use std::task::{Context, Poll};
 use std::{net::SocketAddr, sync::Arc};
 
+pub mod framed;
 pub(crate) mod merge_streams;
 pub mod validators;
 
