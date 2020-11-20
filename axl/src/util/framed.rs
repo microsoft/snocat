@@ -36,11 +36,10 @@ pub async fn write_frame<T: tokio::io::AsyncWrite + Unpin>(s: &mut T, buffer: &[
 }
 
 pub async fn read_framed_json<
-  'a,
-  TStream: tokio::io::AsyncRead + Unpin + 'a,
+  TStream: tokio::io::AsyncRead + Unpin,
   TOutput: serde::de::DeserializeOwned,
 >(
-  s: &'a mut TStream,
+  s: &mut TStream,
 ) -> Result<TOutput> {
   let buffer = read_frame_vec(s)
     .await
@@ -72,31 +71,44 @@ mod tests {
     use ::std::io::Seek;
     use ::tokio::io::{AsyncReadExt, AsyncWriteExt};
     const TEST_BLOB_LENGTH: usize = 1234;
-    let buffer: Vec<u8> = Vec::with_capacity(TEST_BLOB_LENGTH + std::mem::size_of::<u32>());
-    let mut cursor = std::io::Cursor::new(buffer);
-    // Test data is a simple array of 0 through (but not including) its capacity
-    let test_data = {
-      let mut test_data = Vec::with_capacity(TEST_BLOB_LENGTH);
-      test_data.extend(
-        (0u32..(test_data.capacity() as u32))
-          .map(|x| std::ops::Rem::rem(x, std::u8::MAX as u32) as u8),
-      );
-      test_data
-    };
-    write_frame(&mut cursor, &test_data)
-      .await
-      .expect("Writing frame to stream must succeed");
-    cursor.set_position(0);
-    let deserialized = read_frame_vec(&mut cursor)
-      .await
-      .expect("Reading frame from stream must succeed");
-    let buffer = cursor.into_inner();
+    let mut buffer: Vec<u8> = Vec::with_capacity(TEST_BLOB_LENGTH + std::mem::size_of::<u32>());
+    {
+      let mut cursor = std::io::Cursor::new(&mut buffer);
+      // Test data is a simple array of 0 through (but not including) its capacity
+      let test_data = {
+        let mut test_data = Vec::with_capacity(TEST_BLOB_LENGTH);
+        test_data.extend(
+          (0u32..(test_data.capacity() as u32))
+            .map(|x| std::ops::Rem::rem(x, std::u8::MAX as u32) as u8),
+        );
+        test_data
+      };
+      write_frame(&mut cursor, &test_data)
+        .await
+        .expect("Writing frame to stream must succeed");
+      cursor.set_position(0);
+      let deserialized = read_frame_vec(&mut cursor)
+        .await
+        .expect("Reading frame from stream must succeed");
+      // Input and output data should be the same
+      assert_eq!(test_data, deserialized);
+      // After the length of a u32, the stream should be equal to the content
+      assert_eq!(&buffer[std::mem::size_of::<u32>()..], &test_data[..]);
+    }
     // Stream must receive content of equal length to a u32 plus that of the content
     assert_eq!(buffer.len(), TEST_BLOB_LENGTH + std::mem::size_of::<u32>());
-    // After the length of a u32, the stream should be equal to the content
-    assert_eq!(&buffer[std::mem::size_of::<u32>()..], &test_data[..]);
-    // Input and output data should be the same
-    assert_eq!(test_data, deserialized);
+    // Verify function on zero-length frames
+    buffer.clear();
+    {
+      let mut cursor = std::io::Cursor::new(&mut buffer);
+      // Test data is an empty array
+      let test_data = Vec::new();
+      write_frame(&mut cursor, &test_data).await.unwrap();
+      cursor.set_position(0);
+      let result = read_frame_vec(&mut cursor).await.unwrap();
+      assert_eq!(&test_data, &result);
+    }
+    assert_eq!(buffer.len(), std::mem::size_of::<u32>());
   }
 
   #[async_std::test]
