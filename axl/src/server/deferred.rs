@@ -143,7 +143,6 @@ impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manage
   ) -> BoxFuture<()> {
     let addr = tunnel.connection.remote_address();
     async move {
-      // TODO: Build identifier based on handshake / authentication session
       z.send(TunnelServerEvent::Open(addr)).await;
       let err = self
         .manager
