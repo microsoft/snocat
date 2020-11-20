@@ -25,6 +25,7 @@ use std::{
 };
 use tracing::{info, instrument, trace};
 
+/// A name for an AXL tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
 pub struct AxlClientIdentifier(Arc<String>);
@@ -41,16 +42,27 @@ impl std::fmt::Debug for AxlClientIdentifier {
   }
 }
 
+/// High-level logging events a [`TunnelManager`] *may* report to its connection handler.
+/// Should only be used for high-level logging; individual stream monitoring and lifecycle watching
+/// should instead be done by implementing or wrapping a [`TunnelManager`] to monitor connections.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub enum TunnelServerEvent {
   DebugMessage(String),
   Open(SocketAddr),
   Identified(AxlClientIdentifier, SocketAddr),
   Close(AxlClientIdentifier, SocketAddr),
-  Failure(SocketAddr, String),
+  Failure(SocketAddr, Option<AxlClientIdentifier>, String),
 }
 
-pub trait TunnelManager: Send + std::fmt::Debug + Sync {
+/// A [`TunnelManager`](trait@TunnelManager) is responsible for the lifecycle of individual tunnels.
+/// The tunnel manager can act to coordinate with another non-Send or non-Sync entity,
+/// or manage all connections itself. In either case, it is responsible for synchronization.
+pub trait TunnelManager: std::fmt::Debug + Send + Sync {
+  /// [`TunnelManager::handle_connection`] must return a future which resolves when the tunnel is closed.
+  /// It is responsible for handling authentication of the source of the tunnel connection,
+  /// as well as handling incoming streams and datagrams, and owns all outgoing data to the client.
+  /// If `shutdown_notifier` is triggered, handle_connection must exit promptly, without
+  /// awaiting response from the client, to prevent a hostile client from holding the server alive.
   fn handle_connection<'connection, 'manager: 'connection>(
     &'manager self,
     events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
@@ -59,6 +71,10 @@ pub trait TunnelManager: Send + std::fmt::Debug + Sync {
   ) -> futures::future::BoxFuture<'connection, Result<()>>;
 }
 
+/// Manages an [`Incoming`](struct@quinn::generic::Incoming) stream and maps it to a
+/// [`TunnelManager`](trait@TunnelManager) with asynchronous concurrency on a single thread.
+/// [`ConcurrentDeferredTunnelServer::handle_incoming`] converts a stream of connections to a
+/// stream of events on those connections, and runs the connections concurrently.
 #[derive(Debug)]
 pub struct ConcurrentDeferredTunnelServer<Manager>
 where
@@ -133,7 +149,7 @@ impl<Manager: TunnelManager + Send + Sync> ConcurrentDeferredTunnelServer<Manage
         .manager
         .handle_connection(&mut z, tunnel, shutdown_notifier)
         .map(move |x| match x {
-          Err(e) => Some(TunnelServerEvent::Failure(addr, e.to_string())),
+          Err(e) => Some(TunnelServerEvent::Failure(addr, None, e.to_string())),
           Ok(_res) => None,
         })
         .await;
