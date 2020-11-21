@@ -1,5 +1,3 @@
-mod deferred;
-
 use crate::common::MetaStreamHeader;
 use crate::server::deferred::{
   AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
@@ -32,6 +30,12 @@ use std::{
 };
 use tracing::{info, instrument, trace};
 
+pub mod authentication;
+pub mod deferred;
+pub mod routing;
+
+/// Parameters used to run an AXL server binding TCP connections
+// TODO: move to axl-cli
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ServerArgs {
   pub cert: PathBuf,
@@ -148,6 +152,7 @@ impl std::fmt::Debug for BasicProxyConnectionProvider {
   }
 }
 
+/// Binds ports from a given range on the host, allocating one to each authenticated tunnel client.
 #[derive(Debug)]
 pub struct TcpTunnelManager {
   range: std::ops::RangeInclusive<u16>,
@@ -171,6 +176,7 @@ impl TcpTunnelManager {
     }
   }
 
+  /// Connection lifetime handler for a single tunnel; multiple tunnels will run concurrently.
   async fn handle_connection(
     &self,
     z: &mut gen_z::Yielder<TunnelServerEvent>,
@@ -294,6 +300,8 @@ impl TunnelManager for TcpTunnelManager {
   }
 }
 
+/// Run an AXL server that binds TCP sockets for each tunnel that connects
+// TODO: move to axl-cli
 #[tracing::instrument(
     skip(config),
     fields(

@@ -1,3 +1,5 @@
+//! Server backend allowing a single-threaded reactor to concurrently run multiple tunnels.
+
 use crate::common::MetaStreamHeader;
 use crate::util::{
   self,
