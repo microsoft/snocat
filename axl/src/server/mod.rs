@@ -1,3 +1,5 @@
+//! Types for building an AXL server and accepting, authenticating, and routing connections
+
 use crate::common::MetaStreamHeader;
 use crate::server::deferred::{
   AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
@@ -33,17 +35,6 @@ use tracing::{info, instrument, trace};
 pub mod authentication;
 pub mod deferred;
 pub mod routing;
-
-/// Parameters used to run an AXL server binding TCP connections
-// TODO: move to axl-cli
-#[derive(Eq, PartialEq, Clone, Debug)]
-pub struct ServerArgs {
-  pub cert: PathBuf,
-  pub key: PathBuf,
-  pub quinn_bind_addr: std::net::SocketAddr,
-  pub tcp_bind_ip: std::net::IpAddr,
-  pub tcp_bind_port_range: std::ops::RangeInclusive<u16>,
-}
 
 #[tracing::instrument(skip(source, proxy_connection_provider), err)]
 async fn handle_connection<Provider: ProxyConnectionProvider>(
@@ -298,95 +289,6 @@ impl TunnelManager for TcpTunnelManager {
   ) -> futures::future::BoxFuture<'connection, Result<()>> {
     TcpTunnelManager::handle_connection(self, events, tunnel, shutdown_notifier).boxed()
   }
-}
-
-/// Run an AXL server that binds TCP sockets for each tunnel that connects
-// TODO: move to axl-cli
-#[tracing::instrument(
-    skip(config),
-    fields(
-      addr=?config.tcp_bind_ip,
-      ports=?config.tcp_bind_port_range,
-      quinn=?config.quinn_bind_addr,
-    ),
-    err
-)]
-pub async fn server_main(config: self::ServerArgs) -> Result<()> {
-  let quinn_config = build_quinn_config(&config)?;
-  let (_endpoint, incoming) = {
-    let mut endpoint = quinn::Endpoint::builder();
-    endpoint.listen(quinn_config);
-    endpoint.bind(&config.quinn_bind_addr)?
-  };
-
-  let manager = TcpTunnelManager::new(config.tcp_bind_port_range, config.tcp_bind_ip);
-  let server = Box::new(ConcurrentDeferredTunnelServer::new(manager));
-
-  use futures::stream::TryStreamExt;
-  let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
-  let connections: stream::BoxStream<'_, quinn::NewConnection> = incoming
-    .take_until(shutdown_notifier.clone())
-    .map(|x| -> Result<_> { Ok(x) })
-    .and_then(async move |connecting| {
-      // When a new connection arrives, establish the connection formally, and pass it on
-      let tunnel = connecting.await?; // Performs TLS handshake and migration
-                                      // TODO: Protocol header can occur here, or as part of the later "binding" phase
-                                      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
-      Ok(tunnel)
-    })
-    .inspect_err(|e| {
-      tracing::error!("Connection failure during stream pickup: {:#?}", e);
-    })
-    .filter_map(async move |x| x.ok()) // only keep the successful connections
-    .boxed();
-
-  let events = server
-    .handle_incoming(connections, shutdown_notifier.clone())
-    .fuse();
-  {
-    let signal_watcher = tokio::signal::ctrl_c()
-      .into_stream()
-      .take(1)
-      .map(|_| {
-        tracing::warn!("Shutdown triggered");
-        // Tell manager to start shutting down tunnels; new adoption requests should return errors
-        trigger_shutdown.trigger();
-        None
-      })
-      .fuse();
-    futures::stream::select(signal_watcher, events.map(|e| Some(e)))
-      .filter_map(|x| future::ready(x))
-      .for_each(async move |ev| {
-        tracing::trace!(event = ?ev);
-      })
-      .await;
-  }
-
-  Ok(())
-}
-
-fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
-  let cert_der = std::fs::read(&config.cert).context("Failed reading cert file")?;
-  let priv_der = std::fs::read(&config.key).context("Failed reading private key file")?;
-  let priv_key =
-    quinn::PrivateKey::from_der(&priv_der).context("Quinn .der parsing of private key failed")?;
-  let mut config = quinn::ServerConfigBuilder::default();
-  config.use_stateless_retry(true);
-  let mut transport_config = TransportConfig::default();
-  transport_config.stream_window_uni(0);
-  transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-  transport_config
-    .max_idle_timeout(Some(std::time::Duration::from_secs(30)))
-    .unwrap();
-  let mut server_config = quinn::ServerConfig::default();
-  server_config.transport = Arc::new(transport_config);
-  server_config.migration(true);
-  let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
-  cfg_builder.protocols(util::ALPN_QUIC_HTTP);
-  cfg_builder.enable_keylog();
-  let cert = quinn::Certificate::from_der(&cert_der)?;
-  cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
-  Ok(cfg_builder.build())
 }
 
 /*

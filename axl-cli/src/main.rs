@@ -23,7 +23,7 @@ use std::{
 use tracing::{error, info, info_span, trace};
 use tracing_futures::Instrument as _;
 
-use axl::{client, common, server, util};
+use axl::{common, util};
 
 use util::validators::{
   parse_ipaddr, parse_port_range, parse_socketaddr, validate_existing_file, validate_ipaddr,
@@ -31,6 +31,8 @@ use util::validators::{
 };
 
 mod certgen;
+mod client;
+mod server;
 
 // Consider for tests : https://github.com/djc/quinn/blob/main/quinn/examples/insecure_connection.rs
 fn main() {

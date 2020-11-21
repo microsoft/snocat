@@ -198,6 +198,7 @@ dependencies = [
  "clap",
  "futures",
  "futures-io",
+ "gen-z",
  "log",
  "quinn",
  "rcgen",
