@@ -17,7 +17,6 @@ use std::{
   task::{Context, Poll},
 };
 
-
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ClientArgs {
   pub authority_cert: PathBuf,
@@ -70,8 +69,8 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
             .boxed();
         (stream_header, builder)
       }
-        .fuse()
-        .boxed()
+      .fuse()
+      .boxed()
     };
 
     tracing::info!("Stream listener installed; waiting for bistreams...");

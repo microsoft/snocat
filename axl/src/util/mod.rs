@@ -130,3 +130,25 @@ pub async fn proxy_from_tcp_stream<Sender: AsyncWrite + Unpin, Reader: AsyncRead
   }
   Ok(())
 }
+
+/// Run a block, then, regardless of success/failure, run another block, with access to the results.
+/// Exceptions from the first block are preferred, then from the finally block, then successes
+pub async fn finally_async<
+  T,
+  E,
+  FT: Future<Output = Result<T, E>>,
+  FC: Future<Output = Result<(), E>>,
+>(
+  cb: impl FnOnce() -> FT,
+  cleanup: impl FnOnce(&mut Result<T, E>) -> FC,
+) -> Result<T, E> {
+  let mut cb_res = cb().await;
+  let cleanup_res = cleanup(&mut cb_res).await;
+  match cleanup_res {
+    Ok(_) => cb_res,
+    Err(e) => match cb_res {
+      Ok(_res) => Err(e),
+      Err(e2) => Err(e2),
+    },
+  }
+}

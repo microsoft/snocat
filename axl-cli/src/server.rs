@@ -1,10 +1,3 @@
-use axl::common::MetaStreamHeader;
-use axl::server::{
-  TcpTunnelManager,
-  deferred::{
-    AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
-  },
-};
 use crate::util::{
   self,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
@@ -12,6 +5,13 @@ use crate::util::{
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
+use axl::common::MetaStreamHeader;
+use axl::server::{
+  deferred::{
+    AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
+  },
+  TcpTunnelManager,
+};
 use futures::future::*;
 use futures::{
   future,
@@ -73,8 +73,8 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .and_then(async move |connecting| {
       // When a new connection arrives, establish the connection formally, and pass it on
       let tunnel = connecting.await?; // Performs TLS handshake and migration
-      // TODO: Protocol header can occur here, or as part of the later "binding" phase
-      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
+                                      // TODO: Protocol header can occur here, or as part of the later "binding" phase
+                                      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
       Ok(tunnel)
     })
     .inspect_err(|e| {
@@ -131,4 +131,3 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
   Ok(cfg_builder.build())
 }
-

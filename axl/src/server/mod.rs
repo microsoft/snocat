@@ -5,7 +5,7 @@ use crate::server::deferred::{
   AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
 };
 use crate::util::{
-  self,
+  self, finally_async,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
 };
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
@@ -26,6 +26,7 @@ use quinn::{
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   boxed::Box,
+  ops::RangeInclusive,
   path::{Path, PathBuf},
   pin::Pin,
   task::{Context, Poll},
@@ -143,12 +144,54 @@ impl std::fmt::Debug for BasicProxyConnectionProvider {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct PortRangeAllocator {
+  range: std::ops::RangeInclusive<u16>,
+  allocated: Arc<Mutex<std::collections::HashSet<u16>>>,
+}
+
+impl PortRangeAllocator {
+  pub fn new<T: Into<u16>>(bind_port_range: std::ops::RangeInclusive<T>) -> PortRangeAllocator {
+    let (start, end): (u16, u16) = {
+      let (a, b) = bind_port_range.into_inner();
+      (a.into(), b.into())
+    };
+    PortRangeAllocator {
+      range: std::ops::RangeInclusive::new(start, end),
+      allocated: Default::default(),
+    }
+  }
+
+  pub async fn allocate(&self) -> Result<u16> {
+    let range = self.range.clone();
+    let mut lock = self.allocated.lock().await;
+    let port = range
+      .clone()
+      .into_iter()
+      .filter(|test_port| !lock.contains(test_port))
+      .min()
+      .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &range)))?;
+    lock.insert(port);
+    Ok(port)
+  }
+
+  pub async fn free(&self, port: u16) -> Result<bool> {
+    let mut lock = self.allocated.lock().await;
+    let removed = lock.remove(&port);
+    tracing::trace!(port = port, "unbound port");
+    Ok(removed)
+  }
+
+  pub fn range(&self) -> &RangeInclusive<u16> {
+    &self.range
+  }
+}
+
 /// Binds ports from a given range on the host, allocating one to each authenticated tunnel client.
 #[derive(Debug)]
 pub struct TcpTunnelManager {
-  range: std::ops::RangeInclusive<u16>,
   bind_ip: IpAddr,
-  bound_ports: Arc<Mutex<std::collections::HashSet<u16>>>,
+  bound_ports: Arc<PortRangeAllocator>,
 }
 
 impl TcpTunnelManager {
@@ -156,14 +199,9 @@ impl TcpTunnelManager {
     bind_port_range: std::ops::RangeInclusive<T>,
     bind_ip: IpAddr,
   ) -> TcpTunnelManager {
-    let (start, end): (u16, u16) = {
-      let (a, b) = bind_port_range.into_inner();
-      (a.into(), b.into())
-    };
     TcpTunnelManager {
-      range: std::ops::RangeInclusive::new(start, end),
       bind_ip,
-      bound_ports: Default::default(),
+      bound_ports: PortRangeAllocator::new(bind_port_range).into(),
     }
   }
 
@@ -174,9 +212,9 @@ impl TcpTunnelManager {
     tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,
   ) -> Result<()> {
-    let port_range = self.range.clone();
-    let bind_ip = self.bind_ip;
+    // Capture copies of items needed from &self before the first await
     let bound_ports = self.bound_ports.clone();
+    let bind_ip = self.bind_ip;
     if shutdown_notifier.is_triggered() {
       return Err(AnyErr::msg("Connection aborted due to pre-closure"));
     }
@@ -186,40 +224,20 @@ impl TcpTunnelManager {
     z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
       .await;
     // TODO: register a connection *only after* session authentication (make an async authn trait)
-    let next_port: u16 = {
-      let mut lock = bound_ports.lock().await;
-      let port = port_range
-        .into_iter()
-        .filter(|test_port| !lock.contains(test_port))
-        .min()
-        .ok_or_else(|| {
-          AnyErr::msg(format!(
-            "No free ports available in range {:?}",
-            &self.range
-          ))
-        })?;
-      lock.insert(port);
-      port
-    };
-    let res: Result<(), _> = {
-      let bind_addr = SocketAddr::new(bind_ip, next_port);
-      tracing::info!(
-        "Binding client {:?} ({:?}) on address {:?}",
-        id,
-        remote_addr,
-        bind_addr
-      );
-      let mut listener = TcpListener::bind(bind_addr).await?;
-      let quinn::NewConnection {
-        connection: conn,
-        bi_streams: _bi,
-        uni_streams: uni,
-        ..
-      } = tunnel;
+    let next_port: u16 = self.bound_ports.allocate().await?;
+    finally_async(
+      async move || -> Result<(), AnyErr> {
+        let bind_addr = SocketAddr::new(bind_ip, next_port);
+        tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+        let mut listener = TcpListener::bind(bind_addr).await?;
+        tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+        let quinn::NewConnection {
+          connection: conn,
+          uni_streams: uni,
+          ..
+        } = tunnel;
 
-      // TODO: Periodically attempt to send small amounts of data, in order to trigger a connection failure when the connection has been lost
-      let connection_provider = BasicProxyConnectionProvider::new(conn);
-      let res: Result<(), AnyErr> = {
+        let connection_provider = BasicProxyConnectionProvider::new(conn);
         let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
         streams.push(
           accept_loop(&mut listener, bind_addr, connection_provider)
@@ -254,29 +272,16 @@ impl TcpTunnelManager {
           .boxed()
           .next()
           .await
-          .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))
-      };
-      res
-      // .map(|x| match x {
-      //   Either::Left((x, _)) => x,
-      //   Either::Right((x, _)) => x
-      // }).await
-    };
+          .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))?;
+        Ok(())
+      },
+      |_| async move {
+        // On success or failure, unbind port
+        bound_ports.free(next_port).await.map(|_| ())
+      }
+    ).await?;
 
-    // On success or failure, unbind port
-    {
-      let mut lock = bound_ports.lock().await;
-      lock.remove(&next_port);
-      tracing::trace!("Unbound port {}", next_port);
-    }
-
-    res
-
-    // tunnel
-    //   .connection
-    //   .close(quinn::VarInt::from_u32(42), "Fake handler error".as_bytes());
-
-    // Err(AnyErr::msg("Fake handler error"))
+    Ok(())
   }
 }
 
