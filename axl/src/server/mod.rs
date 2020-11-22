@@ -32,6 +32,7 @@ use std::{
   task::{Context, Poll},
 };
 use tracing::{info, instrument, trace};
+use tracing_futures::Instrument;
 
 pub mod authentication;
 pub mod deferred;
@@ -225,6 +226,8 @@ impl TcpTunnelManager {
       .await;
     // TODO: register a connection *only after* session authentication (make an async authn trait)
     let next_port: u16 = self.bound_ports.allocate().await?;
+    let lifetime_handler_span =
+      tracing::debug_span!("lifetime handler", id=?id, tcp_port=next_port);
     finally_async(
       async move || -> Result<(), AnyErr> {
         let bind_addr = SocketAddr::new(bind_ip, next_port);
@@ -249,7 +252,7 @@ impl TcpTunnelManager {
         // This is a bit early of placement for this check- Live connections may be abruptly closed by
         // this design, and the connection handlers themselves should be watching for shutdown notifications.
         // The accept loop should gracefully handle its own shutdown notification requests.
-        // TODO: Pass shutdown_notifier as a parameter instead
+        // TODO: Pass shutdown_notifier as a parameter instead, and add a max-duration hard-timeout here
         streams.push(
           shutdown_notifier
             .map(|_| -> Result<(), AnyErr> {
@@ -279,7 +282,9 @@ impl TcpTunnelManager {
         // On success or failure, unbind port
         bound_ports.free(next_port).await.map(|_| ())
       }
-    ).await?;
+    )
+      .instrument(lifetime_handler_span)
+      .await?;
 
     Ok(())
   }
