@@ -6,6 +6,7 @@ use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
 use axl::common::MetaStreamHeader;
+use axl::server::authentication::SimpleAckAuthenticationHandler;
 use axl::server::{
   deferred::{
     AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
@@ -62,7 +63,11 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     endpoint.bind(&config.quinn_bind_addr)?
   };
 
-  let manager = TcpTunnelManager::new(config.tcp_bind_port_range, config.tcp_bind_ip);
+  let manager = TcpTunnelManager::new(
+    config.tcp_bind_port_range,
+    config.tcp_bind_ip,
+    Box::new(SimpleAckAuthenticationHandler::new()),
+  );
   let server = Box::new(ConcurrentDeferredTunnelServer::new(manager));
 
   use futures::stream::TryStreamExt;

@@ -2,6 +2,8 @@ use crate::common::MetaStreamHeader;
 use crate::util::{self, validators::parse_socketaddr};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use axl::server::authentication::{AuthenticationClient, SimpleAckAuthenticationHandler};
+use axl::util::framed::read_framed_json;
 use futures::future::*;
 use futures::*;
 use quinn::{
@@ -52,7 +54,15 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .connect(&config.driver_host, &config.driver_san)
       .context("Connecting to server")?
       .await;
-    connecting.context("Finalizing connection to server...")?
+    let mut connection = connecting.context("Finalizing connection to server...")?;
+    // Authenticate tunnel
+    let authenticator = SimpleAckAuthenticationHandler::new();
+    let fake_shutdown_trigger = triggered::trigger();
+    authenticator
+      .authenticate_client(&mut connection, &fake_shutdown_trigger.1)
+      .await?;
+    // Return successfully authenticated tunnel connection
+    connection
   };
   tracing::info!(remote = ?connection.remote_address(), "connected");
 
@@ -119,22 +129,8 @@ async fn handle_connection(
     target: "new connection",
     id = ?id
   );
-  // let header = MetaStreamHeader::read_from_stream(&mut recv).await?;
   tracing::trace!("Loading metadata header");
-  use std::io::Write;
-  let mut header = [0u8; 64];
-  recv.read_exact(&mut header).await?; // TODO: Actually read the header
-  let first_zero = header.iter().position(|x| *x == 0).unwrap_or(32);
-  let read_string = std::str::from_utf8(&header[0..first_zero])
-    .unwrap()
-    .to_string();
-  tracing::debug!("Received header: {}", read_string);
-  header = [0u8; 64];
-  write!(&mut header[..], "{}/{}", &read_string, &read_string).unwrap();
-  send.write_all(&header).await?;
-  send.flush().await?;
-
-  let header = MetaStreamHeader::new();
+  let header: MetaStreamHeader = read_framed_json(&mut recv).await?;
 
   tracing::debug!("Header received for connection {}: {:#?}", id, header);
   let (_header, await_connection): (MetaStreamHeader, _) = build_proxy_connection(header).await;
@@ -143,9 +139,7 @@ async fn handle_connection(
 
   tracing::trace!("Proxying...");
   util::proxy_from_tcp_stream(connection, (&mut send, &mut recv)).await?;
-
-  // util::proxy_stream((&mut recv, &mut send)).await; // Echo server
-
   tracing::info!("Closed connection {}", id);
+
   Ok(())
 }

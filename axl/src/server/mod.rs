@@ -4,6 +4,7 @@ use crate::common::MetaStreamHeader;
 use crate::server::deferred::{
   AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
 };
+use crate::util::framed::write_framed_json;
 use crate::util::{
   self, finally_async,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
@@ -49,19 +50,10 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   let (proxy_header, mut proxy_connection) =
     proxy_connection_provider.open_connection(peer_addr).await?;
 
-  tracing::info!("Sending HELO...");
-  let mut buffer = [0u8; 64];
-  use std::io::Write;
-  write!(&mut buffer[..], "HELO").unwrap();
-  proxy_connection.0.write_all(&buffer).await?;
-  buffer = [0u8; 64];
-  proxy_connection.1.read_exact(&mut buffer).await?;
-  let read_string = std::str::from_utf8(&buffer).unwrap();
-  if !read_string.starts_with("HELO/HELO\0") {
-    tracing::trace!(raw = read_string, "bad_client_ack");
-    return Err(AnyErr::msg("Invalid client ack"));
+  {
+    let header = MetaStreamHeader::new();
+    write_framed_json(&mut proxy_connection.0, &header).await?;
   }
-  tracing::trace!("client_ack");
 
   tracing::info!("Beginning proxying...");
   let proxy_res =
@@ -193,16 +185,19 @@ impl PortRangeAllocator {
 pub struct TcpTunnelManager {
   bind_ip: IpAddr,
   bound_ports: Arc<PortRangeAllocator>,
+  authenticator: Box<dyn authentication::AuthenticationHandler>,
 }
 
 impl TcpTunnelManager {
-  pub fn new<T: Into<u16>>(
-    bind_port_range: std::ops::RangeInclusive<T>,
+  pub fn new<TPortRange: Into<u16>>(
+    bind_port_range: std::ops::RangeInclusive<TPortRange>,
     bind_ip: IpAddr,
+    authenticator: Box<dyn authentication::AuthenticationHandler>,
   ) -> TcpTunnelManager {
     TcpTunnelManager {
       bind_ip,
       bound_ports: PortRangeAllocator::new(bind_port_range).into(),
+      authenticator,
     }
   }
 
@@ -210,7 +205,7 @@ impl TcpTunnelManager {
   async fn handle_connection(
     &self,
     z: &mut gen_z::Yielder<TunnelServerEvent>,
-    tunnel: quinn::NewConnection,
+    mut tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,
   ) -> Result<()> {
     // Capture copies of items needed from &self before the first await
@@ -221,7 +216,10 @@ impl TcpTunnelManager {
     }
 
     let remote_addr = tunnel.connection.remote_address();
-    let id = AxlClientIdentifier::new(remote_addr.to_string());
+    let id = self
+      .authenticator
+      .authenticate(&mut tunnel, &shutdown_notifier)
+      .await?;
     z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
       .await;
     // TODO: register a connection *only after* session authentication (make an async authn trait)
