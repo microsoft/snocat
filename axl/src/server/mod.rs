@@ -1,6 +1,6 @@
 //! Types for building an AXL server and accepting, authenticating, and routing connections
 
-use crate::common::MetaStreamHeader;
+use crate::common::{authentication, MetaStreamHeader};
 use crate::server::deferred::{
   AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
 };
@@ -35,7 +35,6 @@ use std::{
 use tracing::{info, instrument, trace};
 use tracing_futures::Instrument;
 
-pub mod authentication;
 pub mod deferred;
 pub mod routing;
 

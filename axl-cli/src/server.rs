@@ -5,8 +5,7 @@ use crate::util::{
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
-use axl::common::MetaStreamHeader;
-use axl::server::authentication::SimpleAckAuthenticationHandler;
+use axl::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
 use axl::server::{
   deferred::{
     AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
