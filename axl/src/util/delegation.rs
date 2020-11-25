@@ -55,63 +55,22 @@ pub struct DelegationPool {
   delegations: Mutex<DelegationSet>,
 }
 
-pub struct DelegatedReceiver<'a, 'b: 'a, T: Send + 'b> {
+pub struct DelegatedReceiver<'a, T: Send> {
   task_id: u64,
-  pool: &'a DelegationPool,
-  receiver: oneshot::Receiver<T>,
-  received: Option<(Result<T, oneshot::error::RecvError>, BoxFuture<'a, ()>)>,
-  ltb: std::marker::PhantomData<&'b DelegationPool>,
+  receiver: BoxFuture<'a, Result<T, DelegationError>>,
 }
 
-impl<'a, 'b: 'a, T: Send + 'b> std::fmt::Debug for DelegatedReceiver<'a, 'b, T> {
+impl<'a, 'b: 'a, T: Send + 'b> std::fmt::Debug for DelegatedReceiver<'a, T> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "[DTaskR #{}]", &self.task_id)
   }
 }
 
-impl<'a, 'b: 'a, T: Send + 'b> Future for DelegatedReceiver<'a, 'b, T> {
+impl<'a, 'b: 'a, T: Send + 'b> Future for DelegatedReceiver<'a, T> {
   type Output = Result<T, DelegationError>;
 
-  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    let task_id = self.task_id;
-    let pool = self.pool;
-    if self.received.is_none() {
-      let (received, recv) = unsafe {
-        use std::ops::DerefMut;
-        let raw = Pin::into_inner_unchecked(self);
-        (&mut raw.received, Pin::new_unchecked(&mut raw.receiver))
-      };
-      match recv.poll(cx) {
-        Poll::Ready(res) => {
-          use futures::future::FutureExt;
-          let mut detacher = pool.detach(task_id).boxed();
-          match detacher.poll_unpin(cx) {
-            Poll::Ready(_) => {
-              // In case the detach was synchronous, we provide a fast-path with no state-save
-              Poll::Ready(res.map_err(|_| DelegationError::DispatcherDropped))
-            }
-            Poll::Pending => {
-              *received = Some((res, detacher));
-              Poll::Pending
-            }
-          }
-        }
-        Poll::Pending => Poll::Pending,
-      }
-    } else {
-      let raw = unsafe { Pin::into_inner_unchecked(self) };
-      let (res, mut detacher) = std::mem::replace(&mut raw.received, None).unwrap();
-      match detacher.poll_unpin(cx) {
-        Poll::Ready(_) => {
-          // If there was an error, the dispatcher handle was dropped before sending anything
-          Poll::Ready(res.map_err(|_| DelegationError::DispatcherDropped))
-        }
-        Poll::Pending => {
-          let _ = std::mem::replace(&mut raw.received, Some((res, detacher)));
-          Poll::Pending
-        }
-      }
-    }
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    self.receiver.poll_unpin(cx)
   }
 }
 
@@ -131,7 +90,7 @@ impl DelegationPool {
   >(
     &'b self,
     dispatch: impl (FnOnce(oneshot::Sender<T>) -> FutDispatch) + Send + 'a,
-  ) -> impl Future<Output = BoxFuture<'b, Result<T, DelegationError>>> + 'a {
+  ) -> impl Future<Output = DelegatedReceiver<'b, T>> + 'a {
     let (dispatcher, promise) = oneshot::channel::<T>();
 
     async move {
@@ -140,10 +99,13 @@ impl DelegationPool {
       // Fire the `dispatch` closure that must eventually result a value being sent via `dispatcher`
       dispatch(dispatcher).await;
 
-      async move {
-        self.detach(task_id).await;
-        promise.map_err(|_| DelegationError::DispatcherDropped).await
-      }.boxed()
+      DelegatedReceiver {
+        task_id,
+        receiver: async move {
+          self.detach(task_id).await;
+          promise.map_err(|_| DelegationError::DispatcherDropped).await
+        }.boxed()
+      }
     }
   }
 
