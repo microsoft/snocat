@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
+use futures::TryFutureExt;
 
 #[derive(Default, Debug)]
 pub struct DelegatedTask {}
@@ -130,7 +131,7 @@ impl DelegationPool {
   >(
     &'b self,
     dispatch: impl (FnOnce(oneshot::Sender<T>) -> FutDispatch) + Send + 'a,
-  ) -> impl Future<Output = DelegatedReceiver<T>> + 'a {
+  ) -> impl Future<Output = BoxFuture<'b, Result<T, DelegationError>>> + 'a {
     let (dispatcher, promise) = oneshot::channel::<T>();
 
     async move {
@@ -139,13 +140,10 @@ impl DelegationPool {
       // Fire the `dispatch` closure that must eventually result a value being sent via `dispatcher`
       dispatch(dispatcher).await;
 
-      DelegatedReceiver {
-        pool: self,
-        task_id,
-        receiver: promise,
-        received: None,
-        ltb: std::marker::PhantomData,
-      }
+      async move {
+        self.detach(task_id).await;
+        promise.map_err(|_| DelegationError::DispatcherDropped).await
+      }.boxed()
     }
   }
 
