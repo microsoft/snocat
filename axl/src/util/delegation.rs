@@ -123,11 +123,52 @@ impl DelegationPool {
   }
 }
 
+pub mod blocking {
+  use futures::future::BoxFuture;
+  use futures::future::{Future, FutureExt};
+  use pin_project::pin_project;
+  use std::pin::Pin;
+  use std::sync::Arc;
+  use std::task::{Context, Poll};
+  use tokio::sync::oneshot::error::RecvError;
+  use tokio::sync::{oneshot, Mutex};
+  use futures::TryFutureExt;
+
+  use crate::util::delegation::{DelegationPool, DelegatedReceiver, DelegationError};
+
+  // pub fn delegate_threaded<
+  //   'a,
+  //   'b: 'a,
+  //   'c: 'b,
+  //   T: Sized + Send + 'c,
+  // >(
+  //   pool: &'b DelegationPool,
+  //   dispatch_blocking: impl (FnOnce(oneshot::Sender<T>) -> ()) + Send + 'b,
+  // ) -> impl Future<Output = BoxFuture<'b, Result<T, DelegationError>>> + 'a {
+  //   async move {
+  //     let recvr = pool.delegate::<'a, 'b, 'c>(|dispatcher| async move {
+  //       // If the future returned by this is dropped, the thread will not be cancelled
+  //       let blocking = tokio::task::spawn_blocking(|| {
+  //         dispatch_blocking(dispatcher)
+  //       });
+  //       match blocking.await {
+  //         Ok(()) => (),
+  //         Err(_join_error) => panic!("Dispatcher thread panicked")
+  //       }
+  //     }).await;
+  //
+  //     recvr.boxed()
+  //   }
+  //     .boxed()
+  // }
+}
+
 #[cfg(test)]
 mod tests {
 
   #[tokio::test]
   async fn delegation_sync() {
+    //! Verifies that synchronous dispatch doesn't cause a deadlock
     let pool = super::DelegationPool::new();
     let res = pool
       .delegate(async move |dispatch| {
@@ -141,6 +182,7 @@ mod tests {
 
   #[tokio::test]
   async fn delegation_async() {
+    //! Verifies that dispatch can occur after an async context switch
     let pool = super::DelegationPool::new();
     let res = pool
       .delegate(async move |dispatch| {
@@ -155,6 +197,7 @@ mod tests {
 
   #[tokio::test]
   async fn delegation_externality_prior() {
+    //! Verifies that externalizing the dispatch procedure allows phase-2 access to dispatcher refs
     let pool = super::DelegationPool::new();
     let mut dispatcher = None;
     let dispatched = {
