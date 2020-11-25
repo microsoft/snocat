@@ -60,6 +60,12 @@ pub struct DelegatedReceiver<'a, T: Send> {
   receiver: BoxFuture<'a, Result<T, DelegationError>>,
 }
 
+impl<'a, T: Send> DelegatedReceiver<'a, T> {
+  pub fn get_task_id(&self) -> u64 {
+    self.task_id
+  }
+}
+
 impl<'a, 'b: 'a, T: Send + 'b> std::fmt::Debug for DelegatedReceiver<'a, T> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "[DTaskR #{}]", &self.task_id)
