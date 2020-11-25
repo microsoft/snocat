@@ -15,6 +15,7 @@ use std::path::Path;
 use std::task::{Context, Poll};
 use std::{net::SocketAddr, sync::Arc};
 
+pub mod delegation;
 pub mod framed;
 pub(crate) mod merge_streams;
 pub mod validators;
