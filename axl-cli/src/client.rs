@@ -33,8 +33,11 @@ pub struct ClientArgs {
 
 pub async fn client_main(config: ClientArgs) -> Result<()> {
   let config = Arc::new(config);
-  let cert_der = std::fs::read(&config.authority_cert).context("Failed reading cert file")?;
-  let authority = quinn::Certificate::from_der(&cert_der)?;
+  let cert_pem = std::fs::read(&config.authority_cert).context("Failed reading cert file")?;
+  let authority = quinn::CertificateChain::from_pem(&cert_pem)?;
+  let authority = quinn::Certificate::from(
+    authority.iter().nth(0).cloned().ok_or_else(|| AnyErr::msg("No root authority"))?
+  );
   let quinn_config = {
     let mut qc = quinn::ClientConfigBuilder::default();
     qc.enable_keylog();

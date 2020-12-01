@@ -113,14 +113,13 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 }
 
 fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
-  let cert_der = std::fs::read(&config.cert).context("Failed reading cert file")?;
-  let priv_der = std::fs::read(&config.key).context("Failed reading private key file")?;
+  let cert_pem = std::fs::read(&config.cert).context("Failed reading cert file")?;
+  let priv_pem = std::fs::read(&config.key).context("Failed reading private key file")?;
   let priv_key =
-    quinn::PrivateKey::from_der(&priv_der).context("Quinn .der parsing of private key failed")?;
+    quinn::PrivateKey::from_pem(&priv_pem).context("Quinn .pem parsing of private key failed")?;
   let mut config = quinn::ServerConfigBuilder::default();
   config.use_stateless_retry(true);
   let mut transport_config = TransportConfig::default();
-  transport_config.stream_window_uni(0);
   transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
   transport_config
     .max_idle_timeout(Some(std::time::Duration::from_secs(30)))
@@ -131,7 +130,7 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
   cfg_builder.protocols(util::ALPN_QUIC_HTTP);
   cfg_builder.enable_keylog();
-  let cert = quinn::Certificate::from_der(&cert_der)?;
-  cfg_builder.certificate(quinn::CertificateChain::from_certs(vec![cert]), priv_key)?;
+  let cert_chain = quinn::CertificateChain::from_pem(&cert_pem)?;
+  cfg_builder.certificate(cert_chain, priv_key)?;
   Ok(cfg_builder.build())
 }
