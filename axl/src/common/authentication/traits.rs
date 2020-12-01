@@ -47,7 +47,11 @@ impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
         .await
         .context("Failure closing authentication channel");
       match (res, closed) {
-        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Ok(id), Err(e)) => {
+          tracing::warn!("Failure in closing of client authentication channel {:?}", e);
+          Ok(id) // Failure here means the channel was already closed by the other party
+        }
+        (Err(e), _) => Err(e),
         (Ok(id), _) => Ok(id),
       }
     }
@@ -84,13 +88,18 @@ impl<T: BidiChannelAuthenticationClient> AuthenticationClient for T {
       let res = self
         .authenticate_client_channel(&mut auth_channel, &tunnel, shutdown_notifier)
         .await;
+      tracing::debug!("Authenticated with result {:?}", &res);
       let closed = auth_channel
         .0
         .close()
         .await
         .context("Failure closing authentication channel");
       match (res, closed) {
-        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Ok(id), Err(e)) => {
+          tracing::warn!("Failure in closing of authentication channel {:?}", e);
+          Ok(id) // Failure here means the channel was already closed by the other party
+        }
+        (Err(e), _) => Err(e),
         (Ok(id), _) => Ok(id),
       }
     }
