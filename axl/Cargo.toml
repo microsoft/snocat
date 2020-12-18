@@ -24,3 +24,6 @@ tokio = { version = "^0.2.22", features=["blocking", "tcp", "io-util", "signal",
 triggered = "~0.1.1"
 
 [dev-dependencies]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
