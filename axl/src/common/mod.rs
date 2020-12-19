@@ -20,6 +20,7 @@ use std::{
 };
 
 pub mod authentication;
+pub mod ffi;
 pub mod routing;
 
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
