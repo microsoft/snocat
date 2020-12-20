@@ -22,6 +22,7 @@ use std::{
 pub mod authentication;
 pub mod ffi;
 pub mod routing;
+pub(crate) mod vtdroppable;
 
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct MetaStreamHeader {}
