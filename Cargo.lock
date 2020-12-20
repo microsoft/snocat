@@ -178,6 +178,7 @@ dependencies = [
  "futures",
  "futures-io",
  "gen-z",
+ "lazy_static",
  "log",
  "pin-project 1.0.2",
  "quinn",
