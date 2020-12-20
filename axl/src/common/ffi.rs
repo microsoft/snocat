@@ -1,5 +1,7 @@
 //! Bindings for instantiation and control via C ABI
 
+use lazy_static::lazy_static;
+use ffi_support::{ConcurrentHandleMap, define_bytebuffer_destructor, define_handle_map_deleter, define_string_destructor, HandleError};
 use crate::{
   common::authentication::{self, DelegatedAuthenticationHandler},
   server::{
@@ -23,28 +25,7 @@ use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 
-pub trait CPtr {
-  fn into_c_ptr(self: Box<Self>) -> *mut Box<Self>;
-  unsafe fn from_c_ptr(ptr: *mut Box<Self>) -> Box<Self>;
-}
-
-impl<T: Sized> CPtr for T {
-  fn into_c_ptr(self: Box<T>) -> *mut Box<T> {
-    Box::into_raw(Box::new(self))
-  }
-  unsafe fn from_c_ptr(ptr: *mut Box<T>) -> Box<T> {
-    *Box::from_raw(ptr)
-  }
-}
-
-impl CPtr for dyn TunnelManager {
-  fn into_c_ptr(self: Box<dyn TunnelManager>) -> *mut Box<dyn TunnelManager> {
-    Box::into_raw(Box::new(self))
-  }
-  unsafe fn from_c_ptr(ptr: *mut Box<dyn TunnelManager>) -> Box<dyn TunnelManager> {
-    *Box::from_raw(ptr)
-  }
-}
+use super::vtdroppable::VTDroppable;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -70,11 +51,7 @@ pub extern "C" fn axl_read_string(len: *mut u32) -> *const u8 {
 pub extern "C" fn axl_server_start() -> *mut Box<String> {
   println!("HELLO WORLD FROM C API");
   // let x: Box<dyn TunnelManager> = todo!();
-  let x: Box<String> = Box::new(String::from("Hello, I'm allocating"));
-  let y = x.into_c_ptr();
-  // let z = unsafe { CPtr::from_c_ptr(y) };
 
-  // y
   todo!()
 }
 
@@ -107,11 +84,104 @@ pub extern "C" fn axl_create_server_config_basic(
   std::ptr::null_mut()
 }
 
+// #[no_mangle]
+// pub extern "C" fn axl_server_stop(handle: *mut Box<String>) -> () {
+//   let inner = unsafe { CPtr::from_c_ptr(handle) };
+//   println!(
+//     "HELLO WORLD FROM C API - Pretending to stop handle \"{}\"",
+//     &*inner
+//   );
+// }
+
+// struct ServerHandle<T>(Box<ConcurrentDeferredTunnelServer<T>>);
+struct ServerHandle<T : TunnelManager>(Option<Box<ConcurrentDeferredTunnelServer<T>>>, u32);
+impl<T : TunnelManager> Drop for ServerHandle<T> {
+  fn drop(&mut self) {
+    println!(
+      "HELLO WORLD FROM C API - Pretending to stop server handle \"{}\"",
+      &self.1
+    );
+  }
+}
+
+// lazy_static! {
+//   static ref SERVER_HANDLES: ConcurrentHandleMap<ServerHandle<Box<dyn TunnelManager>>> = ConcurrentHandleMap::new();
+// }
+// define_handle_map_deleter!(SERVER_HANDLES, axl_free_server_handle);
+
+define_bytebuffer_destructor!(axl_free_buffer);
+define_string_destructor!(axl_free_string);
+
+struct DropPrinter(String);
+impl DropPrinter {
+  pub fn of(s: &str) -> DropPrinter {
+    DropPrinter(String::from(s))
+  }
+}
+impl Drop for DropPrinter {
+  fn drop(&mut self) {
+    println!("DropPrinter: {}", &self.0)
+  }
+}
+
+lazy_static! {
+  static ref TEST_HANDLES: ConcurrentHandleMap<VTDroppable> = ConcurrentHandleMap::new();
+}
+
 #[no_mangle]
-pub extern "C" fn axl_server_stop(handle: *mut Box<String>) -> () {
-  let inner = unsafe { CPtr::from_c_ptr(handle) };
-  println!(
-    "HELLO WORLD FROM C API - Pretending to stop handle \"{}\"",
-    &*inner
-  );
+pub extern "C" fn create_thing(val: i32) -> u64 {
+  // println!("Pretending to allocate something");
+  TEST_HANDLES.insert(
+    VTDroppable::get_raw(
+      Box::new(
+        DropPrinter::of(
+          &format!("Printer for {}", val)))))
+    .into_u64()
+}
+
+#[no_mangle]
+pub extern "C" fn print_thing(handle: u64) -> () {
+  // println!("Pretending to allocate something");
+  let x: Result<String, HandleError> = TEST_HANDLES.get_u64(handle,
+                       |x| x.try_as_typed_ref::<Box<DropPrinter>>()
+                         .map_or(Ok(String::from("<invalid handle>")), |x| Ok(x.as_ref().0.clone())));
+  let x = x.unwrap();
+  println!("Displaying handle {} with value {:?}", handle, x);
+}
+
+#[no_mangle]
+pub extern "C" fn take_ownership_of_thing(handle: u64) -> () {
+  println!("Pretending to take ownership of something then free it");
+  match TEST_HANDLES.remove_u64(handle) {
+    Ok(Some(v)) => {
+      println!("Took ownership of {:?} at handle {} and freed it", &v.as_typed_ref::<Box<DropPrinter>>().0, handle);
+      drop(v);
+    }
+    Ok(None) => {
+      println!("TakeOwnership: No value at handle {}", handle);
+    }
+    Err(e) => {
+      println!("TakeOwnership: Freeing Error {:?} with handle {}", e, handle);
+    }
+  }
+
+  let droppable = VTDroppable::get_raw(DropPrinter::of("Paradrop"));
+  let inner = droppable.extract_typed::<DropPrinter>();
+  println!("Extracted printer with contents {}", &inner.0);
+}
+
+#[no_mangle]
+pub extern "C" fn free_thing(handle: u64) -> () {
+  // println!("Pretending to free something");
+  match TEST_HANDLES.remove_u64(handle) {
+    Ok(Some(v)) => {
+      println!("Freed value {:?} at handle {}; {} remain", &v.as_typed_ref::<Box<DropPrinter>>().0, handle, TEST_HANDLES.len());
+    }
+    Ok(None) => {
+      println!("No value at handle {}", handle);
+    }
+    Err(e) => {
+      println!("Freeing Error {:?} with handle {}", e, handle);
+    }
+  }
 }
