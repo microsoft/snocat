@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-    "axl",
-    "axl-cli",
+    "snocat",
+    "snocat-cli",
 ]

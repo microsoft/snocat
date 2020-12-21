@@ -1,7 +1,7 @@
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use axl::util::framed::read_framed_json;
-use axl::{
+use snocat::util::framed::read_framed_json;
+use snocat::{
   common::{
     authentication::{AuthenticationClient, SimpleAckAuthenticationHandler},
     MetaStreamHeader,

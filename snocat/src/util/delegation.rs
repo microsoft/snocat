@@ -166,9 +166,9 @@ pub mod blocking {
 #[cfg(test)]
 mod tests {
 
+  /// Verifies that synchronous dispatch doesn't cause a deadlock
   #[tokio::test]
   async fn delegation_sync() {
-    //! Verifies that synchronous dispatch doesn't cause a deadlock
     let pool = super::DelegationPool::new();
     let res = pool
       .delegate(async move |dispatch| {
@@ -180,9 +180,9 @@ mod tests {
     assert_eq!(res, 42);
   }
 
+  /// Verifies that dispatch can occur after an async context switch
   #[tokio::test]
   async fn delegation_async() {
-    //! Verifies that dispatch can occur after an async context switch
     let pool = super::DelegationPool::new();
     let res = pool
       .delegate(async move |dispatch| {
@@ -195,9 +195,9 @@ mod tests {
     assert_eq!(res, 42);
   }
 
+  /// Verifies that externalizing the dispatch procedure allows phase-2 access to dispatcher refs
   #[tokio::test]
   async fn delegation_externality_prior() {
-    //! Verifies that externalizing the dispatch procedure allows phase-2 access to dispatcher refs
     let pool = super::DelegationPool::new();
     let mut dispatcher = None;
     let dispatched = {

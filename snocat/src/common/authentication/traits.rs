@@ -1,5 +1,5 @@
 #[warn(unused_imports)]
-use crate::server::deferred::AxlClientIdentifier;
+use crate::server::deferred::SnocatClientIdentifier;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
@@ -10,7 +10,7 @@ pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
     &'a self,
     tunnel: &'a mut quinn::NewConnection,
     shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<AxlClientIdentifier>>;
+  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>>;
 }
 
 pub trait AuthenticationClient: std::fmt::Debug + Send + Sync {
@@ -27,7 +27,7 @@ pub trait BidiChannelAuthenticationHandler: AuthenticationHandler {
     channel: &'a mut (quinn::SendStream, quinn::RecvStream),
     tunnel: &'a quinn::NewConnection,
     shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<AxlClientIdentifier>>;
+  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>>;
 }
 
 impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
@@ -35,7 +35,7 @@ impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
     &'a self,
     tunnel: &'a mut quinn::NewConnection,
     shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<AxlClientIdentifier>> {
+  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
     async move {
       let mut auth_channel = tunnel.connection.open_bi().await?;
       let res = self

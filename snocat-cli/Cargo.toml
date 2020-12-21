@@ -1,31 +1,30 @@
 [package]
-name = "axl"
-description = "Asynchronous Cross-Link - Reverse TCP Tunnelling Library"
+name = "snocat-cli"
+description = "Reverse TCP Tunnelling Tool"
 version = "0.1.0"
 authors = ["Zoey <Dessix@Dessix.net>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+snocat = { path = "../snocat" }
 anyhow = "~1.0.34"
+clap = "~2.33.3"
 async-std = { version = "~1.7", features=["attributes", "tokio02"] }
-ffi-support = "0.4.2"
 futures = "~0.3.7"
 futures-io = "~0.3.7"
 gen-z = "~0.1.0"
-lazy_static = "1.4.0"
 log = "~0.4.11"
-pin-project = "~1.0.2"
 quinn = "~0.6"
-serde = "~1.0.117"
-serde_json = "~1.0.59"
+rcgen = "0.8"
 tracing = "~0.1.21"
 tracing-futures = "~0.2.4"
 tracing-subscriber = "~0.2.15"
-tokio = { version = "^0.2.22", features=["blocking", "tcp", "io-util", "signal", "stream", "sync", "time", "macros"] }
+tokio = { version = "^0.2.22", features=["tcp", "io-util", "signal", "stream", "macros"] }
 triggered = "~0.1.1"
 
 [dev-dependencies]
 
-[lib]
-crate-type = ["rlib", "cdylib"]
+#[[bin]]
+#name = "snocat"
+#path = "src/main.rs"

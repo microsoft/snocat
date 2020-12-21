@@ -1,5 +1,5 @@
 #[warn(unused_imports)]
-use crate::server::deferred::AxlClientIdentifier;
+use crate::server::deferred::SnocatClientIdentifier;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
@@ -30,10 +30,10 @@ impl BidiChannelAuthenticationHandler for DelegatedAuthenticationHandler {
     _channel: &'a mut (quinn::SendStream, quinn::RecvStream),
     tunnel: &'a quinn::NewConnection,
     _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<AxlClientIdentifier>> {
+  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
     async move {
       let peer_addr = tunnel.connection.remote_address();
-      let id = AxlClientIdentifier::new(peer_addr.to_string());
+      let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
       .boxed()

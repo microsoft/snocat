@@ -2,7 +2,7 @@
 
 use crate::common::{authentication, MetaStreamHeader};
 use crate::server::deferred::{
-  AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
+  SnocatClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
 };
 use crate::util::framed::write_framed_json;
 use crate::util::{

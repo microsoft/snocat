@@ -169,50 +169,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
 
 [[package]]
-name = "axl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-std",
- "ffi-support",
- "futures",
- "futures-io",
- "gen-z",
- "lazy_static",
- "log",
- "pin-project 1.0.2",
- "quinn",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "triggered",
-]
-
-[[package]]
-name = "axl-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-std",
- "axl",
- "clap",
- "futures",
- "futures-io",
- "gen-z",
- "log",
- "quinn",
- "rcgen",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "triggered",
-]
-
-[[package]]
 name = "base64"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1242,6 +1198,50 @@ name = "smallvec"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbee7696b84bbf3d89a1c2eccff0850e3047ed46bfcd2e92c29a2d074d57e252"
+
+[[package]]
+name = "snocat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-std",
+ "ffi-support",
+ "futures",
+ "futures-io",
+ "gen-z",
+ "lazy_static",
+ "log",
+ "pin-project 1.0.2",
+ "quinn",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "triggered",
+]
+
+[[package]]
+name = "snocat-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-std",
+ "clap",
+ "futures",
+ "futures-io",
+ "gen-z",
+ "log",
+ "quinn",
+ "rcgen",
+ "snocat",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "triggered",
+]
 
 [[package]]
 name = "spin"

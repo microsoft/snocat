@@ -5,10 +5,10 @@ use crate::util::{
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
-use axl::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
-use axl::server::{
+use snocat::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
+use snocat::server::{
   deferred::{
-    AxlClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
+    SnocatClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
   },
   TcpTunnelManager,
 };
@@ -44,7 +44,7 @@ pub struct ServerArgs {
 }
 
 /// Run an AXL server that binds TCP sockets for each tunnel that connects
-// TODO: move to axl-cli
+// TODO: move to snocat-cli
 #[tracing::instrument(
 skip(config),
 fields(

@@ -39,7 +39,7 @@ impl<T> ::std::ops::Deref for FFIHandle<T> {
 }
 
 #[no_mangle]
-pub extern "C" fn axl_read_string(len: *mut u32) -> *const u8 {
+pub extern "C" fn snocat_read_string(len: *mut u32) -> *const u8 {
   let content = "Hello world from Rusty strings!".as_bytes();
   unsafe {
     *len = content.len() as u32;
@@ -48,7 +48,7 @@ pub extern "C" fn axl_read_string(len: *mut u32) -> *const u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn axl_server_start() -> *mut Box<String> {
+pub extern "C" fn snocat_server_start() -> *mut Box<String> {
   println!("HELLO WORLD FROM C API");
   // let x: Box<dyn TunnelManager> = todo!();
 
@@ -62,7 +62,7 @@ pub struct RawQuinnTransportConfig {
 }
 
 #[no_mangle]
-pub extern "C" fn axl_create_server_config_basic(
+pub extern "C" fn snocat_create_server_config_basic(
   allow_migration: bool,
   certificate_path: *const i8,
   transport_config: RawQuinnTransportConfig,
@@ -85,7 +85,7 @@ pub extern "C" fn axl_create_server_config_basic(
 }
 
 // #[no_mangle]
-// pub extern "C" fn axl_server_stop(handle: *mut Box<String>) -> () {
+// pub extern "C" fn snocat_server_stop(handle: *mut Box<String>) -> () {
 //   let inner = unsafe { CPtr::from_c_ptr(handle) };
 //   println!(
 //     "HELLO WORLD FROM C API - Pretending to stop handle \"{}\"",
@@ -107,10 +107,10 @@ impl<T : TunnelManager> Drop for ServerHandle<T> {
 // lazy_static! {
 //   static ref SERVER_HANDLES: ConcurrentHandleMap<ServerHandle<Box<dyn TunnelManager>>> = ConcurrentHandleMap::new();
 // }
-// define_handle_map_deleter!(SERVER_HANDLES, axl_free_server_handle);
+// define_handle_map_deleter!(SERVER_HANDLES, snocat_free_server_handle);
 
-define_bytebuffer_destructor!(axl_free_buffer);
-define_string_destructor!(axl_free_string);
+define_bytebuffer_destructor!(snocat_free_buffer);
+define_string_destructor!(snocat_free_string);
 
 struct DropPrinter(String);
 impl DropPrinter {

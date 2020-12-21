@@ -30,17 +30,17 @@ use tracing::{info, instrument, trace};
 /// A name for an AXL tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
-pub struct AxlClientIdentifier(Arc<String>);
+pub struct SnocatClientIdentifier(Arc<String>);
 
-impl AxlClientIdentifier {
-  pub fn new<T: std::convert::Into<String>>(t: T) -> AxlClientIdentifier {
-    AxlClientIdentifier(t.into().into())
+impl SnocatClientIdentifier {
+  pub fn new<T: std::convert::Into<String>>(t: T) -> SnocatClientIdentifier {
+    SnocatClientIdentifier(t.into().into())
   }
 }
 
-impl std::fmt::Debug for AxlClientIdentifier {
+impl std::fmt::Debug for SnocatClientIdentifier {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "(axl ({}))", self.0)
+    write!(f, "(snocat ({}))", self.0)
   }
 }
 
@@ -51,9 +51,9 @@ impl std::fmt::Debug for AxlClientIdentifier {
 pub enum TunnelServerEvent {
   DebugMessage(String),
   Open(SocketAddr),
-  Identified(AxlClientIdentifier, SocketAddr),
-  Close(AxlClientIdentifier, SocketAddr),
-  Failure(SocketAddr, Option<AxlClientIdentifier>, String),
+  Identified(SnocatClientIdentifier, SocketAddr),
+  Close(SnocatClientIdentifier, SocketAddr),
+  Failure(SocketAddr, Option<SnocatClientIdentifier>, String),
 }
 
 /// A [`TunnelManager`](trait@TunnelManager) is responsible for the lifecycle of individual tunnels.
