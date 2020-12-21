@@ -95,3 +95,40 @@ impl VTDroppable {
     Ok(*x)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::util::vtdroppable::VTDroppable;
+
+  #[test]
+  fn try_verified_referencing() {
+    let test_value: &str = "hello world";
+    // We don't use mut until later because we want to verify that these don't require mutability
+    let vt = VTDroppable::get_raw(test_value);
+    assert!(matches!(vt.try_as_typed_ref::<&str>(), Ok(x) if x == &test_value)); // Downcasting
+    assert!(matches!(vt.try_as_typed_ref::<&dyn std::any::Any>(), Err(_))); // Only downcast to Self
+    assert!(matches!(vt.try_as_typed_ref::<u32>(), Err(_))); // Checked downcasts for concrete types
+    assert_eq!(*vt.as_typed_ref::<&str>(), test_value); // Checked downcasts for concrete types
+    // Now try the mutable ones
+    let mut vt = vt;
+    assert!(matches!(vt.try_as_typed_ref_mut::<&str>(), Ok(x) if x == &test_value));
+    assert!(matches!(vt.try_as_typed_ref_mut::<&dyn Drop>(), Err(_)));
+    assert!(matches!(vt.try_as_typed_ref_mut::<u32>(), Err(_)));
+    assert_eq!(*vt.as_typed_ref_mut::<&str>(), test_value);
+  }
+
+  #[test]
+  fn try_extraction() {
+    let test_value: &str = "hello world";
+    assert!(matches!(VTDroppable::get_raw(test_value).try_extract_typed::<&str>(), Ok(_)));
+    assert!(matches!(VTDroppable::get_raw(test_value).try_extract_typed::<&dyn Drop>(), Err(_)));
+    // Verify that extraction failures return an error with the still-packed value intact
+    assert_eq!(
+      VTDroppable::get_raw(test_value)
+        .try_extract_typed::<&dyn Drop>()
+        .err()
+        .and_then(|x: VTDroppable| x.try_extract_typed::<&str>().ok()),
+      Some(test_value));
+    assert_eq!(VTDroppable::get_raw(test_value).extract_typed::<&str>(), test_value);
+  }
+}

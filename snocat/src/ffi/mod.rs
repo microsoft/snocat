@@ -12,6 +12,7 @@ use crate::{
   util::{
     self,
     delegation::{self, DelegationPool},
+    vtdroppable::VTDroppable,
   },
 };
 use futures::future::BoxFuture;
@@ -25,7 +26,6 @@ use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 
-use super::vtdroppable::VTDroppable;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
