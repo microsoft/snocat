@@ -297,6 +297,18 @@ impl TunnelManager for TcpTunnelManager {
   }
 }
 
+impl<T : std::convert::AsRef<dyn TunnelManager> + std::fmt::Debug + Send + Sync> TunnelManager for T {
+  fn handle_connection<'connection, 'manager: 'connection>(
+    &'manager self,
+    events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
+    tunnel: quinn::NewConnection,
+    shutdown_notifier: triggered::Listener,
+  ) -> futures::future::BoxFuture<'connection, Result<()>> {
+    TunnelManager::handle_connection(std::convert::AsRef::as_ref(self), events, tunnel, shutdown_notifier).boxed()
+  }
+}
+
+
 /*
 
 server_main will own all components, and must actively await other components' shutdown
