@@ -100,6 +100,21 @@ impl VTDroppable {
 mod tests {
   use crate::util::vtdroppable::VTDroppable;
 
+  /// Utility class which executes a callback upon being dropped.
+  struct DropIt<F: FnMut() -> ()>(Option<F>);
+  impl<F: FnMut() -> ()> Drop for DropIt<F> {
+    fn drop(&mut self) {
+      if let Some(mut cb) = std::mem::replace(&mut self.0, None) {
+        cb();
+      }
+    }
+  }
+  impl<F: FnMut() -> ()> DropIt<F> {
+    pub fn with(f: F) -> DropIt<F> {
+      DropIt(Some(f))
+    }
+  }
+
   #[test]
   fn try_verified_referencing() {
     let test_value: &str = "hello world";
@@ -130,5 +145,29 @@ mod tests {
         .and_then(|x: VTDroppable| x.try_extract_typed::<&str>().ok()),
       Some(test_value));
     assert_eq!(VTDroppable::get_raw(test_value).extract_typed::<&str>(), test_value);
+  }
+
+  /// Assert that dropping the opaque container calls the appropriate Drop implementation internally
+  #[test]
+  fn drops_when_opaque() {
+    // Verify DropIt utility...
+    {
+      let mut has_dropped = false;
+      let test_value = DropIt::with(|| { has_dropped = true; });
+      std::mem::drop(test_value);
+      assert!(has_dropped);
+    }
+    // Verify drop using dropper
+    {
+      // This version uses an Arc/Mutex to work around the 'static requirement of VTDroppable
+      let has_dropped = std::sync::Arc::new(std::sync::Mutex::new(false));
+      {
+        let dropped_writer = has_dropped.clone();
+        let test_value = DropIt::with(move || { *dropped_writer.lock().unwrap() = true; });
+        let droppable = VTDroppable::get_raw(test_value);
+        std::mem::drop(droppable);
+      }
+      assert!(*has_dropped.lock().unwrap());
+    }
   }
 }
