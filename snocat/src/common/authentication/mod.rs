@@ -1,4 +1,4 @@
-//! Types supporting authentication of AXL tunnel connections
+//! Types supporting authentication of Snocat tunnel connections
 #[deny(unused_imports)]
 
 mod traits;

@@ -33,7 +33,7 @@ use std::{
 };
 use tracing::{info, instrument, trace};
 
-/// Parameters used to run an AXL server binding TCP connections
+/// Parameters used to run an Snocat server binding TCP connections
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ServerArgs {
   pub cert: PathBuf,
@@ -43,7 +43,7 @@ pub struct ServerArgs {
   pub tcp_bind_port_range: std::ops::RangeInclusive<u16>,
 }
 
-/// Run an AXL server that binds TCP sockets for each tunnel that connects
+/// Run an Snocat server that binds TCP sockets for each tunnel that connects
 // TODO: move to snocat-cli
 #[tracing::instrument(
 skip(config),

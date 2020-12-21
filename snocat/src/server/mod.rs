@@ -1,4 +1,4 @@
-//! Types for building an AXL server and accepting, authenticating, and routing connections
+//! Types for building an Snocat server and accepting, authenticating, and routing connections
 
 use crate::common::{authentication, MetaStreamHeader};
 use crate::server::deferred::{
@@ -69,7 +69,7 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   Ok(())
 }
 
-// Accept connections from a TCP socket and forward them to new connections over AXL
+// Accept connections from a TCP socket and forward them to new connections over Snocat
 // Watch for failures on BuildConnection, which is responsible for timeout logic if needed
 async fn accept_loop<Provider: ProxyConnectionProvider>(
   listener: &mut TcpListener,

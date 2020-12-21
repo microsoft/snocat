@@ -27,7 +27,7 @@ use std::{
 };
 use tracing::{info, instrument, trace};
 
-/// A name for an AXL tunnel, used to identify its connection in [`TunnelServerEvent`]s.
+/// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
 pub struct SnocatClientIdentifier(Arc<String>);

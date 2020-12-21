@@ -1,4 +1,4 @@
-//! Types for building an AXL client and forwarding connections
+//! Types for building an Snocat client and forwarding connections
 
 use crate::common::MetaStreamHeader;
 use crate::util::{self, validators::parse_socketaddr};
