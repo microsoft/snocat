@@ -16,11 +16,7 @@ impl DelegatedAuthenticationHandler {
 
 impl std::fmt::Debug for DelegatedAuthenticationHandler {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "({})",
-      std::any::type_name::<DelegatedAuthenticationHandler>()
-    )
+    write!(f, "({})", std::any::type_name::<Self>())
   }
 }
 

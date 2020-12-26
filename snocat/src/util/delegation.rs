@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 use futures::TryFutureExt;
+use std::fmt;
 
 #[derive(Default, Debug)]
 pub struct DelegatedTask {}
@@ -49,6 +50,14 @@ impl DelegationSet {
 pub enum DelegationError {
   DispatcherDropped,
 }
+
+impl fmt::Display for DelegationError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Debug::fmt(self, f)
+  }
+}
+
+impl std::error::Error for DelegationError {}
 
 #[derive(Default, Debug)]
 pub struct DelegationPool {

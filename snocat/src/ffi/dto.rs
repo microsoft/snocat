@@ -1,39 +1,47 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 fn bound_check_path(s: &str) -> Result<std::path::PathBuf, anyhow::Error> {
   let cert_path_len = s.len();
   if cert_path_len == 0 {
-    return Err(anyhow::Error::msg("Certificate path"))
+    return Err(anyhow::Error::msg("Certificate path"));
   }
   if cert_path_len > (std::u8::MAX as usize) {
-    return Err(anyhow::Error::msg("Certificate path too long"))
+    return Err(anyhow::Error::msg("Certificate path too long"));
   }
   Ok(std::path::PathBuf::from(s))
 }
 
 #[repr(C)]
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "PascalCase")]
 pub struct QuinnTransportConfig {
   pub idle_timeout_ms: u32,
   pub keep_alive_interval_ms: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
-pub struct ServerConfig {
-  allow_migration: bool,
-  certificate_path: String,
-  certificate_key_path: String,
-  transport_config: QuinnTransportConfig,
+#[serde(rename_all = "PascalCase")]
+pub struct QuinnServerConfig {
+  pub allow_migration: bool,
+  pub certificate_path: String,
+  pub certificate_key_path: String,
+  pub transport_config: QuinnTransportConfig,
 }
 
-impl std::convert::TryInto<quinn::ServerConfig> for self::ServerConfig {
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+pub struct ServerConfig {
+  pub quinn_config: QuinnServerConfig,
+}
+
+impl std::convert::TryInto<quinn::ServerConfig> for self::QuinnServerConfig {
   type Error = anyhow::Error;
 
   fn try_into(self) -> Result<quinn::ServerConfig, Self::Error> {
-    use anyhow::Context;
-    use quinn::{ServerConfig, ServerConfigBuilder, TransportConfig, CertificateChain, PrivateKey};
-    use std::sync::Arc;
     use crate::util;
+    use anyhow::Context;
+    use quinn::{CertificateChain, PrivateKey, ServerConfig, ServerConfigBuilder, TransportConfig};
+    use std::sync::Arc;
 
     let cert_path = bound_check_path(&self.certificate_path)?;
     let key_path = bound_check_path(&self.certificate_key_path)?;
