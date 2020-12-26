@@ -2,7 +2,7 @@
 
 use crate::server::deferred::SnocatClientIdentifier;
 use crate::{
-  common::authentication::{self, DelegatedAuthenticationHandler},
+  common::authentication::{self},
   server::{
     self,
     deferred::{ConcurrentDeferredTunnelServer, TunnelManager},
@@ -322,14 +322,16 @@ impl FfiDelegatedAuthenticationHandler {
     async move {
       let peer_addr = tunnel.connection.remote_address();
 
+      // Delegation produces a result when FFI has completed the authentication session
       let delegation_recv: Result<Result<SnocatClientIdentifier, _>, _> = self
         .delegation_pool
         .lock()
         .await
         .delegate(async move |dispatcher| {
+          // Delegation dispatch must not rely on the result to complete
           self
             .request_ffi_authentication(peer_addr, channel, dispatcher)
-            .await
+            .await // This await must return regardless of whether or not `dispatcher` is called yet
         })
         .await
         .await;
@@ -348,6 +350,7 @@ impl FfiDelegatedAuthenticationHandler {
     auth_channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
     dispatcher: oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>,
   ) {
+    //
     let auth_state = FfiAuthenticationState {
       peer_address,
       channel: auth_channel,
