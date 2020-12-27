@@ -212,7 +212,7 @@ pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError
 lazy_static! {
   static ref AUTHENTICATOR_HANDLES: ConcurrentHandleMap<FfiDelegatedAuthenticationHandler> =
     ConcurrentHandleMap::new();
-  static ref AUTHENTICATOR_SESSION_HANDLES: ConcurrentHandleMap<Arc<tokio::sync::Mutex<FfiAuthenticationState>>> =
+  static ref AUTHENTICATOR_SESSION_HANDLES: ConcurrentHandleMap<FfiAuthenticationState> =
     ConcurrentHandleMap::new();
 }
 
@@ -225,7 +225,7 @@ struct FfiAuthenticationState {
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
   delegation_pool: Arc<Mutex<DelegationPool>>,
-  auth_start_fn: extern fn(session_handle: u64, completion_handle: u64) -> (),
+  auth_start_fn: extern fn(session_handle: u64) -> (),
 }
 
 #[no_mangle]
@@ -237,7 +237,7 @@ pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
 
 
 impl FfiDelegatedAuthenticationHandler {
-  pub fn new(reactor: Arc<Reactor>, start_session: extern fn(session_handle: u64, completion_handle: u64) -> ()) -> Self {
+  pub fn new(reactor: Arc<Reactor>, start_session: extern fn(session_handle: u64) -> ()) -> Self {
     Self {
       reactor,
       delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
@@ -295,42 +295,79 @@ impl FfiDelegatedAuthenticationHandler {
       ?peer_address
     );
     let session_handle =
-      AUTHENTICATOR_SESSION_HANDLES.insert(Arc::new(tokio::sync::Mutex::new(auth_state)));
+      AUTHENTICATOR_SESSION_HANDLES.insert(auth_state);
     tracing::event!(
       tracing::Level::DEBUG,
       target = "request_ffi_authentication",
       ?session_handle,
       ?peer_address
     );
-    let (s, r) = oneshot::channel();
-    let fulfill_handle: ::ffi_support::Handle = self.reactor.delegations.insert(FfiDelegation { fulfill: s });
-    // Bind a fulfillment handler into the reactor so C# can respond to it, *before* calling auth_start_fn
-    // HACK: Sender<Y> -> (T -> Y) -> Sender<T> via a listener task which forwards success / failure
-    self.reactor.rt.spawn((async move || {
-      tokio::task::yield_now().await;
-      if let Ok(Some(session)) = AUTHENTICATOR_SESSION_HANDLES.remove(session_handle) {
-        match r.await {
-          Err(_recv_err) => {
-            // Drop the session, passing the error along the chain to the next sender
-            drop(session);
-          }
-          Ok(Err(sent_error)) => {
-            let session = session.lock().await;
-            let _ = session.closer.send(todo!("Deserialize error type"));
-          }
-          Ok(Ok(res)) => {
-            let session = session.lock().await;
-            let _ = session.closer.send(todo!("Deserialize success type"));
-          }
-        }
-      }
-    })());
     // Run the request on a blocking-safe worker thread to avoid blocking the current reactor
     let auth_start_fn = self.auth_start_fn;
     tokio::task::spawn_blocking(move || {
-      auth_start_fn(session_handle.into_u64(), fulfill_handle.into_u64());
+      auth_start_fn(session_handle.into_u64());
     }).await
   }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+pub struct AuthenticatorAcceptance {
+  id: SnocatClientIdentifier,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+pub struct AuthenticatorDenial {
+  reason_code: u32,
+  message: String,
+}
+
+#[no_mangle]
+pub extern "C" fn snocat_authenticator_session_complete(
+  session_handle: u64,
+  accept: bool,
+  parameter_json: FfiStr,
+  error: &mut ExternError,
+) -> () {
+  ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
+    let reactor_ref = REACTOR.read().expect("Reactor Read Lock poisoned");
+    let _reactor_ref = reactor_ref.as_ref().expect("Reactor must be initialized");
+    // TODO: Make this async, and make it return a handle to the task; use reactor_ref for it
+    let session = AUTHENTICATOR_SESSION_HANDLES.remove_u64(session_handle)?
+      .ok_or(anyhow::Error::msg("Session not found"))?;
+    let res = if accept {
+      let acceptance = serde_json::from_str::<AuthenticatorAcceptance>(parameter_json.as_str())
+        .context("Parsing acceptance parameters")?;
+      session.closer.send(Ok(acceptance.id))
+    } else  {
+      let denial = serde_json::from_str::<AuthenticatorDenial>(parameter_json.as_str())
+        .context("Parsing acceptance parameters")?;
+      session.closer.send(Err(anyhow::Error::msg(denial.message))) // TODO: proper deny error type
+    };
+    if let Err(_) = res {
+      return Err(anyhow::Error::msg("Delegation handle was already consumed?").into());
+    }
+    Ok(())
+  })
+}
+
+#[no_mangle]
+pub extern "C" fn snocat_authenticator_session_read_channel(
+  session_handle: u64,
+  len: u32,
+  timeout_milliseconds: u32,
+  error: &mut ExternError,
+) -> ::ffi_support::ByteBuffer /*(how best to make this async???)*/ {
+  todo!("Implement channel-based reading")
+}
+
+#[no_mangle]
+pub extern "C" fn snocat_authenticator_session_write_channel(
+  session_handle: u64,
+  len: u32,
+  buffer: *const u8,
+  error: &mut ExternError,
+) -> u64 {
+  todo!("Implement channel-based writing")
 }
 
 impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {

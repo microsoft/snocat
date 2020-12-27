@@ -26,11 +26,26 @@ use std::{
   task::{Context, Poll},
 };
 use tracing::{info, instrument, trace};
+use serde::{Serializer, Deserializer};
 
 /// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
 pub struct SnocatClientIdentifier(Arc<String>);
+
+impl serde::Serialize for SnocatClientIdentifier {
+  fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
+    S: Serializer {
+    serializer.serialize_str(&self.0)
+  }
+}
+impl<'de> serde::de::Deserialize<'de> for SnocatClientIdentifier {
+  fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error> where
+    D: Deserializer<'de> {
+    let s: String = serde::Deserialize::deserialize(deserializer)?;
+    Ok(SnocatClientIdentifier::new(s))
+  }
+}
 
 impl SnocatClientIdentifier {
   pub fn new<T: std::convert::Into<String>>(t: T) -> SnocatClientIdentifier {
