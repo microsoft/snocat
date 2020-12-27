@@ -185,7 +185,7 @@ define_handle_map_deleter!(SERVER_HANDLES, snocat_free_server_handle);
 
 #[no_mangle]
 pub extern "C" fn snocat_server_start(config_json: FfiStr, error: &mut ExternError) -> u64 {
-  ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || {
+  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || {
     use std::convert::TryInto;
     println!("Incoming config:\n{}", config_json.as_str());
     let config = serde_json::from_str::<dto::ServerConfig>(config_json.as_str())?;
@@ -202,7 +202,7 @@ pub extern "C" fn snocat_server_start(config_json: FfiStr, error: &mut ExternErr
 
 #[no_mangle]
 pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError) -> () {
-  ffi_support::call_with_result::<(), errors::FfiError, _>(error, || {
+  ::ffi_support::call_with_result::<(), errors::FfiError, _>(error, || {
     let _ = server_handle;
     todo!()
   })
@@ -210,6 +210,8 @@ pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError
 
 // FFI-Remote Authentication
 lazy_static! {
+  static ref AUTHENTICATOR_HANDLES: ConcurrentHandleMap<FfiDelegatedAuthenticationHandler> =
+    ConcurrentHandleMap::new();
   static ref AUTHENTICATOR_SESSION_HANDLES: ConcurrentHandleMap<Arc<tokio::sync::Mutex<FfiAuthenticationState>>> =
     ConcurrentHandleMap::new();
 }
@@ -223,13 +225,23 @@ struct FfiAuthenticationState {
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
   delegation_pool: Arc<Mutex<DelegationPool>>,
+  auth_start_fn: extern fn(session_handle: u64, completion_handle: u64) -> (),
 }
 
+#[no_mangle]
+pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
+  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || {
+    todo!()
+  })
+}
+
+
 impl FfiDelegatedAuthenticationHandler {
-  pub fn new(reactor: Arc<Reactor>) -> Self {
+  pub fn new(reactor: Arc<Reactor>, start_session: extern fn(session_handle: u64, completion_handle: u64) -> ()) -> Self {
     Self {
       reactor,
       delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
+      auth_start_fn: start_session,
     }
   }
 
@@ -252,6 +264,7 @@ impl FfiDelegatedAuthenticationHandler {
           self
             .request_ffi_authentication(peer_addr, channel, dispatcher)
             .await // This await must return regardless of whether or not `dispatcher` is called yet
+            .expect("requests for FFI authentication must return without exceptions")
         })
         .await
         .await;
@@ -269,16 +282,54 @@ impl FfiDelegatedAuthenticationHandler {
     peer_address: SocketAddr,
     auth_channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
     dispatcher: oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>,
-  ) {
-    //
+  ) -> Result<(), tokio::task::JoinError> {
+    // Returns once the remote thread has successfully been notified of the request
     let auth_state = FfiAuthenticationState {
       peer_address,
       channel: auth_channel,
       closer: dispatcher,
     };
-    let state_handle =
+    tracing::event!(
+      tracing::Level::TRACE,
+      target = "embed_authentication_session",
+      ?peer_address
+    );
+    let session_handle =
       AUTHENTICATOR_SESSION_HANDLES.insert(Arc::new(tokio::sync::Mutex::new(auth_state)));
-    todo!("{:?}", state_handle)
+    tracing::event!(
+      tracing::Level::DEBUG,
+      target = "request_ffi_authentication",
+      ?session_handle,
+      ?peer_address
+    );
+    let (s, r) = oneshot::channel();
+    let fulfill_handle: ::ffi_support::Handle = self.reactor.delegations.insert(FfiDelegation { fulfill: s });
+    // Bind a fulfillment handler into the reactor so C# can respond to it, *before* calling auth_start_fn
+    // HACK: Sender<Y> -> (T -> Y) -> Sender<T> via a listener task which forwards success / failure
+    self.reactor.rt.spawn((async move || {
+      tokio::task::yield_now().await;
+      if let Ok(Some(session)) = AUTHENTICATOR_SESSION_HANDLES.remove(session_handle) {
+        match r.await {
+          Err(_recv_err) => {
+            // Drop the session, passing the error along the chain to the next sender
+            drop(session);
+          }
+          Ok(Err(sent_error)) => {
+            let session = session.lock().await;
+            let _ = session.closer.send(todo!("Deserialize error type"));
+          }
+          Ok(Ok(res)) => {
+            let session = session.lock().await;
+            let _ = session.closer.send(todo!("Deserialize success type"));
+          }
+        }
+      }
+    })());
+    // Run the request on a blocking-safe worker thread to avoid blocking the current reactor
+    let auth_start_fn = self.auth_start_fn;
+    tokio::task::spawn_blocking(move || {
+      auth_start_fn(session_handle.into_u64(), fulfill_handle.into_u64());
+    }).await
   }
 }
 
