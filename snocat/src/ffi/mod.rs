@@ -15,11 +15,7 @@ use crate::{
   },
 };
 use anyhow::Context as AnyhowContext;
-use ffi_support::{
-  define_bytebuffer_destructor, define_handle_map_deleter, define_string_destructor,
-  implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError,
-  FfiStr, HandleError, IntoFfi,
-};
+use ffi_support::{define_bytebuffer_destructor, define_handle_map_deleter, define_string_destructor, implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError, FfiStr, HandleError, IntoFfi, Handle};
 use futures::future::{BoxFuture, Future, FutureExt, Either};
 use futures::AsyncWriteExt;
 use futures_io::AsyncBufRead;
@@ -90,18 +86,22 @@ impl FfiDelegation {
   }
 }
 
+pub struct FfiEvent {
+}
+
 pub struct Reactor {
-  rt: tokio::runtime::Runtime,
-  delegations: ConcurrentHandleMap<FfiDelegation>,
+  rt: Arc<tokio::runtime::Runtime>,
+  delegations: Arc<ConcurrentHandleMap<FfiDelegation>>,
+  events: Arc<ConcurrentHandleMap<FfiEvent>>,
   report_task_completion_callback:
-    extern "C" fn(handle: u64, state: CompletionState, json_loc: *mut u8, json_byte_len: u32) -> (),
+    extern "C" fn(handle: u64, state: CompletionState, json_loc: *const u8, json_byte_len: u32) -> (),
 }
 impl Reactor {
   pub fn start(
     report_task_completion_callback: extern "C" fn(
       handle: u64,
       state: CompletionState,
-      json_loc: *mut u8,
+      json_loc: *const u8,
       json_byte_len: u32,
     ) -> (),
   ) -> Result<Self, anyhow::Error> {
@@ -110,8 +110,9 @@ impl Reactor {
       .thread_name("tokio-reactor-worker")
       .build()?;
     Ok(Reactor {
-      rt,
-      delegations: ConcurrentHandleMap::new(),
+      rt: Arc::new(rt),
+      delegations: Arc::new(ConcurrentHandleMap::new()),
+      events: Arc::new(ConcurrentHandleMap::new()),
       report_task_completion_callback,
     })
   }
@@ -158,7 +159,7 @@ pub extern "C" fn snocat_reactor_start(
   report_task_completion_callback: extern "C" fn(
     handle: u64,
     state: CompletionState,
-    json_loc: *mut u8,
+    json_loc: *const u8,
     json_byte_len: u32,
   ) -> (),
   error: &mut ExternError,
@@ -266,7 +267,7 @@ lazy_static! {
 struct FfiAuthenticationState {
   peer_address: SocketAddr,
   channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
-  closer: oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>,
+  closer: tokio::sync::Mutex<Option<oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>>>,
 }
 
 pub struct FfiDelegatedAuthenticationHandler {
@@ -333,7 +334,7 @@ impl FfiDelegatedAuthenticationHandler {
     let auth_state = FfiAuthenticationState {
       peer_address,
       channel: auth_channel,
-      closer: dispatcher,
+      closer: tokio::sync::Mutex::new(Some(dispatcher)),
     };
     tracing::event!(
       tracing::Level::TRACE,
@@ -373,26 +374,73 @@ pub extern "C" fn snocat_authenticator_session_complete(
   accept: bool,
   parameter_json: FfiStr,
   error: &mut ExternError,
-) -> () {
+) -> u64 {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = REACTOR.read().expect("Reactor Read Lock poisoned");
-    let _reactor_ref = reactor_ref.as_ref().expect("Reactor must be initialized");
+    let reactor_ref = reactor_ref.as_ref().expect("Reactor must be initialized");
     // TODO: Make this async, and make it return a handle to the task; use reactor_ref for it
     let session = AUTHENTICATOR_SESSION_HANDLES.remove_u64(session_handle)?
       .ok_or(anyhow::Error::msg("Session not found"))?;
-    let res = if accept {
-      let acceptance = serde_json::from_str::<AuthenticatorAcceptance>(parameter_json.as_str())
-        .context("Parsing acceptance parameters")?;
-      session.closer.send(Ok(acceptance.id))
-    } else  {
-      let denial = serde_json::from_str::<AuthenticatorDenial>(parameter_json.as_str())
-        .context("Parsing acceptance parameters")?;
-      session.closer.send(Err(anyhow::Error::msg(denial.message))) // TODO: proper deny error type
+
+    let delegation: Handle = reactor_ref.events.insert(FfiEvent { });
+    let parameter_json = parameter_json.into_string();
+
+    let notify_event = reactor_ref.report_task_completion_callback;
+    // Save the join handle so we can register a panic detector with the runtime to cleanup handles
+    let spawned_task = {
+      let out_delegations = Arc::clone(&reactor_ref.events);
+      let rt = Arc::clone(&reactor_ref.rt);
+      rt.spawn((async move || {
+        tokio::task::yield_now().await; // Ensure we divert to the thread-pool
+        let mut closer = session.closer.lock().await;
+        let closer = std::mem::replace(&mut *closer, None).expect("Session already closed");
+        // Propagate closure to subscriber of session close completion
+        let res = if accept {
+          serde_json::from_str::<AuthenticatorAcceptance>(&parameter_json)
+            .context("Parsing acceptance parameters")
+        } else  {
+          serde_json::from_str::<AuthenticatorDenial>(&parameter_json)
+            .context("Parsing acceptance parameters")
+            .and_then(|denial| Err(anyhow::Error::msg(denial.message)))
+        };
+        let res = res
+          .map(|x| x.id);
+        let close_res = closer.send(res); // TODO: proper deny error type
+
+        // Notify FFI-side
+        let _ = tokio::task::spawn_blocking(async move || {
+          match close_res {
+            Ok(()) => {
+              // TODO: Success json type
+              notify_event(delegation.into_u64(), CompletionState::Complete, std::ptr::null(), 0)
+            }
+            Err(_) => {
+              // TODO: Error json type
+              notify_event(delegation.into_u64(), CompletionState::Failed, std::ptr::null(), 0)
+            }
+          }
+        }).await;
+        let _ = out_delegations.remove(delegation);
+      })())
     };
-    if let Err(_) = res {
-      return Err(anyhow::Error::msg("Delegation handle was already consumed?").into());
+
+    // Cleanup task for in case of panics
+    {
+      let out_delegations = Arc::clone(&reactor_ref.events);
+      let rt = Arc::clone(&reactor_ref.rt);
+      let _ = rt.spawn((async move || {
+        tokio::task::yield_now().await; // Ensure we divert to the thread-pool
+        if let Err(e) = spawned_task.await {
+          if e.is_panic() {
+            // Panics are not guaranteed to call drop, attempt to clean up the FFI registration
+            tracing::error!(target="ffi_panic_detected", ?delegation, outward=true);
+            let _ = out_delegations.remove(delegation);
+          }
+        }
+      })());
     }
-    Ok(())
+
+    Ok(delegation)
   })
 }
 
@@ -402,8 +450,8 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
   len: u32,
   timeout_milliseconds: u32,
   error: &mut ExternError,
-) -> ::ffi_support::ByteBuffer /*(how best to make this async???)*/ {
-  todo!("Implement channel-based reading")
+) -> u64 /* Handle to task of ::ffi_support::ByteBuffer */ {
+  todo!("Implement Async Read")
 }
 
 #[no_mangle]
