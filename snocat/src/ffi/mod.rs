@@ -20,7 +20,7 @@ use ffi_support::{
   implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError,
   FfiStr, HandleError, IntoFfi,
 };
-use futures::future::{BoxFuture, Future, FutureExt};
+use futures::future::{BoxFuture, Future, FutureExt, Either};
 use futures::AsyncWriteExt;
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
@@ -39,8 +39,55 @@ pub mod errors;
 
 mod allocators;
 
+
+enum FfiDelegationHandler {
+  // Disposal of the Box for the method should also result in disposal of any embedded Sender
+  BoxedMethod(Box<dyn (FnOnce(Result<String, String>) -> Result<(), ()>) + Send>),
+  Sender(oneshot::Sender<Result<String, String>>),
+}
 pub struct FfiDelegation {
-  fulfill: oneshot::Sender<Result<String, String>>,
+  sender: FfiDelegationHandler,
+}
+
+impl FfiDelegation {
+  pub fn new_from_sender(fulfill: oneshot::Sender<Result<String, String>>) -> Self {
+    Self {
+      sender: FfiDelegationHandler::Sender(fulfill),
+    }
+  }
+
+  pub fn new_from_deserialized_sender<
+    T: serde::de::DeserializeOwned + Send + 'static,
+    E: serde::de::DeserializeOwned + Send + 'static>(
+    fulfill: oneshot::Sender<Result<T, E>>,
+  ) -> Self {
+    let method = Box::new(|res: Result<String, String>| {
+      match &res {
+        Ok(t) => match serde_json::from_str::<T>(&t) {
+          Ok(t) => fulfill.send(Ok(t)).map(|_| ()).map_err(|_| ()),
+          Err(_) => Err(())
+        }
+        Err(e) => match serde_json::from_str::<E>(&e) {
+          Ok(e) => fulfill.send(Err(e)).map(|_| ()).map_err(|_| ()),
+          Err(_) => Err(())
+        }
+      }
+    });
+    Self {
+      sender: FfiDelegationHandler::BoxedMethod(method),
+    }
+  }
+
+  pub fn send(self, result: Result<String, String>) -> Result<(), ()> {
+    match self.sender {
+      FfiDelegationHandler::Sender(handler) => {
+        handler.send(result).map_err(|_| ())
+      }
+      FfiDelegationHandler::BoxedMethod(handler) => {
+        handler(result)
+      }
+    }
+  }
 }
 
 pub struct Reactor {
@@ -143,7 +190,7 @@ pub extern "C" fn snocat_report_async_update(
     let delegation = reactor_ref.delegations.remove_u64(event_handle)?;
     if let Some(delegation) = delegation {
       let json_str = json.into_string();
-      if let Err(_) = delegation.fulfill.send(match state {
+      if let Err(_) = delegation.send(match state {
         CompletionState::Complete => Ok(json_str),
         CompletionState::Failed => Err(json_str),
       }) {
@@ -234,7 +281,6 @@ pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
     todo!()
   })
 }
-
 
 impl FfiDelegatedAuthenticationHandler {
   pub fn new(reactor: Arc<Reactor>, start_session: extern fn(session_handle: u64) -> ()) -> Self {
