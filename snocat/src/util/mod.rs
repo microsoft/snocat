@@ -29,7 +29,9 @@ pub async fn proxy_stream<Send: AsyncWrite + Unpin, Recv: AsyncRead + Unpin>(
   send: &mut Send,
 ) -> Result<u64> {
   use futures::io::AsyncWriteExt;
-  futures::io::copy(recv, send).map_err(Into::into).await
+  futures::io::copy_buf(futures::io::BufReader::with_capacity(1024 * 32, recv), send)
+    .await
+    .map_err(Into::into)
 }
 
 #[tracing::instrument(skip(a, b))]
