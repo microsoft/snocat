@@ -153,7 +153,12 @@ fn main() {
   let matches = app.get_matches();
   let mode = matches.subcommand_name().unwrap_or("<No subcommand?>");
   let handler = main_args_handler(&matches);
-  match async_std::task::block_on(handler) {
+  let mut rt = tokio::runtime::Builder::new()
+    .threaded_scheduler()
+    .enable_all()
+    .build()
+    .expect("Tokio Runtime setup failure");
+  match rt.block_on(handler) {
     Err(err) => {
       tracing::error!(mode = mode, err = ?err, "dispatch_command_failure");
     }
