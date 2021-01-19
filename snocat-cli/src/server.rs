@@ -5,13 +5,6 @@ use crate::util::{
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::sync::{Arc, Mutex};
-use snocat::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
-use snocat::server::{
-  deferred::{
-    SnocatClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
-  },
-  TcpTunnelManager,
-};
 use futures::future::*;
 use futures::{
   future,
@@ -23,6 +16,13 @@ use gen_z::gen_z as generate_stream;
 use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
+};
+use snocat::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
+use snocat::server::{
+  deferred::{
+    ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
+  },
+  TcpTunnelManager,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{

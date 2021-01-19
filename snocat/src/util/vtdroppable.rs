@@ -5,7 +5,7 @@ pub struct VTDroppable {
   type_id: std::any::TypeId,
 }
 
-unsafe impl Send for VTDroppable { }
+unsafe impl Send for VTDroppable {}
 
 impl Drop for VTDroppable {
   fn drop(&mut self) {
@@ -14,7 +14,9 @@ impl Drop for VTDroppable {
       panic!("Tried to drop a null pointer!");
     }
     let dropper = self.drop_vtable;
-    unsafe { dropper(self.data); }
+    unsafe {
+      dropper(self.data);
+    }
   }
 }
 
@@ -26,7 +28,11 @@ impl VTDroppable {
     }
     let raw = Box::into_raw(Box::new(target));
     let type_id: std::any::TypeId = std::any::TypeId::of::<T>();
-    VTDroppable { data: raw as *mut (), drop_vtable: drop_t::<T>, type_id }
+    VTDroppable {
+      data: raw as *mut (),
+      drop_vtable: drop_t::<T>,
+      type_id,
+    }
   }
 
   pub fn into_boxed_drop(self: VTDroppable) -> Box<dyn Drop> {
@@ -37,7 +43,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!("Undropped ref of type {:?} as incorrect type {:?} ({})", &self.type_id, type_id, type_name));
+      panic!(format!(
+        "Undropped ref of type {:?} as incorrect type {:?} ({})",
+        &self.type_id, type_id, type_name
+      ));
     }
     unsafe { &*(self.data as *mut T) }
   }
@@ -46,7 +55,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!("Undropped mut ref of type {:?} as incorrect type {:?} ({})", &self.type_id, type_id, type_name));
+      panic!(format!(
+        "Undropped mut ref of type {:?} as incorrect type {:?} ({})",
+        &self.type_id, type_id, type_name
+      ));
     }
     unsafe { &mut *(self.data as *mut T) }
   }
@@ -73,7 +85,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!("Extracted from type {:?} as incorrect type {:?} ({})", &self.type_id, type_id, type_name));
+      panic!(format!(
+        "Extracted from type {:?} as incorrect type {:?} ({})",
+        &self.type_id, type_id, type_name
+      ));
     }
     let x: Box<T> = unsafe { Box::from_raw(self.data as *mut T) };
     self.data = std::ptr::null_mut(); // Clear out the content, it's invalid now
@@ -121,10 +136,13 @@ mod tests {
     // We don't use mut until later because we want to verify that these don't require mutability
     let vt = VTDroppable::get_raw(test_value);
     assert!(matches!(vt.try_as_typed_ref::<&str>(), Ok(x) if x == &test_value)); // Downcasting
-    assert!(matches!(vt.try_as_typed_ref::<&dyn std::any::Any>(), Err(_))); // Only downcast to Self
+    assert!(matches!(
+      vt.try_as_typed_ref::<&dyn std::any::Any>(),
+      Err(_)
+    )); // Only downcast to Self
     assert!(matches!(vt.try_as_typed_ref::<u32>(), Err(_))); // Checked downcasts for concrete types
     assert_eq!(*vt.as_typed_ref::<&str>(), test_value); // Checked downcasts for concrete types
-    // Now try the mutable ones
+                                                        // Now try the mutable ones
     let mut vt = vt;
     assert!(matches!(vt.try_as_typed_ref_mut::<&str>(), Ok(x) if x == &test_value));
     assert!(matches!(vt.try_as_typed_ref_mut::<&dyn Drop>(), Err(_)));
@@ -135,16 +153,26 @@ mod tests {
   #[test]
   fn try_extraction() {
     let test_value: &str = "hello world";
-    assert!(matches!(VTDroppable::get_raw(test_value).try_extract_typed::<&str>(), Ok(_)));
-    assert!(matches!(VTDroppable::get_raw(test_value).try_extract_typed::<&dyn Drop>(), Err(_)));
+    assert!(matches!(
+      VTDroppable::get_raw(test_value).try_extract_typed::<&str>(),
+      Ok(_)
+    ));
+    assert!(matches!(
+      VTDroppable::get_raw(test_value).try_extract_typed::<&dyn Drop>(),
+      Err(_)
+    ));
     // Verify that extraction failures return an error with the still-packed value intact
     assert_eq!(
       VTDroppable::get_raw(test_value)
         .try_extract_typed::<&dyn Drop>()
         .err()
         .and_then(|x: VTDroppable| x.try_extract_typed::<&str>().ok()),
-      Some(test_value));
-    assert_eq!(VTDroppable::get_raw(test_value).extract_typed::<&str>(), test_value);
+      Some(test_value)
+    );
+    assert_eq!(
+      VTDroppable::get_raw(test_value).extract_typed::<&str>(),
+      test_value
+    );
   }
 
   /// Assert that dropping the opaque container calls the appropriate Drop implementation internally
@@ -153,7 +181,9 @@ mod tests {
     // Verify DropIt utility...
     {
       let mut has_dropped = false;
-      let test_value = DropIt::with(|| { has_dropped = true; });
+      let test_value = DropIt::with(|| {
+        has_dropped = true;
+      });
       std::mem::drop(test_value);
       assert!(has_dropped);
     }
@@ -163,7 +193,9 @@ mod tests {
       let has_dropped = std::sync::Arc::new(std::sync::Mutex::new(false));
       {
         let dropped_writer = has_dropped.clone();
-        let test_value = DropIt::with(move || { *dropped_writer.lock().unwrap() = true; });
+        let test_value = DropIt::with(move || {
+          *dropped_writer.lock().unwrap() = true;
+        });
         let droppable = VTDroppable::get_raw(test_value);
         std::mem::drop(droppable);
       }

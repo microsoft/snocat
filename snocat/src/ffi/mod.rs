@@ -15,8 +15,12 @@ use crate::{
   },
 };
 use anyhow::Context as AnyhowContext;
-use ffi_support::{define_bytebuffer_destructor, define_handle_map_deleter, define_string_destructor, implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError, FfiStr, HandleError, IntoFfi, Handle};
-use futures::future::{BoxFuture, Future, FutureExt, Either};
+use ffi_support::{
+  define_bytebuffer_destructor, define_handle_map_deleter, define_string_destructor,
+  implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError,
+  FfiStr, Handle, HandleError, IntoFfi,
+};
+use futures::future::{BoxFuture, Either, Future, FutureExt};
 use futures::AsyncWriteExt;
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
@@ -34,7 +38,6 @@ pub mod dto;
 pub mod errors;
 
 mod allocators;
-
 
 enum FfiDelegationHandler {
   // Disposal of the Box for the method should also result in disposal of any embedded Sender
@@ -54,20 +57,19 @@ impl FfiDelegation {
 
   pub fn new_from_deserialized_sender<
     T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static>(
+    E: serde::de::DeserializeOwned + Send + 'static,
+  >(
     fulfill: oneshot::Sender<Result<T, E>>,
   ) -> Self {
-    let method = Box::new(|res: Result<String, String>| {
-      match &res {
-        Ok(t) => match serde_json::from_str::<T>(&t) {
-          Ok(t) => fulfill.send(Ok(t)).map(|_| ()).map_err(|_| ()),
-          Err(_) => Err(())
-        }
-        Err(e) => match serde_json::from_str::<E>(&e) {
-          Ok(e) => fulfill.send(Err(e)).map(|_| ()).map_err(|_| ()),
-          Err(_) => Err(())
-        }
-      }
+    let method = Box::new(|res: Result<String, String>| match &res {
+      Ok(t) => match serde_json::from_str::<T>(&t) {
+        Ok(t) => fulfill.send(Ok(t)).map(|_| ()).map_err(|_| ()),
+        Err(_) => Err(()),
+      },
+      Err(e) => match serde_json::from_str::<E>(&e) {
+        Ok(e) => fulfill.send(Err(e)).map(|_| ()).map_err(|_| ()),
+        Err(_) => Err(()),
+      },
     });
     Self {
       sender: FfiDelegationHandler::BoxedMethod(method),
@@ -76,25 +78,24 @@ impl FfiDelegation {
 
   pub fn send(self, result: Result<String, String>) -> Result<(), ()> {
     match self.sender {
-      FfiDelegationHandler::Sender(handler) => {
-        handler.send(result).map_err(|_| ())
-      }
-      FfiDelegationHandler::BoxedMethod(handler) => {
-        handler(result)
-      }
+      FfiDelegationHandler::Sender(handler) => handler.send(result).map_err(|_| ()),
+      FfiDelegationHandler::BoxedMethod(handler) => handler(result),
     }
   }
 }
 
-pub struct FfiEvent {
-}
+pub struct FfiEvent {}
 
 pub struct Reactor {
   rt: Arc<tokio::runtime::Runtime>,
   delegations: Arc<ConcurrentHandleMap<FfiDelegation>>,
   events: Arc<ConcurrentHandleMap<FfiEvent>>,
-  report_task_completion_callback:
-    extern "C" fn(handle: u64, state: CompletionState, json_loc: *const u8, json_byte_len: u32) -> (),
+  report_task_completion_callback: extern "C" fn(
+    handle: u64,
+    state: CompletionState,
+    json_loc: *const u8,
+    json_byte_len: u32,
+  ) -> (),
 }
 impl Reactor {
   pub fn start(
@@ -268,24 +269,26 @@ lazy_static! {
 struct FfiAuthenticationState {
   peer_address: SocketAddr,
   channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
-  closer: tokio::sync::Mutex<Option<oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>>>,
+  closer:
+    tokio::sync::Mutex<Option<oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>>>,
 }
 
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
   delegation_pool: Arc<Mutex<DelegationPool>>,
-  auth_start_fn: extern fn(session_handle: u64) -> (),
+  auth_start_fn: extern "C" fn(session_handle: u64) -> (),
 }
 
 #[no_mangle]
 pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
-  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || {
-    todo!()
-  })
+  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || todo!())
 }
 
 impl FfiDelegatedAuthenticationHandler {
-  pub fn new(reactor: Arc<Reactor>, start_session: extern fn(session_handle: u64) -> ()) -> Self {
+  pub fn new(
+    reactor: Arc<Reactor>,
+    start_session: extern "C" fn(session_handle: u64) -> (),
+  ) -> Self {
     Self {
       reactor,
       delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
@@ -342,8 +345,7 @@ impl FfiDelegatedAuthenticationHandler {
       target = "embed_authentication_session",
       ?peer_address
     );
-    let session_handle =
-      AUTHENTICATOR_SESSION_HANDLES.insert(auth_state);
+    let session_handle = AUTHENTICATOR_SESSION_HANDLES.insert(auth_state);
     tracing::event!(
       tracing::Level::DEBUG,
       target = "request_ffi_authentication",
@@ -354,7 +356,8 @@ impl FfiDelegatedAuthenticationHandler {
     let auth_start_fn = self.auth_start_fn;
     tokio::task::spawn_blocking(move || {
       auth_start_fn(session_handle.into_u64());
-    }).await
+    })
+    .await
   }
 }
 
@@ -380,10 +383,11 @@ pub extern "C" fn snocat_authenticator_session_complete(
     let reactor_ref = REACTOR.read().expect("Reactor Read Lock poisoned");
     let reactor_ref = reactor_ref.as_ref().expect("Reactor must be initialized");
     // TODO: Make this async, and make it return a handle to the task; use reactor_ref for it
-    let session = AUTHENTICATOR_SESSION_HANDLES.remove_u64(session_handle)?
+    let session = AUTHENTICATOR_SESSION_HANDLES
+      .remove_u64(session_handle)?
       .ok_or(anyhow::Error::msg("Session not found"))?;
 
-    let delegation: Handle = reactor_ref.events.insert(FfiEvent { });
+    let delegation: Handle = reactor_ref.events.insert(FfiEvent {});
     let parameter_json = parameter_json.into_string();
 
     let notify_event = reactor_ref.report_task_completion_callback;
@@ -399,13 +403,12 @@ pub extern "C" fn snocat_authenticator_session_complete(
         let res = if accept {
           serde_json::from_str::<AuthenticatorAcceptance>(&parameter_json)
             .context("Parsing acceptance parameters")
-        } else  {
+        } else {
           serde_json::from_str::<AuthenticatorDenial>(&parameter_json)
             .context("Parsing acceptance parameters")
             .and_then(|denial| Err(anyhow::Error::msg(denial.message)))
         };
-        let res = res
-          .map(|x| x.id);
+        let res = res.map(|x| x.id);
         let close_res = closer.send(res); // TODO: proper deny error type
 
         // Notify FFI-side
@@ -413,14 +416,25 @@ pub extern "C" fn snocat_authenticator_session_complete(
           match close_res {
             Ok(()) => {
               // TODO: Success json type
-              notify_event(delegation.into_u64(), CompletionState::Complete, std::ptr::null(), 0)
+              notify_event(
+                delegation.into_u64(),
+                CompletionState::Complete,
+                std::ptr::null(),
+                0,
+              )
             }
             Err(_) => {
               // TODO: Error json type
-              notify_event(delegation.into_u64(), CompletionState::Failed, std::ptr::null(), 0)
+              notify_event(
+                delegation.into_u64(),
+                CompletionState::Failed,
+                std::ptr::null(),
+                0,
+              )
             }
           }
-        }).await;
+        })
+        .await;
         let _ = out_delegations.remove(delegation);
       })())
     };
@@ -434,7 +448,7 @@ pub extern "C" fn snocat_authenticator_session_complete(
         if let Err(e) = spawned_task.await {
           if e.is_panic() {
             // Panics are not guaranteed to call drop, attempt to clean up the FFI registration
-            tracing::error!(target="ffi_panic_detected", ?delegation, outward=true);
+            tracing::error!(target = "ffi_panic_detected", ?delegation, outward = true);
             let _ = out_delegations.remove(delegation);
           }
         }

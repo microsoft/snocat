@@ -1,6 +1,5 @@
 //! Types supporting authentication of Snocat tunnel connections
 #[deny(unused_imports)]
-
 mod traits;
 pub use traits::*;
 

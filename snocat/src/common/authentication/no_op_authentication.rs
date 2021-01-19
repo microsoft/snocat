@@ -1,10 +1,10 @@
+use super::traits::*;
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
 use tokio::stream::StreamExt;
-use super::traits::*;
 
 pub struct NoOpAuthenticationHandler {}
 
@@ -35,7 +35,7 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
       let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
-      .boxed()
+    .boxed()
   }
 }
 

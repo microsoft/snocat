@@ -18,6 +18,7 @@ use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
 };
+use serde::{Deserializer, Serializer};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   boxed::Box,
@@ -26,7 +27,6 @@ use std::{
   task::{Context, Poll},
 };
 use tracing::{info, instrument, trace};
-use serde::{Serializer, Deserializer};
 
 /// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
@@ -34,14 +34,18 @@ use serde::{Serializer, Deserializer};
 pub struct SnocatClientIdentifier(Arc<String>);
 
 impl serde::Serialize for SnocatClientIdentifier {
-  fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
-    S: Serializer {
+  fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
+  where
+    S: Serializer,
+  {
     serializer.serialize_str(&self.0)
   }
 }
 impl<'de> serde::de::Deserialize<'de> for SnocatClientIdentifier {
-  fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error> where
-    D: Deserializer<'de> {
+  fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error>
+  where
+    D: Deserializer<'de>,
+  {
     let s: String = serde::Deserialize::deserialize(deserializer)?;
     Ok(SnocatClientIdentifier::new(s))
   }

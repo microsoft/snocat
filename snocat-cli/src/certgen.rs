@@ -36,6 +36,6 @@ pub async fn certgen_main(output_base_path: String, host_san: String) -> Result<
     path.with_file_name(path.file_name().unwrap().to_str().unwrap().to_string() + ".priv.pem"),
     &private_pem,
   )
-    .context("Failed writing private key")?;
+  .context("Failed writing private key")?;
   Ok(())
 }

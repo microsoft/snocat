@@ -2,7 +2,7 @@
 
 use crate::common::{authentication, MetaStreamHeader};
 use crate::server::deferred::{
-  SnocatClientIdentifier, ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent,
+  ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
 };
 use crate::util::framed::write_framed_json;
 use crate::util::{
@@ -54,8 +54,8 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   }
 
   tracing::info!("Beginning proxying...");
-  let proxy_res = util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1))
-      .await;
+  let proxy_res =
+    util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1)).await;
   if let Err(e) = proxy_res {
     tracing::error!(
       header = ?proxy_header,
@@ -81,12 +81,15 @@ async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
   listener
     .incoming()
     .map_err(|e| -> AnyErr { e.into() })
-    .scan((Arc::new(proxy_provider), addr), |baggage, res: Result<_, _>| {
-      future::ready(match res {
-        Ok(conn) => Some(Ok((conn, baggage.clone()))),
-        Err(e) => Some(Err(e)),
-      })
-    })
+    .scan(
+      (Arc::new(proxy_provider), addr),
+      |baggage, res: Result<_, _>| {
+        future::ready(match res {
+          Ok(conn) => Some(Ok((conn, baggage.clone()))),
+          Err(e) => Some(Err(e)),
+        })
+      },
+    )
     .try_for_each_concurrent(None, move |(stream, (prov, addr))| {
       async move {
         Ok(
@@ -111,8 +114,13 @@ trait ProxyConnectionProvider: Send + Sync + Clone + std::fmt::Debug {
 
 // ProxyConnectionProvider is required to be Send + Sync, so we can trivially forward across Arc
 impl<T: ProxyConnectionProvider> ProxyConnectionProvider for Arc<T> {
-  fn open_connection(&self, peer_address: SocketAddr)
-                     -> BoxFuture<'_, Result<(MetaStreamHeader, (quinn::SendStream, quinn::RecvStream)), anyhow::Error>> {
+  fn open_connection(
+    &self,
+    peer_address: SocketAddr,
+  ) -> BoxFuture<
+    '_,
+    Result<(MetaStreamHeader, (quinn::SendStream, quinn::RecvStream)), anyhow::Error>,
+  > {
     ProxyConnectionProvider::open_connection(Arc::as_ref(self), peer_address)
   }
 }
@@ -306,17 +314,24 @@ impl TunnelManager for TcpTunnelManager {
   }
 }
 
-impl<T : std::convert::AsRef<dyn TunnelManager> + std::fmt::Debug + Send + Sync> TunnelManager for T {
+impl<T: std::convert::AsRef<dyn TunnelManager> + std::fmt::Debug + Send + Sync> TunnelManager
+  for T
+{
   fn handle_connection<'connection, 'manager: 'connection>(
     &'manager self,
     events: &'connection mut gen_z::Yielder<TunnelServerEvent>,
     tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,
   ) -> futures::future::BoxFuture<'connection, Result<()>> {
-    TunnelManager::handle_connection(std::convert::AsRef::as_ref(self), events, tunnel, shutdown_notifier).boxed()
+    TunnelManager::handle_connection(
+      std::convert::AsRef::as_ref(self),
+      events,
+      tunnel,
+      shutdown_notifier,
+    )
+    .boxed()
   }
 }
-
 
 /*
 

@@ -1,10 +1,10 @@
+use super::traits::*;
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
 use tokio::stream::StreamExt;
-use super::traits::*;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -49,7 +49,7 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
       let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
-      .boxed()
+    .boxed()
   }
 }
 
@@ -75,6 +75,6 @@ impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
       send.write_all(&header).await?;
       Ok(())
     }
-      .boxed()
+    .boxed()
   }
 }

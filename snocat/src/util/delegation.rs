@@ -3,14 +3,14 @@
 
 use futures::future::BoxFuture;
 use futures::future::{Future, FutureExt};
+use futures::TryFutureExt;
 use pin_project::pin_project;
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
-use futures::TryFutureExt;
-use std::fmt;
 
 #[derive(Default, Debug)]
 pub struct DelegatedTask {}
@@ -118,8 +118,11 @@ impl DelegationPool {
         task_id,
         receiver: async move {
           self.detach(task_id).await;
-          promise.map_err(|_| DelegationError::DispatcherDropped).await
-        }.boxed()
+          promise
+            .map_err(|_| DelegationError::DispatcherDropped)
+            .await
+        }
+        .boxed(),
       }
     }
   }
@@ -135,15 +138,15 @@ impl DelegationPool {
 pub mod blocking {
   use futures::future::BoxFuture;
   use futures::future::{Future, FutureExt};
+  use futures::TryFutureExt;
   use pin_project::pin_project;
   use std::pin::Pin;
   use std::sync::Arc;
   use std::task::{Context, Poll};
   use tokio::sync::oneshot::error::RecvError;
   use tokio::sync::{oneshot, Mutex};
-  use futures::TryFutureExt;
 
-  use crate::util::delegation::{DelegationPool, DelegatedReceiver, DelegationError};
+  use crate::util::delegation::{DelegatedReceiver, DelegationError, DelegationPool};
 
   // pub fn delegate_threaded<
   //   'a,

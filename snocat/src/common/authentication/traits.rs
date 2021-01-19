@@ -48,14 +48,17 @@ impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
         .context("Failure closing authentication channel");
       match (res, closed) {
         (Ok(id), Err(e)) => {
-          tracing::warn!("Failure in closing of client authentication channel {:?}", e);
+          tracing::warn!(
+            "Failure in closing of client authentication channel {:?}",
+            e
+          );
           Ok(id) // Failure here means the channel was already closed by the other party
         }
         (Err(e), _) => Err(e),
         (Ok(id), _) => Ok(id),
       }
     }
-      .boxed()
+    .boxed()
   }
 }
 
@@ -103,7 +106,6 @@ impl<T: BidiChannelAuthenticationClient> AuthenticationClient for T {
         (Ok(id), _) => Ok(id),
       }
     }
-      .boxed()
+    .boxed()
   }
 }
-
