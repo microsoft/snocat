@@ -5,6 +5,7 @@ use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
 use tokio::stream::StreamExt;
+use std::marker::Unpin;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -27,14 +28,16 @@ impl std::fmt::Debug for SimpleAckAuthenticationHandler {
 impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
   fn authenticate_channel<'a>(
     &'a self,
-    channel: &'a mut (quinn::SendStream, quinn::RecvStream),
-    tunnel: &'a quinn::NewConnection,
+    channel: (&'a mut (dyn tokio::io::AsyncWrite + Send + Unpin), &'a mut (dyn tokio::io::AsyncRead + Send + Unpin)),
+    tunnel: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
     async move {
       tracing::info!("Sending HELO...");
       let mut buffer = [0u8; 64];
       use std::io::Write;
+      use tokio::io::AsyncWriteExt;
+      use tokio::io::AsyncReadExt;
       write!(&mut buffer[..], "HELO").unwrap();
       channel.0.write_all(&buffer).await?;
       buffer = [0u8; 64];
@@ -45,7 +48,7 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
         return Err(AnyErr::msg("Invalid client ack"));
       }
       tracing::trace!("client_ack");
-      let peer_addr = tunnel.connection.remote_address();
+      let peer_addr = tunnel.remote_address();
       let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
@@ -56,13 +59,15 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
 impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
   fn authenticate_client_channel<'a>(
     &'a self,
-    channel: &'a mut (quinn::SendStream, quinn::RecvStream),
-    _tunnel: &'a quinn::NewConnection,
+    channel: (&'a mut (dyn tokio::io::AsyncWrite + Send + Unpin), &'a mut (dyn tokio::io::AsyncRead + Send + Unpin)),
+    _tunnel: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<()>> {
     async move {
       let (send, recv) = channel;
       use std::io::Write;
+      use tokio::io::AsyncWriteExt;
+      use tokio::io::AsyncReadExt;
       let mut header = [0u8; 64];
       recv.read_exact(&mut header).await?; // TODO: Actually read the header
       let first_zero = header.iter().position(|x| *x == 0).unwrap_or(32);
@@ -76,5 +81,42 @@ impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
       Ok(())
     }
     .boxed()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use crate::common::authentication::{SimpleAckAuthenticationHandler, BidiChannelAuthenticationHandler, TunnelInfo, BidiChannelAuthenticationClient};
+  use tokio::io::{duplex, DuplexStream};
+  use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, SocketAddrV4};
+
+  #[tokio::test]
+  async fn run_auth() {
+    // Use a small buffer size to ensure we don't have a minimum that causes blocking
+    let localhost = Ipv6Addr::LOCALHOST;
+    let (client_port, server_port) = (40000, 40001);
+    let (client, server) = duplex(64);
+    let auth_server = SimpleAckAuthenticationHandler::new();
+    let auth_client = SimpleAckAuthenticationHandler::new();
+    let shutdown_listener = triggered::trigger().1; // Fake "never" listener with a dropped sender
+    let mut client = tokio::io::split(client);
+    let client_auth_task = auth_client.authenticate_client_channel(
+      (&mut client.1, &mut client.0),
+      TunnelInfo {
+        remote_address: std::net::SocketAddr::new(localhost.into(), client_port),
+      },
+      &shutdown_listener);
+    let mut server = tokio::io::split(server);
+    let server_auth_task = auth_server.authenticate_channel(
+      (&mut server.1, &mut server.0),
+      TunnelInfo {
+        remote_address: std::net::SocketAddr::new(localhost.into(), server_port),
+      },
+      &shutdown_listener);
+
+    let (client_res, server_res) = futures::future::join(client_auth_task, server_auth_task).await;
+    client_res.unwrap();
+    let produced_id = server_res.unwrap();
+    assert_eq!(format!("{:?}", produced_id), "(snocat ([::1]:40001))");
   }
 }
