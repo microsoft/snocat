@@ -155,6 +155,7 @@ fn main() {
   let handler = main_args_handler(&matches);
   let mut rt = tokio::runtime::Builder::new()
     .threaded_scheduler()
+    .thread_name("tokio-reactor-worker")
     .enable_all()
     .build()
     .expect("Tokio Runtime setup failure");
