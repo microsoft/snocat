@@ -108,6 +108,7 @@ impl Reactor {
     let rt = tokio::runtime::Builder::new()
       .threaded_scheduler()
       .thread_name("tokio-reactor-worker")
+      .enable_all()
       .build()?;
     Ok(Reactor {
       rt: Arc::new(rt),
@@ -446,20 +447,20 @@ pub extern "C" fn snocat_authenticator_session_complete(
 
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_read_channel(
-  session_handle: u64,
-  len: u32,
-  timeout_milliseconds: u32,
-  error: &mut ExternError,
+  _session_handle: u64,
+  _len: u32,
+  _timeout_milliseconds: u32,
+  _error: &mut ExternError,
 ) -> u64 /* Handle to task of ::ffi_support::ByteBuffer */ {
   todo!("Implement Async Read")
 }
 
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_write_channel(
-  session_handle: u64,
-  len: u32,
-  buffer: *const u8,
-  error: &mut ExternError,
+  _session_handle: u64,
+  _len: u32,
+  _buffer: *const u8,
+  _error: &mut ExternError,
 ) -> u64 {
   todo!("Implement channel-based writing")
 }
