@@ -54,8 +54,8 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   }
 
   tracing::info!("Beginning proxying...");
-  let proxy_res =
-    util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1)).await;
+  let proxy_res = util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1))
+      .await;
   if let Err(e) = proxy_res {
     tracing::error!(
       header = ?proxy_header,
@@ -71,7 +71,7 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
 
 // Accept connections from a TCP socket and forward them to new connections over Snocat
 // Watch for failures on BuildConnection, which is responsible for timeout logic if needed
-async fn accept_loop<Provider: ProxyConnectionProvider>(
+async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
   listener: &mut TcpListener,
   addr: SocketAddr,
   proxy_provider: Provider,
@@ -81,7 +81,7 @@ async fn accept_loop<Provider: ProxyConnectionProvider>(
   listener
     .incoming()
     .map_err(|e| -> AnyErr { e.into() })
-    .scan((proxy_provider, addr), |baggage, res: Result<_, _>| {
+    .scan((Arc::new(proxy_provider), addr), |baggage, res: Result<_, _>| {
       future::ready(match res {
         Ok(conn) => Some(Ok((conn, baggage.clone()))),
         Err(e) => Some(Err(e)),
@@ -90,8 +90,9 @@ async fn accept_loop<Provider: ProxyConnectionProvider>(
     .try_for_each_concurrent(None, move |(stream, (prov, addr))| {
       async move {
         Ok(
-          handle_connection(stream, addr.clone(), prov)
+          tokio::task::spawn(handle_connection(stream, addr.clone(), prov))
             .await
+            .expect("Panicked task")
             .context("Error handling connection")?,
         )
       }
@@ -106,6 +107,14 @@ type ProxyConnectionOutput = (MetaStreamHeader, (quinn::SendStream, quinn::RecvS
 
 trait ProxyConnectionProvider: Send + Sync + Clone + std::fmt::Debug {
   fn open_connection(&self, peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>>;
+}
+
+// ProxyConnectionProvider is required to be Send + Sync, so we can trivially forward across Arc
+impl<T: ProxyConnectionProvider> ProxyConnectionProvider for Arc<T> {
+  fn open_connection(&self, peer_address: SocketAddr)
+                     -> BoxFuture<'_, Result<(MetaStreamHeader, (quinn::SendStream, quinn::RecvStream)), anyhow::Error>> {
+    ProxyConnectionProvider::open_connection(Arc::as_ref(self), peer_address)
+  }
 }
 
 #[derive(Clone)]
