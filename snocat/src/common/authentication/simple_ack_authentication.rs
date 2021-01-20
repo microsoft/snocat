@@ -4,8 +4,8 @@ use crate::server::deferred::SnocatClientIdentifier;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
-use tokio::stream::StreamExt;
 use std::marker::Unpin;
+use tokio::stream::StreamExt;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -28,7 +28,10 @@ impl std::fmt::Debug for SimpleAckAuthenticationHandler {
 impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
   fn authenticate_channel<'a>(
     &'a self,
-    channel: (&'a mut (dyn tokio::io::AsyncWrite + Send + Unpin), &'a mut (dyn tokio::io::AsyncRead + Send + Unpin)),
+    channel: (
+      &'a mut (dyn tokio::io::AsyncWrite + Send + Unpin),
+      &'a mut (dyn tokio::io::AsyncRead + Send + Unpin),
+    ),
     tunnel: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
@@ -36,8 +39,8 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
       tracing::info!("Sending HELO...");
       let mut buffer = [0u8; 64];
       use std::io::Write;
-      use tokio::io::AsyncWriteExt;
       use tokio::io::AsyncReadExt;
+      use tokio::io::AsyncWriteExt;
       write!(&mut buffer[..], "HELO").unwrap();
       channel.0.write_all(&buffer).await?;
       buffer = [0u8; 64];
@@ -59,15 +62,18 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
 impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
   fn authenticate_client_channel<'a>(
     &'a self,
-    channel: (&'a mut (dyn tokio::io::AsyncWrite + Send + Unpin), &'a mut (dyn tokio::io::AsyncRead + Send + Unpin)),
+    channel: (
+      &'a mut (dyn tokio::io::AsyncWrite + Send + Unpin),
+      &'a mut (dyn tokio::io::AsyncRead + Send + Unpin),
+    ),
     _tunnel: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<()>> {
     async move {
       let (send, recv) = channel;
       use std::io::Write;
-      use tokio::io::AsyncWriteExt;
       use tokio::io::AsyncReadExt;
+      use tokio::io::AsyncWriteExt;
       let mut header = [0u8; 64];
       recv.read_exact(&mut header).await?; // TODO: Actually read the header
       let first_zero = header.iter().position(|x| *x == 0).unwrap_or(32);
@@ -86,9 +92,12 @@ impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
 
 #[cfg(test)]
 mod tests {
-  use crate::common::authentication::{SimpleAckAuthenticationHandler, BidiChannelAuthenticationHandler, TunnelInfo, BidiChannelAuthenticationClient};
+  use crate::common::authentication::{
+    BidiChannelAuthenticationClient, BidiChannelAuthenticationHandler,
+    SimpleAckAuthenticationHandler, TunnelInfo,
+  };
+  use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
   use tokio::io::{duplex, DuplexStream};
-  use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, SocketAddrV4};
 
   #[tokio::test]
   async fn run_auth() {
@@ -105,14 +114,16 @@ mod tests {
       TunnelInfo {
         remote_address: std::net::SocketAddr::new(localhost.into(), client_port),
       },
-      &shutdown_listener);
+      &shutdown_listener,
+    );
     let mut server = tokio::io::split(server);
     let server_auth_task = auth_server.authenticate_channel(
       (&mut server.1, &mut server.0),
       TunnelInfo {
         remote_address: std::net::SocketAddr::new(localhost.into(), server_port),
       },
-      &shutdown_listener);
+      &shutdown_listener,
+    );
 
     let (client_res, server_res) = futures::future::join(client_auth_task, server_auth_task).await;
     client_res.unwrap();
