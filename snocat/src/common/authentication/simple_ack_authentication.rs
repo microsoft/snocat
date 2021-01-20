@@ -1,6 +1,7 @@
 use super::traits::*;
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
+use crate::util::tunnel_stream::TunnelStream;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};

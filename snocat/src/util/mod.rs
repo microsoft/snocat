@@ -18,6 +18,7 @@ use std::{net::SocketAddr, sync::Arc};
 pub mod delegation;
 pub mod framed;
 pub(crate) mod merge_streams;
+pub mod tunnel_stream;
 pub mod validators;
 pub(crate) mod vtdroppable;
 
