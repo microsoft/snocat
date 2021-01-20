@@ -24,7 +24,6 @@ use futures::future::{BoxFuture, Either, Future, FutureExt};
 use futures::AsyncWriteExt;
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
-use pin_project::pin_project;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::Deref;

@@ -4,7 +4,6 @@
 use futures::future::BoxFuture;
 use futures::future::{Future, FutureExt};
 use futures::TryFutureExt;
-use pin_project::pin_project;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -139,7 +138,6 @@ pub mod blocking {
   use futures::future::BoxFuture;
   use futures::future::{Future, FutureExt};
   use futures::TryFutureExt;
-  use pin_project::pin_project;
   use std::pin::Pin;
   use std::sync::Arc;
   use std::task::{Context, Poll};
