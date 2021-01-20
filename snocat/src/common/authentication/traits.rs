@@ -6,7 +6,6 @@ use futures::{AsyncWriteExt, FutureExt};
 use std::io::Error;
 use std::marker::Unpin;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::stream::StreamExt;
@@ -110,34 +109,6 @@ impl<TSession: quinn::crypto::Session> AsyncRead for QuinnTunnelStream<TSession>
 
 impl<TSession: quinn::crypto::Session> TunnelStream for QuinnTunnelRefStream<'_, TSession> {}
 impl<TSession: quinn::crypto::Session> TunnelStream for QuinnTunnelStream<TSession> {}
-
-pub struct TunnelServer {}
-
-impl TunnelServer {
-  pub fn new() -> Self {
-    Self {}
-  }
-
-  pub async fn create_channel(self: &Arc<Self>) -> Box<dyn TunnelStream + 'static> {
-    todo!("Implement based on the provided backend")
-  }
-}
-
-pub struct TunnelClient {}
-
-impl TunnelClient {
-  pub fn new() -> Self {
-    Self {}
-  }
-
-  pub async fn wait_channel(self: &Arc<Self>) -> Box<dyn TunnelStream> {
-    todo!("Implement based on the provided backend")
-  }
-}
-
-pub fn fake_tunnel() -> (TunnelClient, TunnelServer) {
-  todo!("Implement with DuplexStream channels")
-}
 
 pub struct TunnelInfo {
   pub remote_address: std::net::SocketAddr,
