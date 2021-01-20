@@ -63,33 +63,37 @@ impl<TSession: quinn::crypto::Session> AsyncWrite for QuinnTunnelRefStream<'_, T
 
 impl<TSession: quinn::crypto::Session> AsyncWrite for QuinnTunnelStream<TSession> {
   fn poll_write(
-    mut self: Pin<&mut Self>,
+    self: Pin<&mut Self>,
     cx: &mut Context<'_>,
     buf: &[u8],
   ) -> Poll<Result<usize, Error>> {
-    let mut parent_ref = self.as_mut();
-    AsyncWrite::poll_write(Pin::new(&mut parent_ref.0), cx, buf)
+    let parent_ref = Pin::into_inner(self);
+    let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
+    AsyncWrite::poll_write(Pin::new(&mut ref_stream), cx, buf)
   }
 
-  fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-    let mut parent_ref = self.as_mut();
-    AsyncWrite::poll_flush(Pin::new(&mut parent_ref.0), cx)
+  fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+    let parent_ref = Pin::into_inner(self);
+    let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
+    AsyncWrite::poll_flush(Pin::new(&mut ref_stream), cx)
   }
 
-  fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-    let mut parent_ref = self.as_mut();
-    AsyncWrite::poll_shutdown(Pin::new(&mut parent_ref.0), cx)
+  fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+    let parent_ref = Pin::into_inner(self);
+    let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
+    AsyncWrite::poll_shutdown(Pin::new(&mut ref_stream), cx)
   }
 }
 
 impl<TSession: quinn::crypto::Session> AsyncRead for QuinnTunnelRefStream<'_, TSession> {
   fn poll_read(
-    mut self: Pin<&mut Self>,
+    self: Pin<&mut Self>,
     cx: &mut Context<'_>,
     buf: &mut [u8],
   ) -> Poll<Result<usize, std::io::Error>> {
-    let mut parent_ref = self.as_mut();
-    AsyncRead::poll_read(Pin::new(&mut parent_ref.1), cx, buf)
+    let parent_ref = Pin::into_inner(self);
+    let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
+    AsyncRead::poll_read(Pin::new(&mut ref_stream), cx, buf)
   }
 }
 
@@ -194,7 +198,8 @@ impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
         .authenticate_channel(
           &mut QuinnTunnelRefStream::new(&mut auth_channel.0, &mut auth_channel.1),
           tunnel_info,
-          shutdown_notifier)
+          shutdown_notifier,
+        )
         .await;
       let closed = auth_channel
         .0
