@@ -5,6 +5,7 @@ use crate::server::deferred::{
   ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
 };
 use crate::util::framed::write_framed_json;
+use crate::util::tunnel_stream::{QuinnTunnelStream, TunnelStream};
 use crate::util::{
   self, finally_async,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
@@ -50,12 +51,12 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
 
   {
     let header = MetaStreamHeader::new();
-    write_framed_json(&mut proxy_connection.0, &header).await?;
+    write_framed_json(&mut proxy_connection, &header).await?;
   }
 
   tracing::info!("Beginning proxying...");
-  let proxy_res =
-    util::proxy_from_tcp_stream(source, (&mut proxy_connection.0, &mut proxy_connection.1)).await;
+  let (mut receiver, mut sender) = futures::AsyncReadExt::split(&mut proxy_connection);
+  let proxy_res = util::proxy_from_tcp_stream(source, (&mut sender, &mut receiver)).await;
   if let Err(e) = proxy_res {
     tracing::error!(
       header = ?proxy_header,
@@ -106,7 +107,7 @@ async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
   Ok(())
 }
 
-type ProxyConnectionOutput = (MetaStreamHeader, (quinn::SendStream, quinn::RecvStream));
+type ProxyConnectionOutput = (MetaStreamHeader, Box<dyn TunnelStream>);
 
 trait ProxyConnectionProvider: Send + Sync + Clone + std::fmt::Debug {
   fn open_connection(&self, peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>>;
@@ -117,10 +118,7 @@ impl<T: ProxyConnectionProvider> ProxyConnectionProvider for Arc<T> {
   fn open_connection(
     &self,
     peer_address: SocketAddr,
-  ) -> BoxFuture<
-    '_,
-    Result<(MetaStreamHeader, (quinn::SendStream, quinn::RecvStream)), anyhow::Error>,
-  > {
+  ) -> BoxFuture<'_, Result<ProxyConnectionOutput, anyhow::Error>> {
     ProxyConnectionProvider::open_connection(Arc::as_ref(self), peer_address)
   }
 }
@@ -139,8 +137,9 @@ impl BasicProxyConnectionProvider {
 impl ProxyConnectionProvider for BasicProxyConnectionProvider {
   fn open_connection(&self, _peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>> {
     async move {
-      let (send, recv) = self.conn.open_bi().await?;
-      Ok((MetaStreamHeader::new(), (send, recv)))
+      let streams = self.conn.open_bi().await?;
+      let boxed: Box<dyn TunnelStream> = Box::new(QuinnTunnelStream::new(streams));
+      Ok((MetaStreamHeader::new(), boxed))
     }
     .boxed()
   }
