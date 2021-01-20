@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::stream::StreamExt;
 
-pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl TunnelStream for tokio::io::DuplexStream {}
 
