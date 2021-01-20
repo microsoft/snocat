@@ -1,10 +1,79 @@
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
-use anyhow::{Context, Error as AnyErr, Result};
+use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
 use tokio::stream::StreamExt;
 use std::marker::Unpin;
+use std::sync::{Arc};
+use tokio::io::{AsyncRead, AsyncWrite};
+use std::pin::Pin;
+use std::task::{Poll, Context};
+use std::io::Error;
+
+pub struct QuinnTunnelStream(quinn::SendStream, quinn::RecvStream);
+
+pub trait TunnelStream :  AsyncRead + AsyncWrite + Send + Sync + Unpin {
+}
+
+impl AsyncWrite for QuinnTunnelStream {
+  fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    let mut parent_ref = self.as_mut();
+    AsyncWrite::poll_write(Pin::new(&mut parent_ref.0), cx, buf)
+  }
+
+  fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+    let mut parent_ref = self.as_mut();
+    AsyncWrite::poll_flush(Pin::new(&mut parent_ref.0), cx)
+  }
+
+  fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+    let mut parent_ref = self.as_mut();
+    AsyncWrite::poll_shutdown(Pin::new(&mut parent_ref.0), cx)
+  }
+}
+
+impl AsyncRead for QuinnTunnelStream {
+  fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, std::io::Error>> {
+    let mut parent_ref = self.as_mut();
+    AsyncRead::poll_read(Pin::new(&mut parent_ref.1), cx, buf)
+  }
+}
+
+impl TunnelStream for QuinnTunnelStream {
+}
+
+pub struct TunnelServer {
+}
+
+impl TunnelServer {
+  pub fn new() -> Self {
+    Self {
+    }
+  }
+
+  pub async fn create_channel(self: &Arc<Self>) -> Box<dyn TunnelStream + 'static> {
+    todo!("Implement based on the provided backend")
+  }
+}
+
+pub struct TunnelClient {
+}
+
+impl TunnelClient {
+  pub fn new() -> Self {
+    Self {
+    }
+  }
+
+  pub async fn wait_channel(self: &Arc<Self>) -> Box<dyn TunnelStream> {
+    todo!("Implement based on the provided backend")
+  }
+}
+
+pub fn fake_tunnel() -> (TunnelClient, TunnelServer) {
+  todo!("Implement with DuplexStream channels")
+}
 
 pub struct TunnelInfo {
   pub remote_address: std::net::SocketAddr,
