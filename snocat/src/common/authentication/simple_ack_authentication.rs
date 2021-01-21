@@ -88,9 +88,8 @@ impl AuthenticationClient for SimpleAckAuthenticationHandler {
 #[cfg(test)]
 mod tests {
   use crate::common::authentication::{
-    AuthenticationClient, AuthenticationHandler,
-    SimpleAckAuthenticationHandler, TunnelInfo,
-    perform_authentication, perform_client_authentication,
+    perform_authentication, perform_client_authentication, AuthenticationClient,
+    AuthenticationHandler, SimpleAckAuthenticationHandler, TunnelInfo,
   };
   use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
   use tokio::io::{duplex, DuplexStream};

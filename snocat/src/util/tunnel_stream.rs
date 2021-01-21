@@ -220,13 +220,18 @@ impl WrappedStream<'_> {
   #[cfg(test)]
   /// Asserts that WrappedStream complies with TunnelStream, Send, and Unpin traits
   fn _assert_traits() {
-    let _x: &(dyn TunnelStream + Send + Unpin) = &WrappedStream::DuplexStream(tokio::io::duplex(64).0);
+    let _x: &(dyn TunnelStream + Send + Unpin) =
+      &WrappedStream::DuplexStream(tokio::io::duplex(64).0);
     unreachable!("Compile-time static assertion function should never be called");
   }
 }
 
 impl<'a> AsyncRead for WrappedStream<'a> {
-  fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, IOError>> {
+  fn poll_read(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+    buf: &mut [u8],
+  ) -> Poll<Result<usize, IOError>> {
     match self.get_mut() {
       WrappedStream::QuinnTLS(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
@@ -236,7 +241,11 @@ impl<'a> AsyncRead for WrappedStream<'a> {
 }
 
 impl<'a> AsyncWrite for WrappedStream<'a> {
-  fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, IOError>> {
+  fn poll_write(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+    buf: &[u8],
+  ) -> Poll<Result<usize, IOError>> {
     match self.get_mut() {
       WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
@@ -261,5 +270,4 @@ impl<'a> AsyncWrite for WrappedStream<'a> {
   }
 }
 
-impl TunnelStream for WrappedStream<'_> { }
-
+impl TunnelStream for WrappedStream<'_> {}

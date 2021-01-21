@@ -72,8 +72,9 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     ::snocat::common::authentication::perform_client_authentication(
       &authenticator,
       &mut connection,
-      &fake_shutdown_trigger.1)
-      .await?;
+      &fake_shutdown_trigger.1,
+    )
+    .await?;
     // Return successfully authenticated tunnel connection
     connection
   };

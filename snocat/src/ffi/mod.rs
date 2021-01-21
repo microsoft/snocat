@@ -1,6 +1,8 @@
 //! Bindings for instantiation and control via C ABI
 
+use crate::common::authentication::TunnelInfo;
 use crate::server::deferred::SnocatClientIdentifier;
+use crate::util::tunnel_stream::TunnelStream;
 use crate::{
   common::authentication::{self},
   server::{
@@ -32,8 +34,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
-use crate::util::tunnel_stream::TunnelStream;
-use crate::common::authentication::TunnelInfo;
 
 pub mod dto;
 pub mod errors;

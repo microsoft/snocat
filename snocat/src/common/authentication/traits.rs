@@ -47,14 +47,28 @@ pub trait AuthenticationClient: std::fmt::Debug + Send + Sync {
 }
 
 impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
-  fn authenticate<'a>(&'a self, channel: Box<dyn TunnelStream + Send + Unpin>, tunnel_info: TunnelInfo, shutdown_notifier: &'a Listener) -> BoxFuture<'a, Result<SnocatClientIdentifier, anyhow::Error>> {
-    self.as_ref().authenticate(channel, tunnel_info, shutdown_notifier)
+  fn authenticate<'a>(
+    &'a self,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
+    shutdown_notifier: &'a Listener,
+  ) -> BoxFuture<'a, Result<SnocatClientIdentifier, anyhow::Error>> {
+    self
+      .as_ref()
+      .authenticate(channel, tunnel_info, shutdown_notifier)
   }
 }
 
 impl<T: AuthenticationClient + ?Sized> AuthenticationClient for Box<T> {
-  fn authenticate_client<'a>(&'a self, channel: Box<dyn TunnelStream + Send + Unpin>, tunnel_info: TunnelInfo, shutdown_notifier: &'a Listener) -> BoxFuture<'a, Result<(), anyhow::Error>> {
-    self.as_ref().authenticate_client(channel, tunnel_info, shutdown_notifier)
+  fn authenticate_client<'a>(
+    &'a self,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
+    shutdown_notifier: &'a Listener,
+  ) -> BoxFuture<'a, Result<(), anyhow::Error>> {
+    self
+      .as_ref()
+      .authenticate_client(channel, tunnel_info, shutdown_notifier)
   }
 }
 
