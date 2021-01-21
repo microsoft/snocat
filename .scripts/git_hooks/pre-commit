@@ -1,0 +1,12 @@
+#!/bin/bash
+
+for file in $(git diff --diff-filter=d --cached --name-only | grep -E '\.rs$')
+do
+  # git show ":$file" | cargo fmt -- --check # we only want to lint the staged changes, not any un-staged changes
+  cargo +nightly fmt -- --unstable-features --config-path ./.rustfmt.toml --skip-children \
+    --check <(git show ":$file") # we only want to lint the staged changes, not any un-staged changes
+  if [ $? -ne 0 ]; then
+    echo "rustfmt failed on staged file '$file'. Format it with \`cargo fmt\` before committing."
+    exit 1 # exit with failure status
+  fi
+done
