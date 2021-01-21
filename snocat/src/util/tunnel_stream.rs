@@ -114,6 +114,7 @@ impl<TSession: quinn::crypto::Session> TunnelStream for QuinnTunnelRefStream<'_,
 impl<TSession: quinn::crypto::Session> TunnelStream for QuinnTunnelStream<TSession> {}
 
 /// futures-rs compatibility for TunnelStream
+// noinspection DuplicatedCode
 mod futures_traits {
   use super::QuinnTunnelRefStream;
   use super::QuinnTunnelStream;
@@ -171,6 +172,34 @@ mod futures_traits {
   }
 
   impl futures::io::AsyncRead for dyn TunnelStream {
+    fn poll_read(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &mut [u8],
+    ) -> Poll<Result<usize, IOError>> {
+      tokio::io::AsyncRead::poll_read(self, cx, buf)
+    }
+  }
+
+  impl futures::io::AsyncWrite for super::WrappedStream<'_> {
+    fn poll_write(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &[u8],
+    ) -> Poll<Result<usize, IOError>> {
+      tokio::io::AsyncWrite::poll_write(self, cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+      tokio::io::AsyncWrite::poll_flush(self, cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+      tokio::io::AsyncWrite::poll_shutdown(self, cx)
+    }
+  }
+
+  impl futures::io::AsyncRead for super::WrappedStream<'_> {
     fn poll_read(
       self: Pin<&mut Self>,
       cx: &mut Context<'_>,
