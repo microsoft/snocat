@@ -1,7 +1,8 @@
 use std::io::Error as IOError;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+
 /// A duplex stream abstracting over a connection, allowing use of memory streams and Quinn connections
 pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {}
 
@@ -179,3 +180,57 @@ mod futures_traits {
     }
   }
 }
+
+pub enum WrappedStream<'a> {
+  QuinnTLS(QuinnTunnelStream<quinn::crypto::rustls::TlsSession>),
+  QuinnTLSRef(QuinnTunnelRefStream<'a, quinn::crypto::rustls::TlsSession>),
+  DuplexStream(tokio::io::DuplexStream),
+}
+
+impl WrappedStream<'_> {
+  #[cfg(test)]
+  /// Asserts that WrappedStream complies with TunnelStream, Send, and Unpin traits
+  fn _assert_traits() {
+    let _x: &(dyn TunnelStream + Send + Unpin) = &WrappedStream::DuplexStream(tokio::io::duplex(64).0);
+    unreachable!("Compile-time static assertion function should never be called");
+  }
+}
+
+impl<'a> AsyncRead for WrappedStream<'a> {
+  fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, IOError>> {
+    match self.get_mut() {
+      WrappedStream::QuinnTLS(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
+      WrappedStream::QuinnTLSRef(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
+      WrappedStream::DuplexStream(ref mut s) => AsyncRead::poll_read(Pin::new(s), cx, buf),
+    }
+  }
+}
+
+impl<'a> AsyncWrite for WrappedStream<'a> {
+  fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, IOError>> {
+    match self.get_mut() {
+      WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
+      WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
+      WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_write(Pin::new(s), cx, buf),
+    }
+  }
+
+  fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+    match self.get_mut() {
+      WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_flush(Pin::new(&mut s.0), cx),
+      WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_flush(Pin::new(&mut s.0), cx),
+      WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_flush(Pin::new(s), cx),
+    }
+  }
+
+  fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+    match self.get_mut() {
+      WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(&mut s.0), cx),
+      WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(&mut s.0), cx),
+      WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(s), cx),
+    }
+  }
+}
+
+impl TunnelStream for WrappedStream<'_> { }
+
