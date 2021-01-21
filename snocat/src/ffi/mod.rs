@@ -32,6 +32,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
+use crate::util::tunnel_stream::TunnelStream;
+use crate::common::authentication::TunnelInfo;
 
 pub mod dto;
 pub mod errors;
@@ -267,7 +269,7 @@ lazy_static! {
 
 struct FfiAuthenticationState {
   peer_address: SocketAddr,
-  channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
+  channel: Box<dyn TunnelStream + Send + Unpin>,
   closer:
     tokio::sync::Mutex<Option<oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>>>,
 }
@@ -295,14 +297,14 @@ impl FfiDelegatedAuthenticationHandler {
     }
   }
 
-  fn authenticate_arc_channel<'a>(
+  fn authenticate_ffi<'a>(
     &'a self,
-    channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
-    tunnel: &'a quinn::NewConnection,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
     async move {
-      let peer_addr = tunnel.connection.remote_address();
+      let peer_addr = tunnel_info.remote_address();
 
       // Delegation produces a result when FFI has completed the authentication session
       let delegation_recv: Result<Result<SnocatClientIdentifier, _>, _> = self
@@ -330,13 +332,13 @@ impl FfiDelegatedAuthenticationHandler {
   async fn request_ffi_authentication(
     &self,
     peer_address: SocketAddr,
-    auth_channel: Arc<tokio::sync::Mutex<(quinn::SendStream, quinn::RecvStream)>>,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
     dispatcher: oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>,
   ) -> Result<(), tokio::task::JoinError> {
     // Returns once the remote thread has successfully been notified of the request
     let auth_state = FfiAuthenticationState {
       peer_address,
-      channel: auth_channel,
+      channel,
       closer: tokio::sync::Mutex::new(Some(dispatcher)),
     };
     tracing::event!(
@@ -492,32 +494,15 @@ impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {
 impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler {
   fn authenticate<'a>(
     &'a self,
-    tunnel: &'a mut quinn::NewConnection,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
     shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
     async move {
-      let auth_channel = tunnel.connection.open_bi().await?;
-      let auth_channel = Arc::new(tokio::sync::Mutex::new(auth_channel));
       let res = self
-        .authenticate_arc_channel(auth_channel.clone(), &tunnel, shutdown_notifier)
+        .authenticate_ffi(channel, tunnel_info, shutdown_notifier)
         .await;
-      let mut auth_channel = auth_channel.lock().await;
-      let closed = auth_channel
-        .0
-        .close()
-        .await
-        .context("Failure closing authentication channel");
-      match (res, closed) {
-        (Ok(id), Err(e)) => {
-          tracing::warn!(
-            "Failure in closing of client authentication channel {:?}",
-            e
-          );
-          Ok(id) // Failure here means the channel was already closed by the other party
-        }
-        (Err(e), _) => Err(e),
-        (Ok(id), _) => Ok(id),
-      }
+      res
     }
     .boxed()
   }

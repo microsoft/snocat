@@ -69,8 +69,10 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     // Authenticate tunnel
     let authenticator = SimpleAckAuthenticationHandler::new();
     let fake_shutdown_trigger = triggered::trigger();
-    authenticator
-      .authenticate_client(&mut connection, &fake_shutdown_trigger.1)
+    ::snocat::common::authentication::perform_client_authentication(
+      &authenticator,
+      &mut connection,
+      &fake_shutdown_trigger.1)
       .await?;
     // Return successfully authenticated tunnel connection
     connection

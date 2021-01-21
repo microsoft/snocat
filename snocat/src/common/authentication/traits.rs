@@ -1,11 +1,11 @@
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
-use crate::util::tunnel_stream::{QuinnTunnelRefStream, TunnelStream};
-use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
+use crate::util::tunnel_stream::{QuinnTunnelStream, TunnelStream};
+use anyhow::{Error as AnyErr, Result};
 use futures::future::BoxFuture;
-use futures::{AsyncWriteExt, FutureExt};
 use std::marker::Unpin;
 use tokio::stream::StreamExt;
+use triggered::Listener;
 
 pub struct TunnelInfo {
   pub remote_address: std::net::SocketAddr,
@@ -31,7 +31,8 @@ impl TunnelInfo {
 pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
   fn authenticate<'a>(
     &'a self,
-    tunnel: &'a mut quinn::NewConnection,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
     shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<SnocatClientIdentifier>>;
 }
@@ -39,106 +40,63 @@ pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
 pub trait AuthenticationClient: std::fmt::Debug + Send + Sync {
   fn authenticate_client<'a>(
     &'a self,
-    tunnel: &'a mut quinn::NewConnection,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<()>>;
-}
-
-pub trait BidiChannelAuthenticationHandler: AuthenticationHandler {
-  fn authenticate_channel<'a>(
-    &'a self,
-    channel: &'a mut (dyn TunnelStream + Send + Unpin),
-    tunnel: TunnelInfo,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>>;
-}
-
-impl<T: BidiChannelAuthenticationHandler> AuthenticationHandler for T {
-  fn authenticate<'a>(
-    &'a self,
-    tunnel: &'a mut quinn::NewConnection,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
-    async move {
-      let mut auth_channel = tunnel.connection.open_bi().await?;
-      let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
-      let res = self
-        .authenticate_channel(
-          &mut QuinnTunnelRefStream::new(&mut auth_channel.0, &mut auth_channel.1),
-          tunnel_info,
-          shutdown_notifier,
-        )
-        .await;
-      let closed = auth_channel
-        .0
-        .close()
-        .await
-        .context("Failure closing authentication channel");
-      match (res, closed) {
-        (Ok(id), Err(e)) => {
-          tracing::warn!(
-            "Failure in closing of client authentication channel {:?}",
-            e
-          );
-          Ok(id) // Failure here means the channel was already closed by the other party
-        }
-        (Err(e), _) => Err(e),
-        (Ok(id), _) => Ok(id),
-      }
-    }
-    .boxed()
-  }
-}
-
-pub trait BidiChannelAuthenticationClient: AuthenticationClient {
-  fn authenticate_client_channel<'a>(
-    &'a self,
-    channel: &'a mut (dyn TunnelStream + Send + Unpin),
+    channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<()>>;
 }
 
-impl<T: BidiChannelAuthenticationClient> AuthenticationClient for T {
-  fn authenticate_client<'a>(
-    &'a self,
-    tunnel: &'a mut quinn::NewConnection,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<()>> {
-    async move {
-      let mut auth_channel = tunnel
-        .bi_streams
-        .next()
-        .await
-        .map(|i| i.map_err(|e| AnyErr::new(e)))
-        .unwrap_or_else(|| {
-          Err(AnyErr::msg(
-            "Tunnel connection closed remotely before authentication",
-          ))
-        })?;
-      let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
-      let res = self
-        .authenticate_client_channel(
-          &mut QuinnTunnelRefStream::new(&mut auth_channel.0, &mut auth_channel.1),
-          tunnel_info,
-          shutdown_notifier,
-        )
-        .await;
-      tracing::debug!("Authenticated with result {:?}", &res);
-      let closed = auth_channel
-        .0
-        .close()
-        .await
-        .context("Failure closing authentication channel");
-      match (res, closed) {
-        (Ok(id), Err(e)) => {
-          tracing::warn!("Failure in closing of authentication channel {:?}", e);
-          Ok(id) // Failure here means the channel was already closed by the other party
-        }
-        (Err(e), _) => Err(e),
-        (Ok(id), _) => Ok(id),
-      }
-    }
-    .boxed()
+impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
+  fn authenticate<'a>(&'a self, channel: Box<dyn TunnelStream + Send + Unpin>, tunnel_info: TunnelInfo, shutdown_notifier: &'a Listener) -> BoxFuture<'a, Result<SnocatClientIdentifier, anyhow::Error>> {
+    self.as_ref().authenticate(channel, tunnel_info, shutdown_notifier)
   }
+}
+
+impl<T: AuthenticationClient + ?Sized> AuthenticationClient for Box<T> {
+  fn authenticate_client<'a>(&'a self, channel: Box<dyn TunnelStream + Send + Unpin>, tunnel_info: TunnelInfo, shutdown_notifier: &'a Listener) -> BoxFuture<'a, Result<(), anyhow::Error>> {
+    self.as_ref().authenticate_client(channel, tunnel_info, shutdown_notifier)
+  }
+}
+
+pub async fn perform_authentication<'a>(
+  handler: &'a impl AuthenticationHandler,
+  tunnel: &'a mut quinn::NewConnection,
+  shutdown_notifier: &'a triggered::Listener,
+) -> Result<SnocatClientIdentifier> {
+  let auth_channel = tunnel.connection.open_bi().await?;
+  let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
+  handler
+    .authenticate(
+      Box::new(QuinnTunnelStream::new(auth_channel)),
+      tunnel_info,
+      shutdown_notifier,
+    )
+    .await
+}
+
+pub async fn perform_client_authentication<'a>(
+  client: &'a impl AuthenticationClient,
+  tunnel: &'a mut quinn::NewConnection,
+  shutdown_notifier: &'a triggered::Listener,
+) -> Result<()> {
+  let auth_channel = tunnel
+    .bi_streams
+    .next()
+    .await
+    .map(|i| i.map_err(|e| AnyErr::new(e)))
+    .unwrap_or_else(|| {
+      Err(AnyErr::msg(
+        "Tunnel connection closed remotely before authentication",
+      ))
+    })?;
+  let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
+  let res = client
+    .authenticate_client(
+      Box::new(QuinnTunnelStream::new(auth_channel)),
+      tunnel_info,
+      shutdown_notifier,
+    )
+    .await;
+  tracing::debug!("Authenticated with result {:?}", &res);
+  res
 }

@@ -5,6 +5,7 @@ use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt};
 use tokio::stream::StreamExt;
+use crate::util::tunnel_stream::TunnelStream;
 
 pub struct NoOpAuthenticationHandler {}
 
@@ -27,11 +28,12 @@ impl std::fmt::Debug for NoOpAuthenticationHandler {
 impl AuthenticationHandler for NoOpAuthenticationHandler {
   fn authenticate<'a>(
     &'a self,
-    tunnel: &'a mut quinn::NewConnection,
+    _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
     async move {
-      let peer_addr = tunnel.connection.remote_address();
+      let peer_addr = tunnel_info.remote_address();
       let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
@@ -42,7 +44,8 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
 impl AuthenticationClient for NoOpAuthenticationHandler {
   fn authenticate_client<'a>(
     &'a self,
-    _tunnel: &'a mut quinn::NewConnection,
+    _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    _tunnel: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<()>> {
     futures::future::ready(Ok(())).boxed()

@@ -26,11 +26,11 @@ impl std::fmt::Debug for SimpleAckAuthenticationHandler {
   }
 }
 
-impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
-  fn authenticate_channel<'a>(
+impl AuthenticationHandler for SimpleAckAuthenticationHandler {
+  fn authenticate<'a>(
     &'a self,
-    channel: &'a mut (dyn TunnelStream + Send + Unpin),
-    tunnel: TunnelInfo,
+    mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
     async move {
@@ -49,7 +49,7 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
         return Err(AnyErr::msg("Invalid client ack"));
       }
       tracing::trace!("client_ack");
-      let peer_addr = tunnel.remote_address();
+      let peer_addr = tunnel_info.remote_address();
       let id = SnocatClientIdentifier::new(peer_addr.to_string());
       Ok(id)
     }
@@ -57,11 +57,11 @@ impl BidiChannelAuthenticationHandler for SimpleAckAuthenticationHandler {
   }
 }
 
-impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
-  fn authenticate_client_channel<'a>(
+impl AuthenticationClient for SimpleAckAuthenticationHandler {
+  fn authenticate_client<'a>(
     &'a self,
-    channel: &'a mut (dyn TunnelStream + Send + Unpin),
-    _tunnel: TunnelInfo,
+    channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    _tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, Result<()>> {
     async move {
@@ -88,8 +88,9 @@ impl BidiChannelAuthenticationClient for SimpleAckAuthenticationHandler {
 #[cfg(test)]
 mod tests {
   use crate::common::authentication::{
-    BidiChannelAuthenticationClient, BidiChannelAuthenticationHandler,
+    AuthenticationClient, AuthenticationHandler,
     SimpleAckAuthenticationHandler, TunnelInfo,
+    perform_authentication, perform_client_authentication,
   };
   use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
   use tokio::io::{duplex, DuplexStream};
@@ -99,19 +100,19 @@ mod tests {
     // Use a small buffer size to ensure we don't have a minimum that causes blocking
     let localhost = Ipv6Addr::LOCALHOST;
     let (client_port, server_port) = (40000, 40001);
-    let (mut client, mut server) = duplex(64);
+    let (client, server) = duplex(64);
     let auth_server = SimpleAckAuthenticationHandler::new();
     let auth_client = SimpleAckAuthenticationHandler::new();
     let shutdown_listener = triggered::trigger().1; // Fake "never" listener with a dropped sender
-    let client_auth_task = auth_client.authenticate_client_channel(
-      &mut client,
+    let client_auth_task = auth_client.authenticate_client(
+      Box::new(client),
       TunnelInfo {
         remote_address: std::net::SocketAddr::new(localhost.into(), client_port),
       },
       &shutdown_listener,
     );
-    let server_auth_task = auth_server.authenticate_channel(
-      &mut server,
+    let server_auth_task = auth_server.authenticate(
+      Box::new(server),
       TunnelInfo {
         remote_address: std::net::SocketAddr::new(localhost.into(), server_port),
       },

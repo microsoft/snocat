@@ -230,9 +230,7 @@ impl TcpTunnelManager {
     }
 
     let remote_addr = tunnel.connection.remote_address();
-    let id = self
-      .authenticator
-      .authenticate(&mut tunnel, &shutdown_notifier)
+    let id = authentication::perform_authentication(&self.authenticator, &mut tunnel, &shutdown_notifier)
       .await?;
     z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
       .await;
