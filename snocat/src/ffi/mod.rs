@@ -909,7 +909,7 @@ mod tests {
             assert!(reporting_error.get_code().is_success());
             unsafe { reporting_error.manually_release() };
           },
-          Arc::new(String::from("Test context")),
+          Arc::new(String::from("Test Context")),
         )
         .await
     };
