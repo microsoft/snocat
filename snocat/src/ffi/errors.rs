@@ -7,6 +7,7 @@ pub enum FfiError {
   Generic(String),
   JsonParseError(serde_json::error::Error),
   HandleError(::ffi_support::HandleError),
+  EventingError(String),
 }
 
 pub mod error_codes {
@@ -14,6 +15,7 @@ pub mod error_codes {
   pub const GENERIC_ERROR: i32 = 1;
   pub const JSON_PARSE_ERROR: i32 = 2;
   pub const HANDLE_ERROR: i32 = 3;
+  pub const EVENTING_ERROR: i32 = 4;
 }
 
 fn get_code(e: &FfiError) -> ErrorCode {
@@ -21,6 +23,7 @@ fn get_code(e: &FfiError) -> ErrorCode {
     FfiError::Generic(_) => ErrorCode::new(error_codes::GENERIC_ERROR),
     FfiError::JsonParseError(_) => ErrorCode::new(error_codes::JSON_PARSE_ERROR),
     FfiError::HandleError(_) => ErrorCode::new(error_codes::HANDLE_ERROR),
+    FfiError::EventingError(_) => ErrorCode::new(error_codes::EVENTING_ERROR),
   }
 }
 
@@ -56,11 +59,18 @@ impl From<::ffi_support::HandleError> for FfiError {
   }
 }
 
+impl From<super::eventing::EventingError> for FfiError {
+  fn from(e: super::eventing::EventingError) -> Self {
+    FfiError::EventingError(format!("{:#}", e))
+  }
+}
+
 impl std::fmt::Display for FfiError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       FfiError::Generic(s) => f.write_str(&s),
       FfiError::HandleError(e) => std::fmt::Debug::fmt(e, f),
+      FfiError::EventingError(s) => f.write_str(&s),
       other => std::fmt::Debug::fmt(other, f),
     }
   }
