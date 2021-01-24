@@ -245,7 +245,7 @@ pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError
 lazy_static! {
   static ref AUTHENTICATOR_HANDLES: ConcurrentHandleMap<FfiDelegatedAuthenticationHandler> =
     ConcurrentHandleMap::new();
-  // TODO: Remove once FfiDelegation is in use for auth
+  // TODO: Remove once FfiDelegation is in use for auth and channels can be read
   static ref AUTHENTICATOR_SESSION_HANDLES: ConcurrentHandleMap<FfiAuthenticationState> =
     ConcurrentHandleMap::new();
 }
@@ -260,96 +260,12 @@ struct FfiAuthenticationState {
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
   delegation_pool: Arc<Mutex<DelegationPool>>,
-  auth_start_fn: extern "C" fn(session_handle: u64, delegation_handle: u64) -> (),
+  auth_start_fn: extern "C" fn(session_handle: u64) -> (),
 }
 
 #[no_mangle]
 pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
   ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || todo!())
-}
-
-impl FfiDelegatedAuthenticationHandler {
-  pub fn new(
-    reactor: Arc<Reactor>,
-    start_session: extern "C" fn(session_handle: u64, delegation_handle: u64) -> (),
-  ) -> Self {
-    Self {
-      reactor,
-      delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
-      auth_start_fn: start_session,
-    }
-  }
-
-  fn authenticate_ffi<'a>(
-    &'a self,
-    _channel: Box<dyn TunnelStream + Send + Unpin>,
-    tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
-    let _reactor = get_current_reactor();
-
-    async move {
-      let _peer_addr = tunnel_info.remote_address();
-      todo!()
-      // let result = reactor_ref.delegations
-      //   .delegate_ffi(move || { todo!() }, Some(channel))
-      //   .await
-      //   .unwrap();
-
-      // result
-      // let delegation_recv: Result<Result<SnocatClientIdentifier, _>, _> = self
-      //   .delegation_pool
-      //   .lock()
-      //   .await
-      //   .delegate(async move |dispatcher| {
-      //     // Delegation dispatch must not rely on the result to complete
-      //     self
-      //       .request_ffi_authentication(peer_addr, channel, dispatcher)
-      //       .await // This await must return regardless of whether or not `dispatcher` is called yet
-      //       .expect("requests for FFI authentication must return without exceptions")
-      //   })
-      //   .await
-      //   .await;
-      // match delegation_recv {
-      //   Err(delegation_error) => Err(delegation_error).context("Task Delegation error"),
-      //   Ok(Err(authentication_error)) => Err(authentication_error).context("Authentication denied"),
-      //   Ok(Ok(id)) => Ok(id),
-      // }
-    }
-    .boxed()
-  }
-
-  // async fn request_ffi_authentication(
-  //   &self,
-  //   peer_address: SocketAddr,
-  //   channel: Box<dyn TunnelStream + Send + Unpin>,
-  //   dispatcher: oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>,
-  // ) -> Result<(), tokio::task::JoinError> {
-  //   // Returns once the remote thread has successfully been notified of the request
-  //   let auth_state = FfiAuthenticationState {
-  //     peer_address,
-  //     channel,
-  //     closer: tokio::sync::Mutex::new(Some(dispatcher)),
-  //   };
-  //   tracing::event!(
-  //     tracing::Level::TRACE,
-  //     target = "embed_authentication_session",
-  //     ?peer_address
-  //   );
-  //   let session_handle = AUTHENTICATOR_SESSION_HANDLES.insert(auth_state);
-  //   tracing::event!(
-  //     tracing::Level::DEBUG,
-  //     target = "request_ffi_authentication",
-  //     ?session_handle,
-  //     ?peer_address
-  //   );
-  //   // Run the request on a blocking-safe worker thread to avoid blocking the current reactor
-  //   let auth_start_fn = self.auth_start_fn;
-  //   tokio::task::spawn_blocking(move || {
-  //     auth_start_fn(session_handle.into_u64(), todo!());
-  //   })
-  //   .await
-  // }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
@@ -363,6 +279,73 @@ pub struct AuthenticatorDenial {
   message: String,
 }
 
+impl FfiDelegatedAuthenticationHandler {
+  pub fn new(
+    reactor: Arc<Reactor>,
+    start_session: extern "C" fn(session_handle: u64) -> (),
+  ) -> Self {
+    Self {
+      reactor,
+      delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
+      auth_start_fn: start_session,
+    }
+  }
+
+  fn authenticate_ffi<'a>(
+    &'a self,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
+    _shutdown_notifier: &'a triggered::Listener,
+  ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
+    let reactor = get_current_reactor();
+    type ContextInner = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
+    // Copy the extern-C-function off so we don't need to capture `self`
+    let auth_start_fn = self.auth_start_fn;
+    // Copy the address off for tracing before we move `tunnel_info` into the delegation context
+    let peer_address = tunnel_info.remote_address;
+    let session_context = Arc::new(tokio::sync::Mutex::new((channel, tunnel_info)));
+
+    async move {
+      // Delegate a new "session" to the FFI, storing the channel as context where we can access it
+      let (res, ctx) = reactor.delegate_ffi_contextual::<
+        AuthenticatorAcceptance,
+        AuthenticatorDenial,
+        Arc<tokio::sync::Mutex<ContextInner>>,
+        _,
+      >(
+        move |session_id| {
+          tracing::event!(
+            tracing::Level::DEBUG,
+            target = "request_ffi_authentication",
+            session_handle = ?session_id,
+            ?peer_address,
+          );
+          // Ffi call out to C api
+          auth_start_fn(session_id);
+          tracing::event!(
+            tracing::Level::DEBUG,
+            target = "ffi_authentication_requested",
+            session_handle = ?session_id,
+            ?peer_address,
+          );
+        },
+        session_context
+      ).await.context("FfiDelegation error in authentication request")?;
+
+      drop(ctx); // We're done with the channel anyway
+
+      match res {
+        Ok(acceptance) => Ok(acceptance.id),
+        Err(denial) => {
+          // TODO: "authentication failure" should be a success type rather than an error result
+          Err(anyhow::Error::msg(denial.message))
+        }
+      }
+    }
+    .boxed()
+  }
+}
+
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_complete(
   session_handle: u64,
@@ -374,20 +357,9 @@ pub extern "C" fn snocat_authenticator_session_complete(
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = get_current_reactor();
-
     let parameter_json = parameter_json.into_string();
     let events = Arc::clone(&reactor_ref.events);
     events.fire_evented_handle(completion_event_id, async move {
-      // let res = if accept {
-      //   serde_json::from_str::<AuthenticatorAcceptance>(&parameter_json)
-      //     .context("Parsing acceptance parameters")
-      // } else {
-      //   serde_json::from_str::<AuthenticatorDenial>(&parameter_json)
-      //     .context("Parsing acceptance parameters")
-      //     .and_then(|denial| Err(anyhow::Error::msg(denial.message)))
-      // };
-      // let res = res.map(|x| x.id);
-
       reactor_ref
         .delegations
         .fulfill(
