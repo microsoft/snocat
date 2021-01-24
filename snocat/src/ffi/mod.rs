@@ -456,6 +456,11 @@ lazy_static! {
   static ref REACTOR: std::sync::Mutex<Option<Arc<Reactor>>> = std::sync::Mutex::new(None);
 }
 
+fn get_current_reactor() -> Arc<Reactor> {
+  let reactor_ref = REACTOR.lock().expect("Reactor Read Lock poisoned");
+  Arc::clone(reactor_ref.as_ref().expect("Reactor must be initialized"))
+}
+
 #[no_mangle]
 pub extern "C" fn snocat_reactor_start(
   report_event_completion_callback: extern "C" fn(
@@ -488,10 +493,8 @@ pub extern "C" fn snocat_report_async_update(
   error: &mut ExternError,
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
-    let reactor_ref = REACTOR.lock().expect("Reactor Read Lock poisoned");
-    let reactor_ref = Arc::clone(reactor_ref.as_ref().expect("Reactor must be initialized"));
     let json_str = json.into_string();
-    reactor_ref
+    get_current_reactor()
       .delegations
       .fulfill_blocking(event_handle, state, json_str)
       .map_err(Into::into)
@@ -594,8 +597,7 @@ impl FfiDelegatedAuthenticationHandler {
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
-    let reactor_ref = REACTOR.lock().expect("Reactor Read Lock poisoned");
-    let reactor_ref = Arc::clone(reactor_ref.as_ref().expect("Reactor must be initialized"));
+    let reactor = get_current_reactor();
 
     async move {
       let peer_addr = tunnel_info.remote_address();
@@ -680,8 +682,7 @@ pub extern "C" fn snocat_authenticator_session_complete(
   error: &mut ExternError,
 ) -> u64 {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
-    let reactor_ref = REACTOR.lock().expect("Reactor Read Lock poisoned");
-    let reactor_ref = Arc::clone(reactor_ref.as_ref().expect("Reactor must be initialized"));
+    let reactor_ref = get_current_reactor();
     // TODO: Make this async, and make it return a handle to the task; use reactor_ref for it
     let session = AUTHENTICATOR_SESSION_HANDLES
       .remove_u64(session_handle)?
