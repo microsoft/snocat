@@ -27,6 +27,7 @@ impl std::fmt::Display for EventingError {
 impl std::error::Error for EventingError {}
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub struct EventHandle<
   T: serde::ser::Serialize + Send + 'static,
   E: serde::ser::Serialize + Send + 'static,
