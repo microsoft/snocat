@@ -25,7 +25,7 @@ use ffi_support::{
   FfiStr, Handle, HandleError, IntoFfi,
 };
 use futures::future::{BoxFuture, Either, Future, FutureExt};
-use futures::AsyncWriteExt;
+use futures::{AsyncReadExt, AsyncWriteExt};
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
 use std::any::Any;
@@ -49,6 +49,7 @@ use ffi_delegation::{
 };
 
 mod eventing;
+use crate::ffi::allocators::{get_bytebuffer_raw, RawByteBuffer};
 use eventing::{EventCompletionState, EventHandle, EventRunner, EventingError};
 
 pub struct Reactor {
@@ -279,6 +280,8 @@ pub struct AuthenticatorDenial {
   message: String,
 }
 
+type AuthenticationSessionContext = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
+
 impl FfiDelegatedAuthenticationHandler {
   pub fn new(
     reactor: Arc<Reactor>,
@@ -298,19 +301,19 @@ impl FfiDelegatedAuthenticationHandler {
     _shutdown_notifier: &'a triggered::Listener,
   ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
     let reactor = get_current_reactor();
-    type ContextInner = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
     // Copy the extern-C-function off so we don't need to capture `self`
     let auth_start_fn = self.auth_start_fn;
     // Copy the address off for tracing before we move `tunnel_info` into the delegation context
     let peer_address = tunnel_info.remote_address;
-    let session_context = Arc::new(tokio::sync::Mutex::new((channel, tunnel_info)));
+    // Our context is an async-mutex in an arc; we use an option to allow us to "steal it" back after completion
+    let session_context = Arc::new(tokio::sync::Mutex::new(Some((channel, tunnel_info))));
 
     async move {
       // Delegate a new "session" to the FFI, storing the channel as context where we can access it
       let (res, ctx) = reactor.delegate_ffi_contextual::<
         AuthenticatorAcceptance,
         AuthenticatorDenial,
-        Arc<tokio::sync::Mutex<ContextInner>>,
+        Arc<tokio::sync::Mutex<Option<AuthenticationSessionContext>>>,
         _,
       >(
         move |session_id| {
@@ -332,6 +335,11 @@ impl FfiDelegatedAuthenticationHandler {
         session_context
       ).await.context("FfiDelegation error in authentication request")?;
 
+      // Clear the channel from the context, invalidating it for other holders
+      // We don't bother checking if the context was still present in the mutex, because the
+      // authentication process is free to choose to close the context however it wants, and
+      // thus may have already taken it from the context for lifetime extension.
+      let _ = std::mem::replace(&mut *ctx.lock().await, None);
       drop(ctx); // We're done with the channel anyway
 
       match res {
@@ -379,14 +387,56 @@ pub extern "C" fn snocat_authenticator_session_complete(
   })
 }
 
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+pub struct SessionReadSuccess {
+  buffer: RawByteBuffer,
+}
+
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_read_channel(
-  _session_handle: u64,
-  _len: u32,
+  session_handle: u64,
+  result_event_handle: EventHandle<SessionReadSuccess, ()>,
+  len: u32,
+  // TODO: Implement timeout support
   _timeout_milliseconds: u32,
-  _error: &mut ExternError,
-) -> u64 /* Handle to task of ::ffi_support::ByteBuffer */ {
-  todo!("Implement Async Read")
+  error: &mut ExternError,
+) -> () {
+  ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
+    let reactor_ref = get_current_reactor();
+    let events = Arc::clone(&reactor_ref.events);
+    events.fire_evented_handle(result_event_handle, async move {
+      let res = reactor_ref
+        .delegations
+        .with_context_optarx::<AuthenticationSessionContext, Result<Vec<u8>, ()>, _, _>(
+          session_handle,
+          async move |mut ctx| {
+            let mut buf = vec![0u8; len as usize];
+            use tokio::io::AsyncReadExt;
+            let read_res = AsyncReadExt::read_exact(&mut ctx.as_mut().0, &mut buf)
+              .await
+              .context("Read failure");
+            match read_res {
+              Ok(_) => Ok(buf),
+              Err(_) => Err(()),
+            }
+          },
+        )
+        .await
+        .map_err(|_| ());
+
+      let res = match res {
+        Ok(Ok(x)) => Ok(x),
+        _ => Err(()),
+      };
+      // Allocate a byte buffer and release ownership of it to the FFI, if res is Ok
+      res.map(|buffer| SessionReadSuccess {
+        // ByteBuffers do not clean up their data contents when dropped
+        // From this point on, the memory is owned by- and must be destroyed by- the remote side
+        buffer: get_bytebuffer_raw(ByteBuffer::from_vec(buffer)),
+      })
+    })?;
+    Ok(())
+  })
 }
 
 #[no_mangle]
