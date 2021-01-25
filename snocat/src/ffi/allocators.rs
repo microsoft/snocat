@@ -1,4 +1,4 @@
-use ffi_support::{rust_string_to_c, FfiStr};
+use ffi_support::{rust_string_to_c, ByteBuffer, FfiStr};
 
 const ALLOCATION_TRACING: bool = true;
 
@@ -77,4 +77,54 @@ pub unsafe extern "C" fn snocat_alloc_string(s: FfiStr) {
     }
     rs
   });
+}
+
+mod pointers_as_u64 {
+  use crate::ffi::allocators::RawByteBuffer;
+
+  pub fn serialize<S: serde::ser::Serializer, T>(ptr: &*const T, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64((*ptr as *const ()) as u64)
+  }
+
+  pub fn deserialize<'de, T, D: serde::de::Deserializer<'de>>(
+    deserializer: D,
+  ) -> Result<*const T, D::Error> {
+    let numeric: u64 = serde::de::Deserialize::deserialize(deserializer)?;
+    Ok(numeric as *const T)
+  }
+
+  #[cfg(test)]
+  #[test]
+  fn round_trip_deserialize() {
+    let x = RawByteBuffer {
+      len: 25,
+      data: 13u64 as *const _,
+    };
+    let encoded = serde_json::to_string(&x).unwrap();
+    assert_eq!(encoded, "{\"len\":25,\"data\":13}");
+    let res: RawByteBuffer = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(res.data as u64, 13);
+    assert_eq!(res.len, 25);
+  }
+}
+
+#[repr(C)]
+#[derive(::serde::Serialize, ::serde::Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct RawByteBuffer {
+  pub len: i64,
+  #[serde(with = "pointers_as_u64")]
+  pub data: *const u8,
+}
+impl RawByteBuffer {
+  #[inline]
+  pub fn destroy(self) {
+    let s = unsafe { std::mem::transmute::<RawByteBuffer, ByteBuffer>(self) };
+    s.destroy();
+  }
+}
+
+unsafe impl Send for RawByteBuffer {}
+
+pub fn get_bytebuffer_raw(buffer: ByteBuffer) -> RawByteBuffer {
+  unsafe { std::mem::transmute::<ByteBuffer, RawByteBuffer>(buffer) }
 }
