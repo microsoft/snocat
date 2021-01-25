@@ -1,4 +1,6 @@
 use crate::ffi::CompletionState;
+use crate::util::MappedOwnedMutexGuard;
+use anyhow::Context as AnyhowContext;
 use ffi_support::{ConcurrentHandleMap, Handle, HandleError};
 use futures::future::{BoxFuture, Either, Future, FutureExt};
 use futures::AsyncWriteExt;
@@ -281,6 +283,64 @@ impl FfiDelegationSet {
       })
       .await??,
     )
+  }
+
+  fn clone_optarx_context_arc<TContext: Any + Send + 'static>(
+    &self,
+    delegation_handle_id: u64,
+  ) -> BoxFuture<'_, Result<Arc<tokio::sync::Mutex<Option<TContext>>>, anyhow::Error>> {
+    self.read_context::<
+      Arc<tokio::sync::Mutex<Option<TContext>>>,
+      Arc<tokio::sync::Mutex<Option<TContext>>>,
+      _,
+    >(
+      delegation_handle_id,
+      |c| Arc::clone(c),
+    )
+      .boxed()
+      .map(|res| res.context("Arc<Mutex<Option<Context>> cloning read failure"))
+      .boxed()
+  }
+
+  /// Allows working with Optarx content mutably, as long as it remains present.
+  /// Errors when the item is no longer present in the context.
+  pub fn with_context_optarx<
+    'a,
+    's: 'a,
+    TContext: Any + Send + 'static,
+    TResult: Send + 'static,
+    FWithContext: (FnOnce(MappedOwnedMutexGuard<Option<TContext>, TContext>) -> Fut) + Send + 'a,
+    Fut: Future<Output = TResult> + Send + 'a,
+  >(
+    &'s self,
+    delegation_handle_id: u64,
+    with_context: FWithContext,
+  ) -> BoxFuture<'a, Result<TResult, anyhow::Error>> {
+    async move {
+      let context_optarx = self
+        .clone_optarx_context_arc::<TContext>(delegation_handle_id)
+        .await?;
+      let lock = context_optarx.lock_owned().await;
+      if lock.is_none() {
+        Err(anyhow::Error::msg("Context was no longer owned by optarx"))
+      } else {
+        let mapped_lock = MappedOwnedMutexGuard::new(lock, |outer| outer.as_ref().unwrap());
+        let contextual_result = with_context(mapped_lock).await;
+        Ok(contextual_result)
+      }
+    }
+    .boxed()
+  }
+
+  pub async fn extract_optarx_context<TContext: Any + Send + 'static>(
+    &self,
+    delegation_handle_id: u64,
+  ) -> Result<Option<TContext>, anyhow::Error> {
+    let context_optarx = self
+      .clone_optarx_context_arc::<TContext>(delegation_handle_id)
+      .await?;
+    let mut lock = context_optarx.lock().await;
+    Ok(std::mem::replace(&mut *lock, None))
   }
 
   pub fn detach_blocking(&self, task_id: u64) -> Result<Option<FfiDelegation>, anyhow::Error> {
