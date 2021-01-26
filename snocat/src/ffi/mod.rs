@@ -368,8 +368,11 @@ pub extern "C" fn snocat_authenticator_session_complete(
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
 pub struct SessionReadSuccess {
-  buffer: RawByteBuffer,
+  pub buffer: RawByteBuffer,
 }
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+pub struct SessionWriteSuccess {}
 
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_read_channel(
@@ -420,12 +423,46 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
 
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_write_channel(
-  _session_handle: u64,
-  _len: u32,
-  _buffer: *const u8,
-  _error: &mut ExternError,
-) -> u64 {
-  todo!("Implement channel-based writing")
+  session_handle: u64,
+  result_event_handle: EventHandle<SessionWriteSuccess, ()>,
+  buffer: *const u8,
+  len: u32,
+  error: &mut ExternError,
+) -> () {
+  ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
+    // Make a copy of the memory before we go asynchronous, so the remote can clean up after itself
+    let buffer = unsafe { std::slice::from_raw_parts(buffer, len as usize) }.to_vec();
+    let reactor_ref = get_current_reactor();
+    let events = Arc::clone(&reactor_ref.events);
+    events.fire_evented_handle(result_event_handle, async move {
+      let res = reactor_ref
+        .delegations
+        .with_context_optarx::<AuthenticationSessionContext, Result<(), ()>, _, _>(
+          session_handle,
+          async move |mut ctx| {
+            use tokio::io::AsyncWriteExt;
+            let write_res = AsyncWriteExt::write_all(&mut ctx.as_mut().0, &buffer)
+              .await
+              .context("Write failure");
+            match write_res {
+              Ok(_) => Ok(()),
+              Err(_) => Err(()),
+            }
+          },
+        )
+        .await
+        .map_err(|_| ());
+
+      // Collapse remote and local errors into unit errors
+      let res = match res {
+        Ok(Ok(x)) => Ok(x),
+        _ => Err(()),
+      };
+      // Allocate a byte buffer and release ownership of it to the FFI, if res is Ok
+      res.map(|_| SessionWriteSuccess {})
+    })?;
+    Ok(())
+  })
 }
 
 impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {
