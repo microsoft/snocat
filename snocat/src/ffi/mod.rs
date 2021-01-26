@@ -3,7 +3,6 @@
 use crate::common::authentication::TunnelInfo;
 use crate::ffi::errors::FfiError;
 use crate::server::deferred::SnocatClientIdentifier;
-use crate::util::delegation::DelegationError;
 use crate::util::tunnel_stream::TunnelStream;
 use crate::{
   common::authentication::{self},
@@ -12,11 +11,7 @@ use crate::{
     deferred::{ConcurrentDeferredTunnelServer, TunnelManager},
     PortRangeAllocator, TcpTunnelManager,
   },
-  util::{
-    self,
-    delegation::{self, DelegationPool},
-    vtdroppable::VTDroppable,
-  },
+  util::{self, vtdroppable::VTDroppable},
 };
 use anyhow::Context as AnyhowContext;
 use ffi_support::{
@@ -42,13 +37,13 @@ pub mod dto;
 pub mod errors;
 
 mod allocators;
-pub mod ffi_delegation;
-use ffi_delegation::{
-  FfiDelegation, FfiDelegationContext, FfiDelegationContextInner, FfiDelegationError,
-  FfiDelegationResult, FfiDelegationSet,
+pub mod delegation;
+use delegation::{
+  CompletionState, Delegation, DelegationError, DelegationResult, DelegationSet,
+  RemoteError as FfiRemoteError,
 };
 
-mod eventing;
+pub mod eventing;
 use crate::ffi::allocators::{get_bytebuffer_raw, RawByteBuffer};
 use eventing::{EventCompletionState, EventHandle, EventRunner, EventingError};
 
@@ -58,7 +53,7 @@ pub struct Reactor {
   /// Each delegation is identified by handle and contains either a sender or a mapped-send-closure
   /// The `delegations` mapping has items added when being delegated to the remote, and removed
   /// when being fulfilled by the remote calling `snocat_report_async_update`
-  delegations: Arc<FfiDelegationSet>,
+  delegations: Arc<DelegationSet>,
   events: Arc<EventRunner>,
 }
 impl Reactor {
@@ -76,7 +71,7 @@ impl Reactor {
       .enable_all()
       .build()?;
     Ok(Reactor {
-      delegations: Arc::new(FfiDelegationSet::new()),
+      delegations: Arc::new(DelegationSet::new()),
       events: Arc::new(EventRunner::new(
         rt.handle().clone(),
         report_task_completion_callback,
@@ -92,7 +87,7 @@ impl Reactor {
   >(
     &self,
     dispatch_ffi: Dispatch,
-  ) -> Result<Result<T, E>, FfiDelegationError> {
+  ) -> Result<Result<Result<T, E>, FfiRemoteError>, DelegationError> {
     self
       .delegations
       .delegate_ffi_simple(dispatch_ffi)
@@ -111,7 +106,7 @@ impl Reactor {
     &'b self,
     dispatch_ffi: Dispatch,
     context: C,
-  ) -> BoxFuture<'a, Result<(Result<T, E>, C), FfiDelegationError>> {
+  ) -> BoxFuture<'a, Result<Result<(Result<T, E>, C), FfiRemoteError>, DelegationError>> {
     self
       .delegations
       .delegate_ffi_contextual(dispatch_ffi, context)
@@ -133,12 +128,6 @@ impl Drop for Reactor {
     // Simply dropping the Runtime instance is enough to trigger graceful shutdown
     // Dropping the delegation handle map will drop the oneshots, firing errors on open FFI oneshots
   }
-}
-
-#[repr(C)]
-pub enum CompletionState {
-  Complete = 0,
-  Failed = 1,
 }
 
 lazy_static! {
@@ -260,7 +249,6 @@ struct FfiAuthenticationState {
 
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
-  delegation_pool: Arc<Mutex<DelegationPool>>,
   auth_start_fn: extern "C" fn(session_handle: u64) -> (),
 }
 
@@ -289,7 +277,6 @@ impl FfiDelegatedAuthenticationHandler {
   ) -> Self {
     Self {
       reactor,
-      delegation_pool: Arc::new(tokio::sync::Mutex::new(DelegationPool::new())),
       auth_start_fn: start_session,
     }
   }
@@ -333,7 +320,7 @@ impl FfiDelegatedAuthenticationHandler {
           );
         },
         session_context
-      ).await.context("FfiDelegation error in authentication request")?;
+      ).await.context("FfiDelegation error in authentication request")??;
 
       // Clear the channel from the context, invalidating it for other holders
       // We don't bother checking if the context was still present in the mutex, because the
@@ -359,7 +346,7 @@ pub extern "C" fn snocat_authenticator_session_complete(
   session_handle: u64,
   // ID to use for event completion notifications
   completion_event_id: EventHandle<(), ()>,
-  accept: bool,
+  completion_state: CompletionState,
   parameter_json: FfiStr,
   error: &mut ExternError,
 ) -> () {
@@ -370,15 +357,7 @@ pub extern "C" fn snocat_authenticator_session_complete(
     events.fire_evented_handle(completion_event_id, async move {
       reactor_ref
         .delegations
-        .fulfill(
-          session_handle,
-          if accept {
-            CompletionState::Complete
-          } else {
-            CompletionState::Failed
-          },
-          parameter_json,
-        )
+        .fulfill(session_handle, completion_state, parameter_json)
         .await
         .map_err(|_| ())
     })?;
@@ -495,6 +474,8 @@ mod tests {
     sync::{Arc, Mutex},
   };
 
+  use super::delegation::RemoteError;
+
   extern "C" fn fake_event_report_cb(
     event_handle: u64,
     state: EventCompletionState,
@@ -509,26 +490,22 @@ mod tests {
   }
 
   fn get_test_reactor() -> Arc<super::Reactor> {
-    if REACTOR.lock().unwrap().is_none() {
-      let mut start_err = Default::default();
-      snocat_reactor_start(fake_event_report_cb, &mut start_err);
-      assert!(start_err.get_code().is_success());
-      unsafe { start_err.manually_release() };
+    let mut lock = REACTOR.lock().expect("Reactor Write Lock poisoned");
+    match &mut *lock {
+      Some(r) => Arc::clone(r),
+      None => {
+        *lock = Some(Arc::new(
+          super::Reactor::start(fake_event_report_cb).unwrap(),
+        ));
+        Arc::clone(lock.as_ref().unwrap())
+      }
     }
-    let reactor = REACTOR.lock().unwrap();
-    let reactor = reactor.as_ref().expect("Test reactor must be initialized");
-    Arc::clone(&reactor)
-  }
-
-  #[test]
-  fn test_reactor_spinup() {
-    get_test_reactor();
   }
 
   #[tokio::test]
   async fn test_ffi_delegation() {
     let reactor = get_test_reactor();
-    let res: Result<Result<String, ()>, _> = {
+    let res: Result<Result<Result<String, ()>, _>, _> = {
       reactor
         .delegate_ffi(move |id| {
           let mut reporting_error = Default::default();
@@ -552,7 +529,7 @@ mod tests {
   async fn test_ffi_delegation_context() {
     let reactor = get_test_reactor();
     let reactor_arc_clone = Arc::clone(&reactor);
-    let res: Result<(Result<String, ()>, _), _> = {
+    let res: Result<Result<(Result<String, ()>, _), _>, _> = {
       reactor
         .delegate_ffi_contextual::<String, (), Arc<String>, _>(
           move |id| {
@@ -584,6 +561,7 @@ mod tests {
         )
         .await
     };
+    let res = res.unwrap().unwrap();
 
     println!("FFI returned result: {:#?}", res);
   }
