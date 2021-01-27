@@ -47,88 +47,8 @@ pub mod eventing;
 use crate::ffi::allocators::{get_bytebuffer_raw, RawByteBuffer};
 use eventing::{EventCompletionState, EventHandle, EventRunner, EventingError};
 
-pub struct Reactor {
-  rt: Arc<tokio::runtime::Runtime>,
-  /// Delegations wrap remote tasks (completion/failure) and map them to futures
-  /// Each delegation is identified by handle and contains either a sender or a mapped-send-closure
-  /// The `delegations` mapping has items added when being delegated to the remote, and removed
-  /// when being fulfilled by the remote calling `snocat_report_async_update`
-  delegations: Arc<DelegationSet>,
-  events: Arc<EventRunner>,
-}
-impl Reactor {
-  pub fn start(
-    report_task_completion_callback: extern "C" fn(
-      handle: u64,
-      state: EventCompletionState,
-      json_loc: *const u8,
-      json_byte_len: u32,
-    ) -> (),
-  ) -> Result<Self, anyhow::Error> {
-    let rt = tokio::runtime::Builder::new()
-      .threaded_scheduler()
-      .thread_name("tokio-reactor-worker")
-      .enable_all()
-      .build()?;
-    Ok(Reactor {
-      delegations: Arc::new(DelegationSet::new()),
-      events: Arc::new(EventRunner::new(
-        rt.handle().clone(),
-        report_task_completion_callback,
-      )),
-      rt: Arc::new(rt),
-    })
-  }
-
-  pub async fn delegate_ffi<
-    T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
-    Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
-  >(
-    &self,
-    dispatch_ffi: Dispatch,
-  ) -> Result<Result<Result<T, E>, FfiRemoteError>, DelegationError> {
-    self
-      .delegations
-      .delegate_ffi_simple(dispatch_ffi)
-      .boxed()
-      .await
-  }
-
-  pub fn delegate_ffi_contextual<
-    'a,
-    'b: 'a,
-    T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
-    C: Any + Send + 'static,
-    Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
-  >(
-    &'b self,
-    dispatch_ffi: Dispatch,
-    context: C,
-  ) -> BoxFuture<'a, Result<Result<(Result<T, E>, C), FfiRemoteError>, DelegationError>> {
-    self
-      .delegations
-      .delegate_ffi_contextual(dispatch_ffi, context)
-      .boxed()
-  }
-}
-
-impl Drop for Reactor {
-  // Note that this runs on the thread closing the reactor, within the remote thread's context
-  fn drop(&mut self) -> () {
-    use ::std::ops::DerefMut;
-    let delegation_count = self.delegations.len();
-    tracing::event!(
-      tracing::Level::INFO,
-      delegation_count,
-      "Shutting down reactor with {} outstanding delegations",
-      delegation_count
-    );
-    // Simply dropping the Runtime instance is enough to trigger graceful shutdown
-    // Dropping the delegation handle map will drop the oneshots, firing errors on open FFI oneshots
-  }
-}
+mod reactor;
+pub use reactor::Reactor;
 
 lazy_static! {
   static ref REACTOR: std::sync::Mutex<Option<Arc<Reactor>>> = std::sync::Mutex::new(None);
@@ -173,7 +93,6 @@ pub extern "C" fn snocat_report_async_update(
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let json_str = json.into_string();
     get_current_reactor()
-      .delegations
       .fulfill_blocking(event_handle, state, json_str)
       .map_err(Into::into)
   })
@@ -353,10 +272,9 @@ pub extern "C" fn snocat_authenticator_session_complete(
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = get_current_reactor();
     let parameter_json = parameter_json.into_string();
-    let events = Arc::clone(&reactor_ref.events);
+    let events = reactor_ref.get_events_ref();
     events.fire_evented_handle(completion_event_id, async move {
       reactor_ref
-        .delegations
         .fulfill(session_handle, completion_state, parameter_json)
         .await
         .map_err(|_| ())
@@ -385,10 +303,10 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = get_current_reactor();
-    let events = Arc::clone(&reactor_ref.events);
+    let events = reactor_ref.get_events_ref();
     events.fire_evented_handle(result_event_handle, async move {
       let res = reactor_ref
-        .delegations
+        .get_delegations()
         .with_context_optarx::<AuthenticationSessionContext, Result<Vec<u8>, ()>, _, _>(
           session_handle,
           async move |mut ctx| {
@@ -433,10 +351,10 @@ pub extern "C" fn snocat_authenticator_session_write_channel(
     // Make a copy of the memory before we go asynchronous, so the remote can clean up after itself
     let buffer = unsafe { std::slice::from_raw_parts(buffer, len as usize) }.to_vec();
     let reactor_ref = get_current_reactor();
-    let events = Arc::clone(&reactor_ref.events);
+    let events = reactor_ref.get_events_ref();
     events.fire_evented_handle(result_event_handle, async move {
       let res = reactor_ref
-        .delegations
+        .get_delegations()
         .with_context_optarx::<AuthenticationSessionContext, Result<(), ()>, _, _>(
           session_handle,
           async move |mut ctx| {
@@ -471,7 +389,7 @@ impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {
       f,
       "({} with {} open requests)",
       std::any::type_name::<Self>(),
-      self.reactor.delegations.len()
+      self.reactor.get_delegations().len()
     )
   }
 }
@@ -571,11 +489,10 @@ mod tests {
         .delegate_ffi_contextual::<String, (), Arc<String>, _>(
           move |id| {
             let ctxres = reactor_arc_clone
-              .rt
-              .handle()
+              .runtime_handle()
               .block_on(
                 reactor_arc_clone
-                  .delegations
+                  .get_delegations()
                   .read_context::<Arc<String>, _, _>(id, |x| String::from(x.as_ref())),
               )
               .unwrap();
