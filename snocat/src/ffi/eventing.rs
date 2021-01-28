@@ -53,28 +53,23 @@ impl<T: serde::ser::Serialize + Send + 'static, E: serde::ser::Serialize + Send 
   }
 }
 
+crate::DroppableCallback!(
+  ReportEventCompletionCb,
+  fn(event_handle: u64, state: EventCompletionState, json_loc: *const u8, json_byte_len: u32) -> ()
+);
+
 /// An `EventRunner` tracks Rust Futures as promises across an FFI
 /// The remote calls a local future-providing function with a chosen, arbitrary handle,
 /// and the local state machine will post back to the remote upon completion or failure.
 pub struct EventRunner {
   rt: tokio::runtime::Handle,
-  report_task_completion_callback: extern "C" fn(
-    handle: u64,
-    state: EventCompletionState,
-    json_loc: *const u8,
-    json_byte_len: u32,
-  ) -> (),
+  report_task_completion_callback: Arc<ReportEventCompletionCb>,
 }
 
 impl EventRunner {
   pub fn new(
     rt: tokio::runtime::Handle,
-    report_task_completion_callback: extern "C" fn(
-      handle: u64,
-      state: EventCompletionState,
-      json_loc: *const u8,
-      json_byte_len: u32,
-    ) -> (),
+    report_task_completion_callback: Arc<ReportEventCompletionCb>,
   ) -> Self {
     Self {
       rt,
@@ -91,7 +86,7 @@ impl EventRunner {
     event_id: u64,
     event_dispatch: Fut,
   ) -> Result<(), EventingError> {
-    let report = self.report_task_completion_callback;
+    let report = Arc::clone(&self.report_task_completion_callback);
     let event_task = self.rt.spawn(async move {
       let res = event_dispatch.await;
       let (json, completion_state) = match &res {
@@ -102,7 +97,7 @@ impl EventRunner {
         Err(failure) => (serde_json::to_string(failure), EventCompletionState::Failed),
       };
       let json = json.expect("Result serialization must be infallible");
-      report(event_id, completion_state, json.as_ptr(), json.len() as u32);
+      report.invoke(event_id, completion_state, json.as_ptr(), json.len() as u32);
     });
 
     let monitor = self.monitor(event_id, event_task);
@@ -115,7 +110,7 @@ impl EventRunner {
     event_id: u64,
     spawned_task: tokio::task::JoinHandle<()>,
   ) -> impl Future<Output = ()> {
-    let report = self.report_task_completion_callback;
+    let report = Arc::clone(&self.report_task_completion_callback);
     async move {
       if let Err(e) = spawned_task.await {
         let state = if e.is_panic() {
@@ -129,7 +124,7 @@ impl EventRunner {
           EventCompletionState::DispatchFailed
         };
         // Inform the remote that the call failed
-        report(event_id, state, 0 as *const u8, 0);
+        report.invoke(event_id, state, 0 as *const u8, 0);
       }
     }
   }

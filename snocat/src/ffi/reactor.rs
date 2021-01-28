@@ -12,6 +12,8 @@ use std::{
 };
 use tokio::sync::{oneshot, oneshot::error::RecvError, Mutex};
 
+use crate::DroppableCallback;
+
 use crate::ffi::{
   delegation::{
     self, CompletionState, Delegation, DelegationError, DelegationResult, DelegationSet,
@@ -33,16 +35,12 @@ pub struct Reactor {
   /// when being fulfilled by the remote calling `snocat_report_async_update`
   delegations: Arc<DelegationSet>,
   events: Arc<EventRunner>,
+  report_task_completion_callback: Arc<eventing::ReportEventCompletionCb>,
 }
 
 impl Reactor {
   pub fn start(
-    report_task_completion_callback: extern "C" fn(
-      handle: u64,
-      state: EventCompletionState,
-      json_loc: *const u8,
-      json_byte_len: u32,
-    ) -> (),
+    report_task_completion_callback: Arc<eventing::ReportEventCompletionCb>,
   ) -> Result<Self, anyhow::Error> {
     let rt = tokio::runtime::Builder::new()
       .threaded_scheduler()
@@ -53,8 +51,9 @@ impl Reactor {
       delegations: Arc::new(DelegationSet::new()),
       events: Arc::new(EventRunner::new(
         rt.handle().clone(),
-        report_task_completion_callback,
+        Arc::clone(&report_task_completion_callback),
       )),
+      report_task_completion_callback,
       rt: Arc::new(rt),
     })
   }

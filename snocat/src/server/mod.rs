@@ -312,8 +312,8 @@ impl TunnelManager for TcpTunnelManager {
   }
 }
 
-impl<T: std::convert::AsRef<dyn TunnelManager> + std::fmt::Debug + Send + Sync> TunnelManager
-  for T
+impl<T: std::convert::AsRef<dyn TunnelManager + 'static> + std::fmt::Debug + Send + Sync>
+  TunnelManager for T
 {
   fn handle_connection<'connection, 'manager: 'connection>(
     &'manager self,

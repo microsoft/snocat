@@ -1,17 +1,17 @@
 //! Bindings for instantiation and control via C ABI
 
-use crate::common::authentication::TunnelInfo;
 use crate::ffi::errors::FfiError;
 use crate::server::deferred::SnocatClientIdentifier;
 use crate::util::tunnel_stream::TunnelStream;
 use crate::{
-  common::authentication::{self},
+  common::authentication::{self, TunnelInfo},
   server::{
     self,
     deferred::{ConcurrentDeferredTunnelServer, TunnelManager},
     PortRangeAllocator, TcpTunnelManager,
   },
   util::{self, vtdroppable::VTDroppable},
+  DroppableCallback,
 };
 use anyhow::Context as AnyhowContext;
 use ffi_support::{
@@ -37,6 +37,8 @@ pub mod dto;
 pub mod errors;
 
 mod allocators;
+pub mod foreign_drop;
+use foreign_drop::ForeignDropCallback;
 pub mod delegation;
 use delegation::{
   CompletionState, Delegation, DelegationError, DelegationResult, DelegationSet,
@@ -60,8 +62,16 @@ fn get_current_reactor() -> Arc<Reactor> {
 }
 
 #[no_mangle]
+pub extern "C" fn snocat_register_drop_callback(
+  dropper: Option<foreign_drop::ForeignDropCallback>,
+) -> () {
+  let dropper = dropper.expect("Null foreign_drop_callback registered!");
+  foreign_drop::register_foreign_drop_callback(dropper);
+}
+
+#[no_mangle]
 pub extern "C" fn snocat_reactor_start(
-  report_event_completion_callback: extern "C" fn(
+  report_event_completion_callback: unsafe extern "C" fn(
     event_handle: u64,
     state: EventCompletionState,
     json_loc: *const u8,
@@ -70,14 +80,20 @@ pub extern "C" fn snocat_reactor_start(
   error: &mut ExternError,
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
+    let report_event_completion_callback: eventing::ReportEventCompletionCb =
+      report_event_completion_callback.into();
     println!(
-      "Starting reactor with callback {:?}",
-      &report_event_completion_callback as *const _
+      "Starting reactor with event completion callback {:?}",
+      &report_event_completion_callback,
     );
     let mut lock = REACTOR.lock().expect("Reactor Write Lock poisoned");
     match &mut *lock {
       Some(_) => return Err(anyhow::Error::msg("Reactor already started and active").into()),
-      None => *lock = Some(Arc::new(Reactor::start(report_event_completion_callback)?)),
+      None => {
+        *lock = Some(Arc::new(Reactor::start(Arc::new(
+          report_event_completion_callback,
+        ))?))
+      }
     };
     Ok(())
   })
@@ -98,21 +114,18 @@ pub extern "C" fn snocat_report_async_update(
   })
 }
 
-struct ServerHandle<T: TunnelManager>(Option<Box<ConcurrentDeferredTunnelServer<T>>>, u32);
-impl<T: TunnelManager> Drop for ServerHandle<T> {
+#[repr(transparent)]
+struct ServerHandle(Box<ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>>>);
+impl Drop for ServerHandle {
   fn drop(&mut self) {
-    println!(
-      "Calling Server Handle destructor for handle sub-id \"{}\"",
-      &self.1
-    );
+    println!("Calling Server Handle destructor");
   }
 }
 
 lazy_static! {
-  static ref SERVER_HANDLES: ConcurrentHandleMap<ServerHandle<Box<dyn TunnelManager>>> =
-    ConcurrentHandleMap::new();
+  static ref SERVER_HANDLES: ConcurrentHandleMap<ServerHandle> = ConcurrentHandleMap::new();
 }
-unsafe impl IntoFfi for ServerHandle<Box<dyn TunnelManager>> {
+unsafe impl IntoFfi for ServerHandle {
   type Value = u64;
 
   fn ffi_default() -> Self::Value {
@@ -126,19 +139,29 @@ unsafe impl IntoFfi for ServerHandle<Box<dyn TunnelManager>> {
 define_handle_map_deleter!(SERVER_HANDLES, snocat_free_server_handle);
 
 #[no_mangle]
-pub extern "C" fn snocat_server_start(config_json: FfiStr, error: &mut ExternError) -> u64 {
-  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || {
+pub extern "C" fn snocat_server_start(
+  config_json: FfiStr,
+  authenticator_handle: u64,
+  error: &mut ExternError,
+) -> u64 {
+  ::ffi_support::call_with_result::<ServerHandle, errors::FfiError, _>(error, || {
+    let authenticator = AUTHENTICATOR_HANDLES
+      .remove_u64(authenticator_handle)
+      .context("Authenticator handle invalid")?
+      .context("Authenticator handle not present in map")?;
     use std::convert::TryInto;
     println!("Incoming config:\n{}", config_json.as_str());
     let config = serde_json::from_str::<dto::ServerConfig>(config_json.as_str())?;
     let config: quinn::ServerConfig = config.quinn_config.try_into()?;
     println!("HELLO WORLD FROM C API with cfg:\n{:#?}", config);
-    // let server = ConcurrentDeferredTunnelServer::new(TcpTunnelManager::new(
-    //   Range::new(8000, 8010),
-    //   IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-    //   todo!()
-    // ));
-    Ok(ServerHandle(None, 0))
+    #[allow(unreachable_code)]
+    let server: ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>> =
+      ConcurrentDeferredTunnelServer::new(Arc::new(TcpTunnelManager::new(
+        std::ops::RangeInclusive::new(8000u16, 8010u16),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        Box::new(authenticator),
+      )));
+    Ok(ServerHandle(Box::new(server)))
   })
 }
 
@@ -154,16 +177,6 @@ pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError
 lazy_static! {
   static ref AUTHENTICATOR_HANDLES: ConcurrentHandleMap<FfiDelegatedAuthenticationHandler> =
     ConcurrentHandleMap::new();
-  // TODO: Remove once FfiDelegation is in use for auth and channels can be read
-  static ref AUTHENTICATOR_SESSION_HANDLES: ConcurrentHandleMap<FfiAuthenticationState> =
-    ConcurrentHandleMap::new();
-}
-
-struct FfiAuthenticationState {
-  peer_address: SocketAddr,
-  channel: Box<dyn TunnelStream + Send + Unpin>,
-  closer:
-    tokio::sync::Mutex<Option<oneshot::Sender<Result<SnocatClientIdentifier, anyhow::Error>>>>,
 }
 
 pub struct FfiDelegatedAuthenticationHandler {
@@ -173,7 +186,7 @@ pub struct FfiDelegatedAuthenticationHandler {
 
 #[no_mangle]
 pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
-  ::ffi_support::call_with_result::<ServerHandle<_>, errors::FfiError, _>(error, || todo!())
+  ::ffi_support::call_with_result::<ServerHandle, errors::FfiError, _>(error, || todo!())
 }
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
@@ -255,6 +268,37 @@ impl FfiDelegatedAuthenticationHandler {
           Err(anyhow::Error::msg(denial.message))
         }
       }
+    }
+    .boxed()
+  }
+
+  #[no_mangle]
+  pub extern "C" fn test_extern_in_impl() {}
+}
+
+impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "({} with {} open requests)",
+      std::any::type_name::<Self>(),
+      self.reactor.get_delegations().len()
+    )
+  }
+}
+
+impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler {
+  fn authenticate<'a>(
+    &'a self,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
+    shutdown_notifier: &'a triggered::Listener,
+  ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
+    async move {
+      let res = self
+        .authenticate_ffi(channel, tunnel_info, shutdown_notifier)
+        .await;
+      res
     }
     .boxed()
   }
@@ -383,34 +427,6 @@ pub extern "C" fn snocat_authenticator_session_write_channel(
   })
 }
 
-impl std::fmt::Debug for FfiDelegatedAuthenticationHandler {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "({} with {} open requests)",
-      std::any::type_name::<Self>(),
-      self.reactor.get_delegations().len()
-    )
-  }
-}
-
-impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler {
-  fn authenticate<'a>(
-    &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
-    tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
-    async move {
-      let res = self
-        .authenticate_ffi(channel, tunnel_info, shutdown_notifier)
-        .await;
-      res
-    }
-    .boxed()
-  }
-}
-
 #[cfg(test)]
 lazy_static! {
   static ref REACTOR_TEST_EVENTS: std::sync::Mutex<std::collections::VecDeque<(u64, EventCompletionState, String)>> =
@@ -429,32 +445,54 @@ mod tests {
     sync::{Arc, Mutex},
   };
 
-  use super::delegation::RemoteError;
+  use super::{
+    delegation::RemoteError,
+    foreign_drop::{self, register_foreign_drop_callback, ForeignDropCallback},
+  };
 
-  extern "C" fn fake_event_report_cb(
+  unsafe extern "C" fn fake_event_report_cb(
     event_handle: u64,
     state: EventCompletionState,
     json_loc: *const u8,
     _json_byte_len: u32,
   ) -> () {
-    let json = unsafe { FfiStr::from_raw(json_loc as *const _) }.into_string();
+    let json = FfiStr::from_raw(json_loc as *const _).into_string();
     VecDeque::push_back(
       &mut *REACTOR_TEST_EVENTS.lock().unwrap(),
       (event_handle, state, json),
     );
   }
 
+  unsafe extern "C" fn fake_drop_callback(item: *const ()) -> () {
+    eprintln!("(faking drop of {:?})", item);
+  }
+
   fn get_test_reactor() -> Arc<super::Reactor> {
+    register_foreign_drop_callback(fake_drop_callback as ForeignDropCallback);
     let mut lock = REACTOR.lock().expect("Reactor Write Lock poisoned");
+    let fake_event_report_cb = (fake_event_report_cb
+      as <super::eventing::ReportEventCompletionCb as foreign_drop::ForeignDrop>::Raw)
+      .into();
+    // We still register with the global state because otherwise our binding functions can't refer to the reactor
     match &mut *lock {
       Some(r) => Arc::clone(r),
       None => {
         *lock = Some(Arc::new(
-          super::Reactor::start(fake_event_report_cb).unwrap(),
+          super::Reactor::start(Arc::new(fake_event_report_cb)).unwrap(),
         ));
         Arc::clone(lock.as_ref().unwrap())
       }
     }
+  }
+
+  #[test]
+  fn drop_resistant_reactor() {
+    register_foreign_drop_callback(fake_drop_callback as ForeignDropCallback);
+    let fake_event_report_cb = (fake_event_report_cb
+      as <super::eventing::ReportEventCompletionCb as foreign_drop::ForeignDrop>::Raw)
+      .into();
+    let reactor = super::Reactor::start(Arc::new(fake_event_report_cb)).unwrap();
+    drop(reactor);
   }
 
   #[tokio::test]
