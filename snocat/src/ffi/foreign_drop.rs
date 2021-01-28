@@ -28,6 +28,12 @@ pub fn foreign_drop(item: *const ()) -> () {
   let droppers = DROPPERS.read().expect("Dropper listing had a panic?");
   let local = droppers.clone();
   drop(droppers);
+  tracing::event!(
+    tracing::Level::TRACE,
+    target = "foreign_drop",
+    dropper_count = local.len(),
+    ?item,
+  );
   for dropper in local {
     unsafe {
       dropper(item);
@@ -84,6 +90,11 @@ macro_rules! DroppableCallback {
     unsafe impl Sync for $sname {}
     impl std::convert::From<unsafe extern "C" fn($($t),*) -> $ret> for $sname {
       fn from(delegate: unsafe extern "C" fn($($k: $t),*) -> $ret) -> Self {
+        Self { delegate }
+      }
+    }
+    impl std::convert::From<extern "C" fn($($t),*) -> $ret> for $sname {
+      fn from(delegate: extern "C" fn($($k: $t),*) -> $ret) -> Self {
         Self { delegate }
       }
     }
