@@ -141,23 +141,24 @@ define_handle_map_deleter!(SERVER_HANDLES, snocat_free_server_handle);
 #[no_mangle]
 pub extern "C" fn snocat_server_start(
   config_json: FfiStr,
+  min_port: u16,
+  max_port: u16,
   authenticator_handle: u64,
   error: &mut ExternError,
 ) -> u64 {
   ::ffi_support::call_with_result::<ServerHandle, errors::FfiError, _>(error, || {
+    let bind_port_range = std::ops::RangeInclusive::new(min_port, max_port);
     let authenticator = AUTHENTICATOR_HANDLES
       .remove_u64(authenticator_handle)
       .context("Authenticator handle invalid")?
       .context("Authenticator handle not present in map")?;
     use std::convert::TryInto;
-    println!("Incoming config:\n{}", config_json.as_str());
     let config = serde_json::from_str::<dto::ServerConfig>(config_json.as_str())?;
     let config: quinn::ServerConfig = config.quinn_config.try_into()?;
-    println!("HELLO WORLD FROM C API with cfg:\n{:#?}", config);
-    #[allow(unreachable_code)]
+    println!("Incoming config:\n{:#?}", config);
     let server: ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>> =
       ConcurrentDeferredTunnelServer::new(Arc::new(TcpTunnelManager::new(
-        std::ops::RangeInclusive::new(8000u16, 8010u16),
+        bind_port_range,
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         Box::new(authenticator),
       )));
