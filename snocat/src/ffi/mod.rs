@@ -179,14 +179,15 @@ lazy_static! {
     ConcurrentHandleMap::new();
 }
 
+DroppableCallback!(
+  AuthenticationHandlerStartSessionCb,
+  fn(session_handle: u64) -> ()
+);
+
 pub struct FfiDelegatedAuthenticationHandler {
   reactor: Arc<Reactor>,
-  auth_start_fn: extern "C" fn(session_handle: u64) -> (),
-}
-
-#[no_mangle]
-pub extern "C" fn snocat_bind_authenticator(error: &mut ExternError) -> u64 {
-  ::ffi_support::call_with_result::<ServerHandle, errors::FfiError, _>(error, || todo!())
+  // We share this starter among callers, so we'll store it in an Arc
+  auth_start_fn: Arc<AuthenticationHandlerStartSessionCb>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
@@ -202,14 +203,31 @@ pub struct AuthenticatorDenial {
 
 type AuthenticationSessionContext = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
 
+#[no_mangle]
+pub extern "C" fn snocat_authenticator_create(
+  start_session_cb: Option<unsafe extern "C" fn(session_handle: u64) -> ()>,
+  error: &mut ExternError,
+) -> u64 {
+  ::ffi_support::call_with_result::<Handle, errors::FfiError, _>(error, || {
+    tracing::event!(
+      tracing::Level::DEBUG,
+      target = stringify!(snocat_authenticator_create),
+      start_callback = ?start_session_cb,
+    );
+    let start_session_cb = start_session_cb
+      .map(Into::into)
+      .ok_or(anyhow::Error::msg("Session start callback was null"))?;
+    let reactor = get_current_reactor();
+    let handler = FfiDelegatedAuthenticationHandler::new(reactor, start_session_cb);
+    Ok(AUTHENTICATOR_HANDLES.insert(handler))
+  })
+}
+
 impl FfiDelegatedAuthenticationHandler {
-  pub fn new(
-    reactor: Arc<Reactor>,
-    start_session: extern "C" fn(session_handle: u64) -> (),
-  ) -> Self {
+  pub fn new(reactor: Arc<Reactor>, start_session: AuthenticationHandlerStartSessionCb) -> Self {
     Self {
       reactor,
-      auth_start_fn: start_session,
+      auth_start_fn: Arc::new(start_session),
     }
   }
 
@@ -221,7 +239,7 @@ impl FfiDelegatedAuthenticationHandler {
   ) -> BoxFuture<'a, anyhow::Result<SnocatClientIdentifier>> {
     let reactor = get_current_reactor();
     // Copy the extern-C-function off so we don't need to capture `self`
-    let auth_start_fn = self.auth_start_fn;
+    let auth_start_fn = Arc::clone(&self.auth_start_fn);
     // Copy the address off for tracing before we move `tunnel_info` into the delegation context
     let peer_address = tunnel_info.remote_address;
     // Our context is an async-mutex in an arc; we use an option to allow us to "steal it" back after completion
@@ -243,7 +261,7 @@ impl FfiDelegatedAuthenticationHandler {
             ?peer_address,
           );
           // Ffi call out to C api
-          auth_start_fn(session_id);
+          auth_start_fn.invoke(session_id);
           tracing::event!(
             tracing::Level::DEBUG,
             target = "ffi_authentication_requested",
