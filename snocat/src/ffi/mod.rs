@@ -179,6 +179,7 @@ lazy_static! {
   static ref AUTHENTICATOR_HANDLES: ConcurrentHandleMap<FfiDelegatedAuthenticationHandler> =
     ConcurrentHandleMap::new();
 }
+define_handle_map_deleter!(AUTHENTICATOR_HANDLES, snocat_free_authenticator_handle);
 
 DroppableCallback!(
   AuthenticationHandlerStartSessionCb,
