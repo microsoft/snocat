@@ -77,14 +77,13 @@ impl Reactor {
     'a,
     'b: 'a,
     T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
     C: Any + Send + 'static,
     Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &'b self,
     dispatch_ffi: Dispatch,
     context: C,
-  ) -> BoxFuture<'a, Result<Result<(Result<T, E>, C), FfiRemoteError>, DelegationError>> {
+  ) -> BoxFuture<'a, Result<Result<(T, C), FfiRemoteError>, DelegationError>> {
     self
       .delegations
       .delegate_ffi_contextual(dispatch_ffi, context)

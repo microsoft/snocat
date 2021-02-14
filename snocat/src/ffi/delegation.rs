@@ -36,9 +36,8 @@ use crate::util::MappedOwnedMutexGuard;
 #[repr(C)]
 pub enum CompletionState {
   Complete = 0,
-  Failed = 1,
-  Cancelled = 2,
-  Exception = 3,
+  Cancelled = 1,
+  Exception = 2,
 }
 
 /// Any error that occurs in the process of dispatching or receiving results for a delegation
@@ -89,35 +88,29 @@ pub type DelegationContext = Box<dyn Any + Send + 'static>;
 /// The result of a [Delegation], alongside an optional, upcasted context
 ///
 /// May be downcast into a [TypedDelegationResult], with a proof of knowledge of the type it contains.
-pub struct DelegationResult<TSuccess, TError>(
-  pub Result<TSuccess, TError>,
-  pub Option<DelegationContext>,
-);
+pub struct DelegationResult<T>(pub T, pub Option<DelegationContext>);
 
 /// The result of a [Delegation], with a strongly typed context
 ///
 /// May be freely upcasted into a [DelegationResult], but, in order to preserve
 /// type information, such knowledge will need to be relayed via a side channel.
-pub struct TypedDelegationResult<TSuccess, TError, TContext: Any + Send + 'static>(
-  pub Result<TSuccess, TError>,
-  pub Option<TContext>,
-);
+pub struct TypedDelegationResult<T, TContext: Any + Send + 'static>(pub T, pub Option<TContext>);
 
 /// A [DelegationResult] from a remote FFI, or a potential [RemoteError]
 ///
 /// See [RemoteResultRaw] for a version without a context slot.
-pub type RemoteResult<TSuccess, TError> = Result<DelegationResult<TSuccess, TError>, RemoteError>;
+pub type RemoteResult<T> = Result<DelegationResult<T>, RemoteError>;
 
 /// A partial [DelegationResult] from a remote FFI, or a potential [RemoteError]
 ///
 /// See [RemoteResult] for a version including a context slot.
-pub type RemoteResultRaw<TSuccess, TError> = Result<Result<TSuccess, TError>, RemoteError>;
+pub type RemoteResultRaw<T> = Result<T, RemoteError>;
 
 // Upcasting from a strongly-typed slot to an Any-typed slot is infallible, so we always return
-impl<TSuccess, TError, TContext: Any + Send + 'static> Into<DelegationResult<TSuccess, TError>>
-  for TypedDelegationResult<TSuccess, TError, TContext>
+impl<T, TContext: Any + Send + 'static> Into<DelegationResult<T>>
+  for TypedDelegationResult<T, TContext>
 {
-  fn into(self) -> DelegationResult<TSuccess, TError> {
+  fn into(self) -> DelegationResult<T> {
     DelegationResult(self.0, self.1.map(|c| -> DelegationContext { Box::new(c) }))
   }
 }
@@ -125,13 +118,12 @@ impl<TSuccess, TError, TContext: Any + Send + 'static> Into<DelegationResult<TSu
 // Downcasting is fallible; If C doesn't match the true contents, we hand back a rebuilt instance of the original type
 // Note that we don't save an `Any` trait-object if the value is None, so type-identity is only enforced while a value is present
 // This is still memory-safe, however, as types will simply fail to cast if the context type was somehow swapped while in use
-impl<TSuccess, TError, TContext: Any + Send + 'static>
-  std::convert::TryInto<TypedDelegationResult<TSuccess, TError, TContext>>
-  for DelegationResult<TSuccess, TError>
+impl<T, TContext: Any + Send + 'static> std::convert::TryInto<TypedDelegationResult<T, TContext>>
+  for DelegationResult<T>
 {
-  type Error = DelegationResult<TSuccess, TError>;
+  type Error = DelegationResult<T>;
 
-  fn try_into(self) -> Result<TypedDelegationResult<TSuccess, TError, TContext>, Self::Error> {
+  fn try_into(self) -> Result<TypedDelegationResult<T, TContext>, Self::Error> {
     use std::any::Any;
     // Translate context via downcast to the original context type
     match self.1 {
@@ -154,10 +146,10 @@ enum DelegationHandler {
   /// Polymorphic handlers are achieved by mapping from a static transport type to a generic inner type.
   ///
   /// Note that disposal of the Box for the method must also result in disposal of any embedded Sender.
-  BoxedMethod(Box<dyn (FnOnce(RemoteResult<String, String>) -> Result<(), ()>) + Send>),
+  BoxedMethod(Box<dyn (FnOnce(RemoteResult<String>) -> Result<(), ()>) + Send>),
 
   /// A oneshot which accepts just a string for either result type, instead of parsing before sending.
-  Sender(oneshot::Sender<RemoteResult<String, String>>),
+  Sender(oneshot::Sender<RemoteResult<String>>),
 }
 
 impl std::fmt::Debug for DelegationHandler {
@@ -179,7 +171,7 @@ pub struct Delegation {
 }
 
 impl Delegation {
-  pub fn new_from_sender(fulfill: oneshot::Sender<RemoteResult<String, String>>) -> Self {
+  pub fn new_from_sender(fulfill: oneshot::Sender<RemoteResult<String>>) -> Self {
     Self {
       sender: DelegationHandler::Sender(fulfill),
       context: None,
@@ -187,7 +179,7 @@ impl Delegation {
   }
 
   pub fn new_from_sender_contextual(
-    fulfill: oneshot::Sender<RemoteResult<String, String>>,
+    fulfill: oneshot::Sender<RemoteResult<String>>,
     context: impl Any + Send + 'static,
   ) -> Self {
     Self {
@@ -196,34 +188,22 @@ impl Delegation {
     }
   }
 
-  fn deserialize_json_result<
-    TSuccess: serde::de::DeserializeOwned + Send + 'static,
-    TError: serde::de::DeserializeOwned + Send + 'static,
-  >(
-    res: Result<String, String>,
-  ) -> Result<Result<TSuccess, TError>, DelegationError> {
-    match res {
-      Ok(success) => serde_json::from_str::<TSuccess>(&success)
-        .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
-        .map(|x| Ok(x)),
-      Err(failure) => serde_json::from_str::<TError>(&failure)
-        .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
-        .map(|x| Err(x)),
-    }
+  fn deserialize_json_result<T: serde::de::DeserializeOwned + Send + 'static>(
+    res: String,
+  ) -> Result<T, DelegationError> {
+    serde_json::from_str::<T>(&res)
+      .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
   }
 
-  pub fn new_from_deserialized_sender<
-    TSuccess: serde::de::DeserializeOwned + Send + 'static,
-    TError: serde::de::DeserializeOwned + Send + 'static,
-  >(
-    fulfill: oneshot::Sender<Result<RemoteResult<TSuccess, TError>, DelegationError>>,
+  pub fn new_from_deserialized_sender<T: serde::de::DeserializeOwned + Send + 'static>(
+    fulfill: oneshot::Sender<Result<RemoteResult<T>, DelegationError>>,
     context: Option<DelegationContext>,
   ) -> Self {
-    let method = Box::new(|res: RemoteResult<String, String>| match res {
+    let method = Box::new(|res: RemoteResult<String>| match res {
       Err(remote_error) => fulfill.send(Ok(Err(remote_error))).map_err(|_| ()),
       Ok(DelegationResult(remote_result, ctx)) => {
         // Map the result to a successful/failed output or a delegation failure
-        match Self::deserialize_json_result::<TSuccess, TError>(remote_result) {
+        match Self::deserialize_json_result::<T>(remote_result) {
           Err(delegation_error) => fulfill.send(Err(delegation_error)),
           Ok(remote_result) => fulfill.send(Ok(Ok(DelegationResult(remote_result, ctx)))),
         }
@@ -236,7 +216,7 @@ impl Delegation {
     }
   }
 
-  pub fn send(self, result: RemoteResultRaw<String, String>) -> Result<(), ()> {
+  pub fn send(self, result: RemoteResultRaw<String>) -> Result<(), ()> {
     let context = self.context;
     let with_context = result.map(|r| DelegationResult(r, context));
     match self.sender {
@@ -311,21 +291,20 @@ impl DelegationSet {
     'a,
     'b: 'a,
     T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
     C: Any + Send + 'static,
     TDispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &'b self,
     dispatch_ffi: TDispatch,
     context: Option<C>,
-  ) -> impl Future<Output = Result<Result<TypedDelegationResult<T, E, C>, RemoteError>, DelegationError>>
-       + 'a {
+  ) -> impl Future<Output = Result<Result<TypedDelegationResult<T, C>, RemoteError>, DelegationError>> + 'a
+  {
     let map = Arc::clone(&self.map);
     async move {
       // Fire the `dispatch` closure that must eventually result a value being sent via `dispatcher`
-      let r = Self::delegate_raw::<RemoteResult<T, E>, _, _>(
+      let r = Self::delegate_raw::<RemoteResult<T>, _, _>(
         async move |delegation_responder: oneshot::Sender<
-          Result<RemoteResult<T, E>, DelegationError>,
+          Result<RemoteResult<T>, DelegationError>,
         >|
                     -> Result<(), DelegationError> {
           // Build the sender closure, which should translate into the appropriate contextual types and send them to the oneshot
@@ -363,18 +342,14 @@ impl DelegationSet {
   }
 
   pub async fn delegate_ffi_simple<
-    TSuccess: serde::de::DeserializeOwned + Send + 'static,
-    TError: serde::de::DeserializeOwned + Send + 'static,
+    T: serde::de::DeserializeOwned + Send + 'static,
     TDispatchFromId: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &self,
     dispatch_ffi: TDispatchFromId,
-  ) -> Result<Result<Result<TSuccess, TError>, RemoteError>, DelegationError> {
+  ) -> Result<Result<T, RemoteError>, DelegationError> {
     let no_context: Option<!> = None;
-    match self
-      .delegate_ffi::<TSuccess, TError, !, _>(dispatch_ffi, no_context)
-      .await
-    {
+    match self.delegate_ffi::<T, !, _>(dispatch_ffi, no_context).await {
       Err(delegation_error) => Err(delegation_error),
       Ok(Err(remote_error)) => Ok(Err(remote_error)),
       Ok(Ok(TypedDelegationResult(res, None))) => Ok(Ok(res)),
@@ -387,18 +362,14 @@ impl DelegationSet {
   pub fn delegate_ffi_contextual<
     'a,
     'b: 'a,
-    TSuccess: serde::de::DeserializeOwned + Send + 'static,
-    TError: serde::de::DeserializeOwned + Send + 'static,
+    T: serde::de::DeserializeOwned + Send + 'static,
     TContext: Any + Send + 'static,
     TDispatchFromId: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &'b self,
     dispatch_ffi: TDispatchFromId,
     context: TContext,
-  ) -> BoxFuture<
-    'a,
-    Result<Result<(Result<TSuccess, TError>, TContext), RemoteError>, DelegationError>,
-  > {
+  ) -> BoxFuture<'a, Result<Result<(T, TContext), RemoteError>, DelegationError>> {
     self
       .delegate_ffi(dispatch_ffi, Some(context))
       .boxed()
@@ -514,10 +485,9 @@ impl DelegationSet {
   fn map_completion_state(
     completion_state: CompletionState,
     json: String,
-  ) -> RemoteResultRaw<String, String> {
+  ) -> RemoteResultRaw<String> {
     match completion_state {
-      CompletionState::Complete => Ok(Ok(json)),
-      CompletionState::Failed => Ok(Err(json)),
+      CompletionState::Complete => Ok(json),
       CompletionState::Cancelled => Err(RemoteError::Cancelled),
       CompletionState::Exception => {
         let json: serde_json::Value =
@@ -571,9 +541,9 @@ mod tests {
     let delegations = Arc::new(DelegationSet::new());
     let delegations_clone = Arc::clone(&delegations);
     let runtime = tokio::runtime::Handle::current();
-    let res: Result<Result<(Result<String, ()>, _), RemoteError>, DelegationError> = {
+    let res: Result<Result<(String, _), RemoteError>, DelegationError> = {
       delegations
-        .delegate_ffi_contextual::<String, (), Arc<String>, _>(
+        .delegate_ffi_contextual::<String, Arc<String>, _>(
           move |id| {
             let ctxres = runtime
               .block_on(
@@ -606,9 +576,9 @@ mod tests {
     let delegations = Arc::new(DelegationSet::new());
     let delegations_clone = Arc::clone(&delegations);
     let runtime = tokio::runtime::Handle::current();
-    let res: Result<Result<(Result<String, ()>, _), RemoteError>, DelegationError> = {
+    let res: Result<Result<(String, _), RemoteError>, DelegationError> = {
       delegations
-        .delegate_ffi_contextual::<String, (), Arc<String>, _>(
+        .delegate_ffi_contextual::<String, Arc<String>, _>(
           move |id| {
             let ctxres = runtime
               .block_on(

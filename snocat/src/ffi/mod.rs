@@ -203,6 +203,13 @@ pub struct AuthenticatorDenial {
   message: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum AuthenticatorSessionCompletionResult {
+  Allow(AuthenticatorAcceptance),
+  Deny(AuthenticatorDenial),
+}
+
 type AuthenticationSessionContext = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
 
 #[no_mangle]
@@ -250,8 +257,7 @@ impl FfiDelegatedAuthenticationHandler {
     async move {
       // Delegate a new "session" to the FFI, storing the channel as context where we can access it
       let (res, ctx) = reactor.delegate_ffi_contextual::<
-        AuthenticatorAcceptance,
-        AuthenticatorDenial,
+        AuthenticatorSessionCompletionResult,
         Arc<tokio::sync::Mutex<Option<AuthenticationSessionContext>>>,
         _,
       >(
@@ -282,8 +288,8 @@ impl FfiDelegatedAuthenticationHandler {
       drop(ctx); // We're done with the channel anyway
 
       match res {
-        Ok(acceptance) => Ok(acceptance.id),
-        Err(denial) => {
+        AuthenticatorSessionCompletionResult::Allow(acceptance) => Ok(acceptance.id),
+        AuthenticatorSessionCompletionResult::Deny(denial) => {
           // TODO: "authentication failure" should be a success type rather than an error result
           Err(anyhow::Error::msg(denial.message))
         }
@@ -542,9 +548,9 @@ mod tests {
   async fn test_ffi_delegation_context() {
     let reactor = get_test_reactor();
     let reactor_arc_clone = Arc::clone(&reactor);
-    let res: Result<Result<(Result<String, ()>, _), _>, _> = {
+    let res: Result<Result<(String, _), _>, _> = {
       reactor
-        .delegate_ffi_contextual::<String, (), Arc<String>, _>(
+        .delegate_ffi_contextual::<String, Arc<String>, _>(
           move |id| {
             let ctxres = reactor_arc_clone
               .runtime_handle()
