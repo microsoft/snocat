@@ -334,7 +334,7 @@ impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler
 pub extern "C" fn snocat_authenticator_session_complete(
   session_handle: u64,
   // ID to use for event completion notifications
-  completion_event_id: EventHandle<(), ()>,
+  completion_event_id: EventHandle<Result<(), ()>>,
   completion_state: CompletionState,
   parameter_json: FfiStr,
   error: &mut ExternError,
@@ -365,7 +365,7 @@ pub struct SessionWriteSuccess {}
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_read_channel(
   session_handle: u64,
-  result_event_handle: EventHandle<SessionReadSuccess, ()>,
+  result_event_handle: EventHandle<Result<SessionReadSuccess, ()>>,
   len: u32,
   // TODO: Implement timeout support
   _timeout_milliseconds: u32,
@@ -374,7 +374,7 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = get_current_reactor();
     let events = reactor_ref.get_events_ref();
-    events.fire_evented_handle(result_event_handle, async move {
+    events.fire_evented_handle::<Result<_, _>, _>(result_event_handle, async move {
       let res = reactor_ref
         .get_delegations()
         .with_context_optarx::<AuthenticationSessionContext, Result<Vec<u8>, ()>, _, _>(
@@ -412,7 +412,7 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_write_channel(
   session_handle: u64,
-  result_event_handle: EventHandle<SessionWriteSuccess, ()>,
+  result_event_handle: EventHandle<Result<SessionWriteSuccess, ()>>,
   buffer: *const u8,
   len: u32,
   error: &mut ExternError,

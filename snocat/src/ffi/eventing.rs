@@ -1,14 +1,13 @@
-use super::ConcurrentHandleMap;
+use super::{delegation::CompletionState, ConcurrentHandleMap};
 use futures::Future;
 use std::sync::Arc;
 
 #[repr(C)]
 pub enum EventCompletionState {
   Complete = 0,
-  Failed = 1,
-  Panicked = 2,
-  Cancelled = 3,
-  DispatchFailed = 4,
+  Panicked = 1,
+  Cancelled = 2,
+  DispatchFailed = 3,
 }
 
 #[derive(Debug)]
@@ -28,14 +27,9 @@ impl std::error::Error for EventingError {}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-pub struct EventHandle<
-  T: serde::ser::Serialize + Send + 'static,
-  E: serde::ser::Serialize + Send + 'static,
->(u64, std::marker::PhantomData<Result<T, E>>);
+pub struct EventHandle<T>(u64, std::marker::PhantomData<T>);
 
-impl<T: serde::ser::Serialize + Send + 'static, E: serde::ser::Serialize + Send + 'static>
-  EventHandle<T, E>
-{
+impl<T> EventHandle<T> {
   pub fn new(event_id: u64) -> Self {
     Self(event_id, std::marker::PhantomData)
   }
@@ -45,9 +39,7 @@ impl<T: serde::ser::Serialize + Send + 'static, E: serde::ser::Serialize + Send 
   }
 }
 
-impl<T: serde::ser::Serialize + Send + 'static, E: serde::ser::Serialize + Send + 'static> Into<u64>
-  for EventHandle<T, E>
-{
+impl<T> Into<u64> for EventHandle<T> {
   fn into(self) -> u64 {
     self.raw()
   }
@@ -79,8 +71,7 @@ impl EventRunner {
 
   pub fn fire_evented<
     T: serde::ser::Serialize + Send + 'static,
-    E: serde::ser::Serialize + Send + 'static,
-    Fut: Future<Output = Result<T, E>> + Send + 'static,
+    Fut: Future<Output = T> + Send + 'static,
   >(
     &self,
     event_id: u64,
@@ -89,15 +80,13 @@ impl EventRunner {
     let report = Arc::clone(&self.report_task_completion_callback);
     let event_task = self.rt.spawn(async move {
       let res = event_dispatch.await;
-      let (json, completion_state) = match &res {
-        Ok(success) => (
-          serde_json::to_string(success),
-          EventCompletionState::Complete,
-        ),
-        Err(failure) => (serde_json::to_string(failure), EventCompletionState::Failed),
-      };
-      let json = json.expect("Result serialization must be infallible");
-      report.invoke(event_id, completion_state, json.as_ptr(), json.len() as u32);
+      let json = serde_json::to_string(&res).expect("Result serialization must be infallible");
+      report.invoke(
+        event_id,
+        EventCompletionState::Complete,
+        json.as_ptr(),
+        json.len() as u32,
+      );
     });
 
     let monitor = self.monitor(event_id, event_task);
@@ -131,11 +120,10 @@ impl EventRunner {
 
   pub fn fire_evented_handle<
     T: serde::ser::Serialize + Send + 'static,
-    E: serde::ser::Serialize + Send + 'static,
-    Fut: Future<Output = Result<T, E>> + Send + 'static,
+    Fut: Future<Output = T> + Send + 'static,
   >(
     &self,
-    event_id: EventHandle<T, E>,
+    event_id: EventHandle<T>,
     event_dispatch: Fut,
   ) -> Result<(), EventingError> {
     self.fire_evented(event_id.into(), event_dispatch)
