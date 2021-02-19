@@ -33,7 +33,7 @@ use crate::util::MappedOwnedMutexGuard;
 
 /// `C`-compatible enum declaring which state a result occupies
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
-#[repr(C)]
+#[repr(u32)]
 pub enum CompletionState {
   Complete = 0,
   Cancelled = 1,
@@ -267,22 +267,6 @@ impl DelegationSet {
       res
     }
     .boxed()
-  }
-
-  fn deserialize_json_result<
-    T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
-  >(
-    res: Result<String, String>,
-  ) -> Result<Result<T, E>, DelegationError> {
-    match res {
-      Ok(success) => serde_json::from_str::<T>(&success)
-        .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
-        .map(|x| Ok(x)),
-      Err(failure) => serde_json::from_str::<E>(&failure)
-        .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
-        .map(|x| Err(x)),
-    }
   }
 
   /// Registers a new [Delegation] with a dispatch table, then hands that registration's ID to a blocking task

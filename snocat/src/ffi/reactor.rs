@@ -60,12 +60,11 @@ impl Reactor {
 
   pub async fn delegate_ffi<
     T: serde::de::DeserializeOwned + Send + 'static,
-    E: serde::de::DeserializeOwned + Send + 'static,
     Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &self,
     dispatch_ffi: Dispatch,
-  ) -> Result<Result<Result<T, E>, FfiRemoteError>, DelegationError> {
+  ) -> Result<Result<T, FfiRemoteError>, DelegationError> {
     self
       .delegations
       .delegate_ffi_simple(dispatch_ffi)

@@ -170,7 +170,7 @@ pub extern "C" fn snocat_server_start(
 pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError) -> () {
   ::ffi_support::call_with_result::<(), errors::FfiError, _>(error, || {
     let _ = server_handle;
-    todo!()
+    todo!("Server deletion is unimplemented")
   })
 }
 

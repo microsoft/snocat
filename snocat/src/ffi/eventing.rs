@@ -2,7 +2,7 @@ use super::{delegation::CompletionState, ConcurrentHandleMap};
 use futures::Future;
 use std::sync::Arc;
 
-#[repr(C)]
+#[repr(u32)]
 pub enum EventCompletionState {
   Complete = 0,
   Panicked = 1,
