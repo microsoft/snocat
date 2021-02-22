@@ -19,8 +19,8 @@ use ffi_support::{
   implement_into_ffi_by_json, rust_string_to_c, ByteBuffer, ConcurrentHandleMap, ExternError,
   FfiStr, Handle, HandleError, IntoFfi,
 };
-use futures::future::{BoxFuture, Either, Future, FutureExt};
-use futures::{AsyncReadExt, AsyncWriteExt};
+use futures::future::{self, BoxFuture, Either, Future, FutureExt};
+use futures::{stream, AsyncReadExt, AsyncWriteExt, TryFutureExt, TryStream};
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
 use std::any::Any;
@@ -30,8 +30,8 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
+use tokio::{sync::oneshot::error::RecvError, task};
 
 pub mod dto;
 pub mod errors;
@@ -80,8 +80,17 @@ pub extern "C" fn snocat_reactor_start(
   error: &mut ExternError,
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+      .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("quinn=warn,quinn_proto=warn,debug"));
+    let collector = tracing_subscriber::fmt()
+      .pretty()
+      .with_env_filter(env_filter)
+      // .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+      .finish();
+    tracing::subscriber::set_global_default(collector).expect("Logger init must succeed");
     let report_event_completion_callback: eventing::ReportEventCompletionCb =
       report_event_completion_callback.into();
+    tracing::info!("HELLO FROM TRACE");
     println!(
       "Starting reactor with event completion callback {:?}",
       &report_event_completion_callback,
@@ -114,11 +123,13 @@ pub extern "C" fn snocat_report_async_update(
   })
 }
 
-#[repr(transparent)]
-struct ServerHandle(Box<ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>>>);
+struct ServerHandle(
+  Arc<ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>>>,
+  tokio::task::JoinHandle<()>,
+);
 impl Drop for ServerHandle {
   fn drop(&mut self) {
-    println!("Calling Server Handle destructor");
+    // println!("Calling Server Handle destructor");
   }
 }
 
@@ -154,23 +165,78 @@ pub extern "C" fn snocat_server_start(
       .context("Authenticator handle not present in map")?;
     use std::convert::TryInto;
     let config = serde_json::from_str::<dto::ServerConfig>(config_json.as_str())?;
-    let config: quinn::ServerConfig = config.quinn_config.try_into()?;
-    println!("Incoming config:\n{:#?}", config);
-    let server: ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>> =
-      ConcurrentDeferredTunnelServer::new(Arc::new(TcpTunnelManager::new(
-        bind_port_range,
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        Box::new(authenticator),
-      )));
-    Ok(ServerHandle(Box::new(server)))
+    let quinn_config: quinn::ServerConfig = config.quinn_config.clone().try_into()?;
+    let tunnel_manager = TcpTunnelManager::new(
+      bind_port_range,
+      IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+      Box::new(authenticator),
+    );
+    println!("Incoming config:\n{:#?}", &config);
+    let reactor = get_current_reactor();
+    let runtime = reactor.get_runtime_ref();
+    let incoming = runtime.enter::<_, Result<_, anyhow::Error>>(|| {
+      let (_endpoint, incoming) = {
+        let mut endpoint = quinn::Endpoint::builder();
+        endpoint.listen(quinn_config);
+        endpoint
+          .bind(&SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            9090,
+          ))
+          .context("Port binding failure")?
+      };
+      tracing::info!("Bound port {}", 9090);
+      Ok(incoming)
+    })?;
+    let server: Arc<ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>>> = Arc::new(
+      ConcurrentDeferredTunnelServer::new(Arc::new(tunnel_manager)),
+    );
+    let server_cloned = Arc::clone(&server);
+    let server_task = runtime.spawn(async move {
+      let server = server_cloned;
+
+      // ConcurrentDeferredTunnelServer::handle_incoming(&*server_cloned, todo!(), todo!()).await;
+      use futures::stream::StreamExt;
+      use futures::stream::TryStreamExt;
+      let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
+      let connections: stream::BoxStream<'_, quinn::NewConnection> = incoming
+        .take_until(shutdown_notifier.clone())
+        .map(|x| -> anyhow::Result<_> { Ok(x) })
+        .and_then(async move |connecting| {
+          // When a new connection arrives, establish the connection formally, and pass it on
+          let tunnel = connecting.await?; // Performs TLS handshake and migration
+                                          // TODO: Protocol header can occur here, or as part of the later "binding" phase
+                                          // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
+          Ok(tunnel)
+        })
+        .inspect_err(|e| {
+          tracing::error!("Connection failure during stream pickup: {:#?}", e);
+        })
+        .filter_map(async move |x| x.ok()) // only keep the successful connections
+        .boxed();
+
+      let events = server
+        .handle_incoming(connections, shutdown_notifier.clone())
+        .fuse();
+
+      events
+        .for_each(async move |ev| {
+          tracing::trace!(event = ?ev);
+        })
+        .await;
+    });
+    Ok(ServerHandle(server, server_task))
   })
 }
 
 #[no_mangle]
 pub extern "C" fn snocat_server_stop(server_handle: u64, error: &mut ExternError) -> () {
   ::ffi_support::call_with_result::<(), errors::FfiError, _>(error, || {
-    let _ = server_handle;
-    todo!("Server deletion is unimplemented")
+    let _server = SERVER_HANDLES
+      .remove_u64(server_handle)
+      .context("Server handle invalid")?
+      .context("Server handle not present in map")?;
+    Ok(())
   })
 }
 
@@ -205,7 +271,7 @@ pub struct AuthenticatorDenial {
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
 #[serde(tag = "type")]
-pub enum AuthenticatorSessionCompletionResult {
+pub enum AuthenticatorSessionResult {
   Allow(AuthenticatorAcceptance),
   Deny(AuthenticatorDenial),
 }
@@ -255,25 +321,25 @@ impl FfiDelegatedAuthenticationHandler {
     let session_context = Arc::new(tokio::sync::Mutex::new(Some((channel, tunnel_info))));
 
     async move {
-      // Delegate a new "session" to the FFI, storing the channel as context where we can access it
+      // delegate a new "session" to the FFI, storing the channel as context where we can access it
       let (res, ctx) = reactor.delegate_ffi_contextual::<
-        AuthenticatorSessionCompletionResult,
+        AuthenticatorSessionResult,
         Arc<tokio::sync::Mutex<Option<AuthenticationSessionContext>>>,
         _,
       >(
-        move |session_id| {
+        move |session_delegation_handle| {
           tracing::event!(
             tracing::Level::DEBUG,
             target = "request_ffi_authentication",
-            session_handle = ?session_id,
+            session_handle = ?session_delegation_handle,
             ?peer_address,
           );
           // Ffi call out to C api
-          auth_start_fn.invoke(session_id);
+          auth_start_fn.invoke(session_delegation_handle);
           tracing::event!(
             tracing::Level::DEBUG,
             target = "ffi_authentication_requested",
-            session_handle = ?session_id,
+            session_handle = ?session_delegation_handle,
             ?peer_address,
           );
         },
@@ -288,8 +354,8 @@ impl FfiDelegatedAuthenticationHandler {
       drop(ctx); // We're done with the channel anyway
 
       match res {
-        AuthenticatorSessionCompletionResult::Allow(acceptance) => Ok(acceptance.id),
-        AuthenticatorSessionCompletionResult::Deny(denial) => {
+        AuthenticatorSessionResult::Allow(acceptance) => Ok(acceptance.id),
+        AuthenticatorSessionResult::Deny(denial) => {
           // TODO: "authentication failure" should be a success type rather than an error result
           Err(anyhow::Error::msg(denial.message))
         }
@@ -328,30 +394,6 @@ impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler
     }
     .boxed()
   }
-}
-
-#[no_mangle]
-pub extern "C" fn snocat_authenticator_session_complete(
-  session_handle: u64,
-  // ID to use for event completion notifications
-  completion_event_id: EventHandle<Result<(), ()>>,
-  completion_state: CompletionState,
-  parameter_json: FfiStr,
-  error: &mut ExternError,
-) -> () {
-  ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
-    let reactor_ref = get_current_reactor();
-    let parameter_json = parameter_json.into_string();
-    let events = reactor_ref.get_events_ref();
-    events.fire_evented_handle(completion_event_id, async move {
-      reactor_ref
-        .fulfill(session_handle, completion_state, parameter_json)
-        .await
-        .map_err(|_| ())
-    })?;
-
-    Ok(())
-  })
 }
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
