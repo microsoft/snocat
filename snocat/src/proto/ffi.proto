@@ -1,0 +1,39 @@
+syntax = "proto3";
+package snocat.ffi;
+
+import "google/protobuf/timestamp.proto";
+
+message AuthenticatorAcceptance { string connection_id = 1; }
+
+message AuthenticatorDenial {
+  uint32 reason_code = 1;
+  string reason = 2;
+}
+
+message AuthenticatorSessionResult {
+  oneof result {
+    AuthenticatorAcceptance acceptance = 1;
+    AuthenticatorDenial denial = 2;
+  }
+}
+
+message AuthenticatorSessionIOError { }
+
+message AuthenticatorSessionReadResult {
+  message Success {
+    bytes buffer = 1;
+  }
+  oneof result {
+    Success success = 1;
+    AuthenticatorSessionIOError error = 2;
+  }
+}
+
+message AuthenticatorSessionWriteResult {
+  message Success { }
+  oneof result {
+    Success success = 1;
+    AuthenticatorSessionIOError error = 2;
+  }
+}
+

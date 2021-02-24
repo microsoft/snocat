@@ -1,6 +1,7 @@
 use futures::future::{BoxFuture, FutureExt};
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
+use prost::Message;
 use std::{
   any::Any,
   marker::PhantomData,
@@ -59,7 +60,7 @@ impl Reactor {
   }
 
   pub async fn delegate_ffi<
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: Message + Default + Send + 'static,
     Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &self,
@@ -75,7 +76,7 @@ impl Reactor {
   pub fn delegate_ffi_contextual<
     'a,
     'b: 'a,
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: Message + Default + Send + 'static,
     C: Any + Send + 'static,
     Dispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
@@ -89,27 +90,12 @@ impl Reactor {
       .boxed()
   }
 
-  pub fn fulfill_blocking(
-    &self,
-    task_id: u64,
-    completion_state: CompletionState,
-    json: String,
-  ) -> Result<(), anyhow::Error> {
-    self
-      .delegations
-      .fulfill_blocking(task_id, completion_state, json)
+  pub fn fulfill_blocking(&self, task_id: u64, result: Vec<u8>) -> Result<(), anyhow::Error> {
+    self.delegations.fulfill_blocking(task_id, result)
   }
 
-  pub fn fulfill(
-    &self,
-    task_id: u64,
-    completion_state: CompletionState,
-    json: String,
-  ) -> BoxFuture<Result<(), anyhow::Error>> {
-    self
-      .delegations
-      .fulfill(task_id, completion_state, json)
-      .boxed()
+  pub fn fulfill(&self, task_id: u64, result: Vec<u8>) -> BoxFuture<Result<(), anyhow::Error>> {
+    self.delegations.fulfill(task_id, result).boxed()
   }
 
   pub fn get_delegations(&self) -> &Arc<delegation::DelegationSet> {

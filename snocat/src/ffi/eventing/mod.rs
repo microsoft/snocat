@@ -1,6 +1,9 @@
 use super::{delegation::CompletionState, ConcurrentHandleMap};
 use futures::Future;
-use std::sync::Arc;
+use prost::Message;
+use std::{convert::TryInto, sync::Arc};
+
+pub mod proto;
 
 #[repr(u32)]
 pub enum EventCompletionState {
@@ -47,8 +50,14 @@ impl<T> Into<u64> for EventHandle<T> {
 
 crate::DroppableCallback!(
   ReportEventCompletionCb,
-  fn(event_handle: u64, state: EventCompletionState, json_loc: *const u8, json_byte_len: u32) -> ()
+  fn(event_handle: u64, buffer: *const u8, buffer_len: u32) -> ()
 );
+
+impl ReportEventCompletionCb {
+  fn invoke_safe(&self, event_handle: u64, buffer: &[u8]) -> () {
+    self.invoke(event_handle, buffer.as_ptr(), buffer.len() as u32)
+  }
+}
 
 /// An `EventRunner` tracks Rust Futures as promises across an FFI
 /// The remote calls a local future-providing function with a chosen, arbitrary handle,
@@ -70,7 +79,7 @@ impl EventRunner {
   }
 
   pub fn fire_evented<
-    T: serde::ser::Serialize + Send + 'static,
+    T: Message + Default + Send + 'static,
     Fut: Future<Output = T> + Send + 'static,
   >(
     &self,
@@ -80,13 +89,23 @@ impl EventRunner {
     let report = Arc::clone(&self.report_task_completion_callback);
     let event_task = self.rt.spawn(async move {
       let res = event_dispatch.await;
-      let json = serde_json::to_string(&res).expect("Result serialization must be infallible");
-      report.invoke(
-        event_id,
-        EventCompletionState::Complete,
-        json.as_ptr(),
-        json.len() as u32,
-      );
+
+      use proto::event_result as evres;
+      use crate::util::messenger::{Messenger, AnyProto};
+      // TODO: Make T require AnyProtoIdentified to provide a type_url
+      let packed = match AnyProto::new("https://localhost/evented_result_todo", res).try_into() {
+        Ok(any_proto) => evres::Result::Completed(evres::Completion { value: Some(any_proto) }),
+        Err(e) => {
+          tracing::error!(target = "ffi_event_serialization_failure", ?event_id, outward = true, error = ?e);
+          evres::Result::DispatchFailed(evres::DispatchFailure { })
+        }
+      };
+      let output = proto::EventResult {
+        result: Some(packed),
+      };
+      let buffer = output.encode_length_delimited_vec()
+        .expect("Result serialization must be infallible");
+      report.invoke_safe(event_id, &buffer);
     });
 
     let monitor = self.monitor(event_id, event_task);
@@ -102,24 +121,36 @@ impl EventRunner {
     let report = Arc::clone(&self.report_task_completion_callback);
     async move {
       if let Err(e) = spawned_task.await {
-        let state = if e.is_panic() {
+        use proto::event_result as evres;
+        let res = if e.is_panic() {
           tracing::error!(target = "ffi_panic", ?event_id, outward = true);
-          EventCompletionState::Panicked
+          proto::EventResult {
+            result: Some(evres::Result::Panicked(evres::Panic {})),
+          }
         } else if e.is_cancelled() {
           tracing::error!(target = "ffi_event_cancelled", ?event_id, outward = true, error = ?e);
-          EventCompletionState::Cancelled
+          proto::EventResult {
+            result: Some(evres::Result::Cancelled(evres::Cancellation {})),
+          }
         } else {
           tracing::error!(target = "ffi_event_failure", ?event_id, outward = true, error = ?e);
-          EventCompletionState::DispatchFailed
+          proto::EventResult {
+            result: Some(evres::Result::DispatchFailed(evres::DispatchFailure {})),
+          }
         };
+
         // Inform the remote that the call failed
-        report.invoke(event_id, state, 0 as *const u8, 0);
+        use crate::util::messenger::Messenger;
+        let buffer = res
+          .encode_length_delimited_vec()
+          .expect("Packing protobuf must not fail");
+        report.invoke_safe(event_id, &buffer);
       }
     }
   }
 
   pub fn fire_evented_handle<
-    T: serde::ser::Serialize + Send + 'static,
+    T: Message + Default + Send + 'static,
     Fut: Future<Output = T> + Send + 'static,
   >(
     &self,

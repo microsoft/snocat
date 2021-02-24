@@ -24,12 +24,15 @@ use futures::{
   AsyncWriteExt,
 };
 use lazy_static::lazy_static;
+use prost::{bytes::Buf, Message};
 use tokio::sync::{
   oneshot::{self, error::RecvError},
   Mutex,
 };
 
-use crate::util::MappedOwnedMutexGuard;
+use crate::util::{messenger::AnyProto, MappedOwnedMutexGuard};
+
+pub mod proto;
 
 /// `C`-compatible enum declaring which state a result occupies
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -146,10 +149,10 @@ enum DelegationHandler {
   /// Polymorphic handlers are achieved by mapping from a static transport type to a generic inner type.
   ///
   /// Note that disposal of the Box for the method must also result in disposal of any embedded Sender.
-  BoxedMethod(Box<dyn (FnOnce(RemoteResult<String>) -> Result<(), ()>) + Send>),
+  BoxedMethod(Box<dyn (FnOnce(RemoteResult<prost_types::Any>) -> Result<(), ()>) + Send>),
 
-  /// A oneshot which accepts just a string for either result type, instead of parsing before sending.
-  Sender(oneshot::Sender<RemoteResult<String>>),
+  /// A oneshot which accepts just a result and forwards it on, instead of parsing before sending.
+  Sender(oneshot::Sender<RemoteResult<prost_types::Any>>),
 }
 
 impl std::fmt::Debug for DelegationHandler {
@@ -171,7 +174,7 @@ pub struct Delegation {
 }
 
 impl Delegation {
-  pub fn new_from_sender(fulfill: oneshot::Sender<RemoteResult<String>>) -> Self {
+  pub fn new_from_sender(fulfill: oneshot::Sender<RemoteResult<prost_types::Any>>) -> Self {
     Self {
       sender: DelegationHandler::Sender(fulfill),
       context: None,
@@ -179,7 +182,7 @@ impl Delegation {
   }
 
   pub fn new_from_sender_contextual(
-    fulfill: oneshot::Sender<RemoteResult<String>>,
+    fulfill: oneshot::Sender<RemoteResult<prost_types::Any>>,
     context: impl Any + Send + 'static,
   ) -> Self {
     Self {
@@ -188,22 +191,24 @@ impl Delegation {
     }
   }
 
-  fn deserialize_json_result<T: serde::de::DeserializeOwned + Send + 'static>(
-    res: String,
+  fn deserialize_result<T: prost::Message + Default + Send + 'static, B: Buf>(
+    res: B,
   ) -> Result<T, DelegationError> {
-    serde_json::from_str::<T>(&res)
+    AnyProto::decode_unverified(res)
       .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
+      .map(|r| r.to_value())
   }
 
-  pub fn new_from_deserialized_sender<T: serde::de::DeserializeOwned + Send + 'static>(
+  pub fn new_from_deserialized_sender<T: prost::Message + Default + Send + 'static>(
     fulfill: oneshot::Sender<Result<RemoteResult<T>, DelegationError>>,
     context: Option<DelegationContext>,
   ) -> Self {
-    let method = Box::new(|res: RemoteResult<String>| match res {
+    let method = Box::new(|res: RemoteResult<prost_types::Any>| match res {
       Err(remote_error) => fulfill.send(Ok(Err(remote_error))).map_err(|_| ()),
       Ok(DelegationResult(remote_result, ctx)) => {
+        // TODO: Some form of verification on the value of prost_types::Any::type_url
         // Map the result to a successful/failed output or a delegation failure
-        match Self::deserialize_json_result::<T>(remote_result) {
+        match Self::deserialize_result::<T, _>(&*remote_result.value) {
           Err(delegation_error) => fulfill.send(Err(delegation_error)),
           Ok(remote_result) => fulfill.send(Ok(Ok(DelegationResult(remote_result, ctx)))),
         }
@@ -216,7 +221,7 @@ impl Delegation {
     }
   }
 
-  pub fn send(self, result: RemoteResultRaw<String>) -> Result<(), ()> {
+  pub fn send(self, result: RemoteResultRaw<prost_types::Any>) -> Result<(), ()> {
     let context = self.context;
     let with_context = result.map(|r| DelegationResult(r, context));
     match self.sender {
@@ -274,7 +279,7 @@ impl DelegationSet {
   fn delegate_ffi<
     'a,
     'b: 'a,
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: prost::Message + Default + Send + 'static,
     C: Any + Send + 'static,
     TDispatch: (FnOnce(u64) -> ()) + Send + 'static,
   >(
@@ -292,7 +297,7 @@ impl DelegationSet {
         >|
                     -> Result<(), DelegationError> {
           // Build the sender closure, which should translate into the appropriate contextual types and send them to the oneshot
-          let delegation = Delegation::new_from_deserialized_sender(
+          let delegation = Delegation::new_from_deserialized_sender::<T>(
             delegation_responder,
             context.map(|x| -> DelegationContext { Box::new(x) }),
           );
@@ -326,7 +331,7 @@ impl DelegationSet {
   }
 
   pub async fn delegate_ffi_simple<
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: Message + Default + Send + 'static,
     TDispatchFromId: (FnOnce(u64) -> ()) + Send + 'static,
   >(
     &self,
@@ -346,7 +351,7 @@ impl DelegationSet {
   pub fn delegate_ffi_contextual<
     'a,
     'b: 'a,
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: Message + Default + Send + 'static,
     TContext: Any + Send + 'static,
     TDispatchFromId: (FnOnce(u64) -> ()) + Send + 'static,
   >(
@@ -467,56 +472,72 @@ impl DelegationSet {
   }
 
   fn map_completion_state(
-    completion_state: CompletionState,
-    json: String,
-  ) -> RemoteResultRaw<String> {
-    match completion_state {
-      CompletionState::Complete => Ok(json),
-      CompletionState::Cancelled => Err(RemoteError::Cancelled),
-      CompletionState::Exception => {
-        let json: serde_json::Value =
-          serde_json::from_str(&json).expect("Remote Exception contents must be valid json");
-        let pretty_json_str = serde_json::to_string_pretty(&json)
-          .expect("Reencoding a freshly decoded json value must succeed");
-        Err(RemoteError::Exception(anyhow::Error::msg(pretty_json_str)))
+    result: self::proto::DelegateResult,
+  ) -> RemoteResultRaw<prost_types::Any> {
+    let result = result
+      .result
+      .expect("DelegateResult instances must always fulfill a one-of constraint");
+    use proto::delegate_result::{Cancellation, Completion, Exception, Result as Res};
+    match result {
+      Res::Completed(Completion { value, .. }) => Ok(value.expect("Field `value` is required")),
+      Res::Cancelled(Cancellation { .. }) => Err(RemoteError::Cancelled),
+      Res::Exception(Exception { exception, .. }) => {
+        use proto::delegate_result::exception::Exception as EType;
+        match exception.expect("Exception value must be included") {
+          EType::Any(any) => match any.type_url.as_str() {
+            "text" | "string" => Err(RemoteError::Exception(anyhow::Error::msg(
+              String::decode(&*any.value).expect("Must unpack successfully"),
+            ))),
+            type_url => Err(RemoteError::Exception(anyhow::Error::msg(format!(
+              "Any-type exception with type url {}",
+              type_url
+            )))),
+          },
+          EType::Text(text) => Err(RemoteError::Exception(anyhow::Error::msg(text))),
+          EType::Json(json) => {
+            let json: serde_json::Value =
+              serde_json::from_str(&json).expect("Remote Exception contents must be valid json");
+            let pretty_json_str = serde_json::to_string_pretty(&json)
+              .expect("Reencoding a freshly decoded json value must succeed");
+            Err(RemoteError::Exception(anyhow::Error::msg(pretty_json_str)))
+          }
+        }
       }
     }
   }
 
-  pub fn fulfill_blocking(
-    &self,
-    task_id: u64,
-    completion_state: CompletionState,
-    json: String,
-  ) -> Result<(), anyhow::Error> {
+  pub fn fulfill_blocking(&self, task_id: u64, result: Vec<u8>) -> Result<(), anyhow::Error> {
+    let result = self::proto::DelegateResult::decode_length_delimited(&*result)
+      .map_err(|_| anyhow::Error::msg("Delegation result wrapper could not be deserialized"))?;
     let delegation = self
       .detach_blocking(task_id)?
       .ok_or_else(|| anyhow::Error::msg("Delegation handle missing?"))?;
     delegation
-      .send(Self::map_completion_state(completion_state, json))
+      .send(Self::map_completion_state(result))
       .map_err(|_| anyhow::Error::msg("Delegation handle was already consumed?"))
   }
 
-  pub async fn fulfill(
-    &self,
-    task_id: u64,
-    completion_state: CompletionState,
-    json: String,
-  ) -> Result<(), anyhow::Error> {
+  pub async fn fulfill(&self, task_id: u64, result: Vec<u8>) -> Result<(), anyhow::Error> {
+    let result = self::proto::DelegateResult::decode_length_delimited(&*result)
+      .map_err(|_| anyhow::Error::msg("Delegation result wrapper could not be deserialized"))?;
     let delegation = self
       .detach(task_id)
       .await?
       .ok_or_else(|| anyhow::Error::msg("Delegation handle missing?"))?;
     delegation
-      .send(Self::map_completion_state(completion_state, json))
+      .send(Self::map_completion_state(result))
       .map_err(|_| anyhow::Error::msg("Delegation handle was already consumed?"))
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
+  use std::{convert::TryInto, sync::Arc};
 
+  use crate::util::messenger::*;
+  use prost::Message;
+
+  use super::proto;
   use super::{DelegationError, DelegationSet, RemoteError, RemoteResult};
   use crate::ffi::CompletionState;
 
@@ -538,13 +559,22 @@ mod tests {
 
             assert_eq!(ctxres, String::from("Test Context"));
 
-            delegations_clone
-              .fulfill_blocking(
-                id,
-                CompletionState::Complete,
-                String::from("\"hello world\""),
-              )
-              .unwrap();
+            let mut buffer = Vec::<u8>::new();
+            (proto::DelegateResult {
+              result: Some(proto::delegate_result::Result::Completed(
+                proto::delegate_result::Completion {
+                  value: Some(
+                    AnyProto::new("string", String::from("\"hello world\""))
+                      .try_into()
+                      .unwrap(),
+                  ),
+                },
+              )),
+            })
+            .encode_length_delimited(&mut buffer)
+            .unwrap();
+
+            delegations_clone.fulfill_blocking(id, buffer).unwrap();
           },
           Arc::new(String::from("Test Context")),
         )
@@ -573,9 +603,16 @@ mod tests {
 
             assert_eq!(ctxres, String::from("Test Context"));
 
-            delegations_clone
-              .fulfill_blocking(id, CompletionState::Cancelled, String::from("{}"))
-              .unwrap();
+            let mut buffer = Vec::<u8>::new();
+            (proto::DelegateResult {
+              result: Some(proto::delegate_result::Result::Cancelled(
+                proto::delegate_result::Cancellation {},
+              )),
+            })
+            .encode_length_delimited(&mut buffer)
+            .unwrap();
+
+            delegations_clone.fulfill_blocking(id, buffer).unwrap();
           },
           Arc::new(String::from("Test Context")),
         )

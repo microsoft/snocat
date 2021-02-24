@@ -1,0 +1,17 @@
+syntax = "proto3";
+package snocat.eventing;
+
+import "google/protobuf/any.proto";
+
+message EventResult {
+  message Completion { google.protobuf.Any value = 1; }
+  message Cancellation {}
+  message Panic {}
+  message DispatchFailure {}
+  oneof result {
+    Completion completed = 1;
+    Cancellation cancelled = 2;
+    Panic panicked = 3;
+    DispatchFailure dispatch_failed = 4;
+  }
+}

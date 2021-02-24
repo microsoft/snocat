@@ -23,18 +23,19 @@ use futures::future::{self, BoxFuture, Either, Future, FutureExt};
 use futures::{stream, AsyncReadExt, AsyncWriteExt, TryFutureExt, TryStream};
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;
-use std::any::Any;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::{any::Any, slice};
 use tokio::sync::{oneshot, Mutex};
 use tokio::{sync::oneshot::error::RecvError, task};
 
 pub mod dto;
 pub mod errors;
+pub mod proto;
 
 mod allocators;
 pub mod foreign_drop;
@@ -46,7 +47,6 @@ use delegation::{
 };
 
 pub mod eventing;
-use crate::ffi::allocators::{get_bytebuffer_raw, RawByteBuffer};
 use eventing::{EventCompletionState, EventHandle, EventRunner, EventingError};
 
 mod reactor;
@@ -73,9 +73,8 @@ pub extern "C" fn snocat_register_drop_callback(
 pub extern "C" fn snocat_reactor_start(
   report_event_completion_callback: unsafe extern "C" fn(
     event_handle: u64,
-    state: EventCompletionState,
-    json_loc: *const u8,
-    json_byte_len: u32,
+    buffer: *const u8,
+    buffer_len: u32,
   ) -> (),
   error: &mut ExternError,
 ) -> () {
@@ -111,14 +110,14 @@ pub extern "C" fn snocat_reactor_start(
 #[no_mangle]
 pub extern "C" fn snocat_report_async_update(
   event_handle: u64,
-  state: CompletionState,
-  json: FfiStr,
+  result: *const u8,
+  result_length: u32,
   error: &mut ExternError,
 ) -> () {
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
-    let json_str = json.into_string();
+    let result = Vec::from(unsafe { slice::from_raw_parts(result, result_length as usize) });
     get_current_reactor()
-      .fulfill_blocking(event_handle, state, json_str)
+      .fulfill_blocking(event_handle, result)
       .map_err(Into::into)
   })
 }
@@ -263,10 +262,27 @@ pub struct AuthenticatorAcceptance {
   id: SnocatClientIdentifier,
 }
 
+impl From<proto::AuthenticatorAcceptance> for AuthenticatorAcceptance {
+  fn from(item: proto::AuthenticatorAcceptance) -> Self {
+    AuthenticatorAcceptance {
+      id: SnocatClientIdentifier::new(item.connection_id),
+    }
+  }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
 pub struct AuthenticatorDenial {
   reason_code: u32,
   message: String,
+}
+
+impl From<proto::AuthenticatorDenial> for AuthenticatorDenial {
+  fn from(item: proto::AuthenticatorDenial) -> Self {
+    AuthenticatorDenial {
+      reason_code: item.reason_code,
+      message: item.reason,
+    }
+  }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
@@ -274,6 +290,16 @@ pub struct AuthenticatorDenial {
 pub enum AuthenticatorSessionResult {
   Allow(AuthenticatorAcceptance),
   Deny(AuthenticatorDenial),
+}
+
+impl From<proto::AuthenticatorSessionResult> for AuthenticatorSessionResult {
+  fn from(item: proto::AuthenticatorSessionResult) -> Self {
+    use proto::authenticator_session_result::Result as Res;
+    match item.result.expect("Must contain valid result") {
+      Res::Acceptance(acceptance) => AuthenticatorSessionResult::Allow(acceptance.into()),
+      Res::Denial(denial) => AuthenticatorSessionResult::Deny(denial.into()),
+    }
+  }
 }
 
 type AuthenticationSessionContext = (Box<dyn TunnelStream + Send + Unpin>, TunnelInfo);
@@ -323,7 +349,7 @@ impl FfiDelegatedAuthenticationHandler {
     async move {
       // delegate a new "session" to the FFI, storing the channel as context where we can access it
       let (res, ctx) = reactor.delegate_ffi_contextual::<
-        AuthenticatorSessionResult,
+        proto::AuthenticatorSessionResult,
         Arc<tokio::sync::Mutex<Option<AuthenticationSessionContext>>>,
         _,
       >(
@@ -353,7 +379,7 @@ impl FfiDelegatedAuthenticationHandler {
       let _ = std::mem::replace(&mut *ctx.lock().await, None);
       drop(ctx); // We're done with the channel anyway
 
-      match res {
+      match res.into() {
         AuthenticatorSessionResult::Allow(acceptance) => Ok(acceptance.id),
         AuthenticatorSessionResult::Deny(denial) => {
           // TODO: "authentication failure" should be a success type rather than an error result
@@ -396,18 +422,58 @@ impl authentication::AuthenticationHandler for FfiDelegatedAuthenticationHandler
   }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct SessionReadSuccess {
-  pub buffer: RawByteBuffer,
+  pub buffer: Box<[u8]>,
+}
+impl Into<proto::authenticator_session_read_result::Success> for SessionReadSuccess {
+  fn into(self) -> proto::authenticator_session_read_result::Success {
+    proto::authenticator_session_read_result::Success {
+      buffer: self.buffer.into_vec(),
+    }
+  }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
+impl Into<proto::AuthenticatorSessionReadResult> for Result<SessionReadSuccess, ()> {
+  fn into(self) -> proto::AuthenticatorSessionReadResult {
+    use proto::{
+      authenticator_session_read_result as rres, AuthenticatorSessionIoError as IOError,
+      AuthenticatorSessionReadResult as ReadResult,
+    };
+    match self {
+      Ok(success) => ReadResult {
+        result: Some(rres::Result::Success(success.into())),
+      },
+      Err(()) => ReadResult {
+        result: Some(rres::Result::Error(proto::AuthenticatorSessionIoError {})),
+      },
+    }
+  }
+}
+
+#[derive(PartialEq, Clone, Debug)]
 pub struct SessionWriteSuccess {}
+impl Into<proto::AuthenticatorSessionWriteResult> for Result<SessionWriteSuccess, ()> {
+  fn into(self) -> proto::AuthenticatorSessionWriteResult {
+    use proto::{
+      authenticator_session_write_result as wres, AuthenticatorSessionIoError as IOError,
+      AuthenticatorSessionWriteResult as WriteResult,
+    };
+    match self {
+      Ok(_success) => WriteResult {
+        result: Some(wres::Result::Success(wres::Success {})),
+      },
+      Err(()) => WriteResult {
+        result: Some(wres::Result::Error(proto::AuthenticatorSessionIoError {})),
+      },
+    }
+  }
+}
 
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_read_channel(
   session_handle: u64,
-  result_event_handle: EventHandle<Result<SessionReadSuccess, ()>>,
+  result_event_handle: EventHandle<proto::AuthenticatorSessionReadResult>,
   len: u32,
   // TODO: Implement timeout support
   _timeout_milliseconds: u32,
@@ -416,7 +482,7 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
   ::ffi_support::call_with_result::<_, errors::FfiError, _>(error, || {
     let reactor_ref = get_current_reactor();
     let events = reactor_ref.get_events_ref();
-    events.fire_evented_handle::<Result<_, _>, _>(result_event_handle, async move {
+    events.fire_evented_handle(result_event_handle, async move {
       let res = reactor_ref
         .get_delegations()
         .with_context_optarx::<AuthenticationSessionContext, Result<Vec<u8>, ()>, _, _>(
@@ -441,11 +507,13 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
         _ => Err(()),
       };
       // Allocate a byte buffer and release ownership of it to the FFI, if res is Ok
-      res.map(|buffer| SessionReadSuccess {
-        // ByteBuffers do not clean up their data contents when dropped
-        // From this point on, the memory is owned by- and must be destroyed by- the remote side
-        buffer: get_bytebuffer_raw(ByteBuffer::from_vec(buffer)),
-      })
+      res
+        .map(|buffer: Vec<u8>| SessionReadSuccess {
+          // ByteBuffers do not clean up their data contents when dropped
+          // From this point on, the memory is owned by- and must be destroyed by- the remote side
+          buffer: buffer.into_boxed_slice(),
+        })
+        .into()
     })?;
     Ok(())
   })
@@ -454,7 +522,7 @@ pub extern "C" fn snocat_authenticator_session_read_channel(
 #[no_mangle]
 pub extern "C" fn snocat_authenticator_session_write_channel(
   session_handle: u64,
-  result_event_handle: EventHandle<Result<SessionWriteSuccess, ()>>,
+  result_event_handle: EventHandle<proto::AuthenticatorSessionWriteResult>,
   buffer: *const u8,
   len: u32,
   error: &mut ExternError,
@@ -489,7 +557,7 @@ pub extern "C" fn snocat_authenticator_session_write_channel(
         _ => Err(()),
       };
       // Allocate a byte buffer and release ownership of it to the FFI, if res is Ok
-      res.map(|_| SessionWriteSuccess {})
+      res.map(|_| SessionWriteSuccess {}).into()
     })?;
     Ok(())
   })
@@ -497,37 +565,45 @@ pub extern "C" fn snocat_authenticator_session_write_channel(
 
 #[cfg(test)]
 lazy_static! {
-  static ref REACTOR_TEST_EVENTS: std::sync::Mutex<std::collections::VecDeque<(u64, EventCompletionState, String)>> =
+  static ref REACTOR_TEST_EVENTS: std::sync::Mutex<std::collections::VecDeque<(u64, eventing::proto::EventResult)>> =
     std::sync::Mutex::new(Default::default());
 }
 
 #[cfg(test)]
 mod tests {
+  use super::{eventing, proto};
   use crate::ffi::{
     eventing::EventCompletionState, snocat_reactor_start, snocat_report_async_update,
     CompletionState, REACTOR, REACTOR_TEST_EVENTS,
   };
+  use crate::util::messenger::*;
   use ffi_support::FfiStr;
+  use std::convert::TryInto;
   use std::{
     collections::VecDeque,
+    slice,
     sync::{Arc, Mutex},
   };
 
   use super::{
-    delegation::RemoteError,
+    delegation::{self, RemoteError},
     foreign_drop::{self, register_foreign_drop_callback, ForeignDropCallback},
   };
 
   unsafe extern "C" fn fake_event_report_cb(
     event_handle: u64,
-    state: EventCompletionState,
-    json_loc: *const u8,
-    _json_byte_len: u32,
+    buffer: *const u8,
+    buffer_len: u32,
   ) -> () {
-    let json = FfiStr::from_raw(json_loc as *const _).into_string();
+    use ::prost::Message;
+    let event = eventing::proto::EventResult::decode_length_delimited(std::slice::from_raw_parts(
+      buffer,
+      buffer_len as usize,
+    ))
+    .expect("Events pushed to callback must be valid");
     VecDeque::push_back(
       &mut *REACTOR_TEST_EVENTS.lock().unwrap(),
-      (event_handle, state, json),
+      (event_handle, event),
     );
   }
 
@@ -566,15 +642,31 @@ mod tests {
   #[tokio::test]
   async fn test_ffi_delegation() {
     let reactor = get_test_reactor();
-    let res: Result<Result<Result<String, ()>, _>, _> = {
+    let res: Result<Result<String, _>, _> = {
       reactor
         .delegate_ffi(move |id| {
           let mut reporting_error = Default::default();
-          let json_str = std::ffi::CString::new("\"hello world\"").unwrap();
+
+          use prost::Message;
+          let buffer = (delegation::proto::DelegateResult {
+            result: Some(delegation::proto::delegate_result::Result::Completed(
+              delegation::proto::delegate_result::Completion {
+                value: Some(
+                  AnyProto::new("string", String::from("\"hello world\""))
+                    .try_into()
+                    .unwrap(),
+                ),
+              },
+            )),
+          })
+          .encode_length_delimited_vec()
+          .expect("Encoding must succeed");
+
+          let buffer = buffer.into_boxed_slice();
           snocat_report_async_update(
             id,
-            CompletionState::Complete,
-            unsafe { FfiStr::from_raw(json_str.as_ptr()) },
+            buffer.as_ptr(),
+            buffer.len() as u32,
             &mut reporting_error,
           );
 
@@ -583,6 +675,7 @@ mod tests {
         })
         .await
     };
+    let res = res.unwrap().unwrap();
     println!("FFI returned result: {:#?}", res);
   }
 
@@ -605,12 +698,31 @@ mod tests {
 
             assert_eq!(ctxres, String::from("Test Context"));
 
+            use prost::Message;
+            let mut buffered_string = Vec::<u8>::new();
+            String::from("\"hello world\"")
+              .encode_length_delimited(&mut buffered_string)
+              .unwrap();
+            let buffer = (delegation::proto::DelegateResult {
+              result: Some(delegation::proto::delegate_result::Result::Completed(
+                delegation::proto::delegate_result::Completion {
+                  value: Some(
+                    AnyProto::new("string", String::from("\"hello world\""))
+                      .try_into()
+                      .unwrap(),
+                  ),
+                },
+              )),
+            })
+            .encode_length_delimited_vec()
+            .expect("Encoding must succeed");
+
             let mut reporting_error = Default::default();
-            let json_str = std::ffi::CString::new("\"hello world\"").unwrap();
+            let buffer = buffer.into_boxed_slice();
             snocat_report_async_update(
               id,
-              CompletionState::Complete,
-              unsafe { FfiStr::from_raw(json_str.as_ptr()) },
+              buffer.as_ptr(),
+              buffer.len() as u32,
               &mut reporting_error,
             );
 

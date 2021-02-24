@@ -1,0 +1,27 @@
+syntax = "proto3";
+package snocat.delegation;
+
+import "google/protobuf/any.proto";
+
+enum CompletionState {
+  COMPLETED = 0;
+  CANCELLED = 1;
+  EXCEPTION = 2;
+}
+
+message DelegateResult {
+  message Completion { google.protobuf.Any value = 1; }
+  message Cancellation {}
+  message Exception {
+    oneof exception {
+      google.protobuf.Any any = 1;
+      string text = 2;
+      string json = 3;
+    }
+  }
+  oneof result {
+    Completion completed = 1;
+    Cancellation cancelled = 2;
+    Exception exception = 3;
+  }
+}
