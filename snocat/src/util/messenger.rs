@@ -23,27 +23,33 @@ impl<T: prost::Message> Messenger for T {
   }
 }
 
-pub struct AnyProto<T>(String, T);
+pub struct AnyProto<T> {
+  type_url: String,
+  value: T,
+}
 
 impl<T> AnyProto<T> {
   pub fn new(type_url: &str, value: T) -> Self {
-    Self(type_url.to_string(), value)
+    Self {
+      type_url: type_url.to_string(),
+      value,
+    }
   }
 
   pub fn type_url(&self) -> &str {
-    &self.0
+    &self.type_url
   }
 
   pub fn value(&self) -> &T {
-    &self.1
+    &self.value
   }
 
   pub fn value_mut(&mut self) -> &mut T {
-    &mut self.1
+    &mut self.value
   }
 
   pub fn to_value(self) -> T {
-    self.1
+    self.value
   }
 }
 
@@ -60,13 +66,24 @@ impl<T: prost::Message + Default> AnyProto<T> {
     buf: B,
   ) -> Result<Option<AnyProto<T>>, prost::DecodeError> {
     let res = prost_types::Any::decode(buf)?;
-    if res.type_url != type_url {
+    Self::try_from_any(type_url, &res)
+  }
+
+  pub fn try_from_any(
+    type_url: &str,
+    any: &prost_types::Any,
+  ) -> Result<Option<AnyProto<T>>, prost::DecodeError> {
+    if any.type_url != type_url {
       Ok(None)
     } else {
-      T::decode(&*res.value)
+      T::decode(&*any.value)
         .map(|t| AnyProto::new(type_url, t))
         .map(Some)
     }
+  }
+
+  pub fn from_any_unverified(any: &prost_types::Any) -> Result<AnyProto<T>, prost::DecodeError> {
+    T::decode(&*any.value).map(|t| AnyProto::new(&any.type_url, t))
   }
 }
 
@@ -74,19 +91,17 @@ impl<T: prost::Message> std::convert::TryInto<prost_types::Any> for AnyProto<T> 
   type Error = prost::EncodeError;
 
   fn try_into(self) -> Result<prost_types::Any, Self::Error> {
-    let mut inner = Vec::new();
-    T::encode(&self.1, &mut inner)?;
     Ok(prost_types::Any {
-      type_url: self.0,
-      value: inner,
+      type_url: self.type_url,
+      value: T::encode_vec(&self.value)?,
     })
   }
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for AnyProto<T> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "Any[{}](", &self.0)?;
-    std::fmt::Debug::fmt(&self.1, f)?;
+    write!(f, "Any[{}](", &self.type_url)?;
+    std::fmt::Debug::fmt(&self.value, f)?;
     write!(f, ")")
   }
 }
@@ -98,9 +113,9 @@ impl<T: prost::Message + std::fmt::Debug + Default> prost::Message for AnyProto<
     Self: Sized,
   {
     let mut inner = Vec::new();
-    T::encode_raw(&self.1, &mut inner);
+    T::encode_raw(&self.value, &mut inner);
     prost_types::Any {
-      type_url: self.0.clone(),
+      type_url: self.type_url.clone(),
       value: inner,
     }
     .encode_raw(buf);
@@ -118,21 +133,21 @@ impl<T: prost::Message + std::fmt::Debug + Default> prost::Message for AnyProto<
     Self: Sized,
   {
     let mut inner = Vec::new();
-    T::encode_raw(&self.1, &mut inner);
+    T::encode_raw(&self.value, &mut inner);
     let mut holder = prost_types::Any {
-      type_url: self.0.clone(),
+      type_url: self.type_url.clone(),
       value: inner,
     };
     holder.merge_field(tag, wire_type, buf, ctx)?;
-    self.1 = T::decode(&*holder.value)?;
+    self.value = T::decode(&*holder.value)?;
     Ok(())
   }
 
   fn encoded_len(&self) -> usize {
     let mut inner = Vec::new();
-    T::encode_raw(&self.1, &mut inner);
+    T::encode_raw(&self.value, &mut inner);
     prost_types::Any {
-      type_url: self.0.clone(),
+      type_url: self.type_url.clone(),
       value: inner,
     }
     .encoded_len()
@@ -140,13 +155,62 @@ impl<T: prost::Message + std::fmt::Debug + Default> prost::Message for AnyProto<
 
   fn clear(&mut self) {
     let mut inner = Vec::new();
-    T::encode_raw(&self.1, &mut inner);
+    T::encode_raw(&self.value, &mut inner);
     let mut holder = prost_types::Any {
-      type_url: self.0.clone(),
+      type_url: self.type_url.clone(),
       value: inner,
     };
     holder.clear();
-    self.0 = holder.type_url;
-    self.1 = T::decode(&*holder.value).expect("Cleared AnyProto values must decode successfully");
+    self.type_url = holder.type_url;
+    self.value =
+      T::decode(&*holder.value).expect("Cleared AnyProto values must decode successfully");
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::util::messenger::*;
+  use prost::Message;
+  use prost_types::Any;
+  use std::convert::TryInto;
+
+  #[test]
+  fn round_trip_string() {
+    let expected_value = "hello world";
+    let any: Any = AnyProto::new("string", String::from(expected_value))
+      .try_into()
+      .unwrap();
+    let any_encoded = any.encode_vec().unwrap().into_boxed_slice();
+    assert_eq!(
+      AnyProto::<String>::try_from_any("string", &any)
+        .unwrap()
+        .unwrap()
+        .value(),
+      expected_value
+    );
+    assert_eq!(
+      AnyProto::<String>::from_any_unverified(&any)
+        .unwrap()
+        .type_url(),
+      "string"
+    );
+    assert_eq!(
+      AnyProto::<String>::from_any_unverified(&any)
+        .unwrap()
+        .value(),
+      expected_value
+    );
+    assert_eq!(
+      AnyProto::<String>::try_decode("string", &*any_encoded)
+        .unwrap()
+        .unwrap()
+        .value(),
+      expected_value
+    );
+    assert_eq!(
+      String::decode(&*Any::decode(&*any_encoded).unwrap().value).unwrap(),
+      expected_value
+    );
   }
 }

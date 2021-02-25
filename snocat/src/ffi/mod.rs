@@ -677,6 +677,7 @@ mod tests {
     };
     let res = res.unwrap().unwrap();
     println!("FFI returned result: {:#?}", res);
+    assert_eq!(&res, "\"hello world\"");
   }
 
   #[tokio::test]
@@ -736,5 +737,6 @@ mod tests {
     let res = res.unwrap().unwrap();
 
     println!("FFI returned result: {:#?}", res);
+    assert_eq!(&res.0, "\"hello world\"");
   }
 }

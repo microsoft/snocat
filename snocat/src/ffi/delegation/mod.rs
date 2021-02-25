@@ -191,10 +191,10 @@ impl Delegation {
     }
   }
 
-  fn deserialize_result<T: prost::Message + Default + Send + 'static, B: Buf>(
-    res: B,
+  fn deserialize_result<T: prost::Message + Default + Send + 'static>(
+    res: prost_types::Any,
   ) -> Result<T, DelegationError> {
-    AnyProto::decode_unverified(res)
+    AnyProto::from_any_unverified(&res)
       .map_err(|e| DelegationError::DeserializationFailed(anyhow::Error::from(e)))
       .map(|r| r.to_value())
   }
@@ -206,13 +206,16 @@ impl Delegation {
     let method = Box::new(|res: RemoteResult<prost_types::Any>| match res {
       Err(remote_error) => fulfill.send(Ok(Err(remote_error))).map_err(|_| ()),
       Ok(DelegationResult(remote_result, ctx)) => {
-        // TODO: Some form of verification on the value of prost_types::Any::type_url
         // Map the result to a successful/failed output or a delegation failure
-        match Self::deserialize_result::<T, _>(&*remote_result.value) {
-          Err(delegation_error) => fulfill.send(Err(delegation_error)),
-          Ok(remote_result) => fulfill.send(Ok(Ok(DelegationResult(remote_result, ctx)))),
-        }
-        .map_err(|_| ())
+        // TODO: Some form of verification on the value of prost_types::Any::type_url
+        let typed = Self::deserialize_result::<T>(remote_result);
+        // Produce the value to send by wrapping the result in an Ok with its context
+        // Note that we still map to a DelegationResult and not a TypedDelegationResult
+        // because the type of the context is not relevant, required, or necessarily known.
+        let value: Result<Result<DelegationResult<T>, RemoteError>, DelegationError> =
+          typed.map(|remote_result| Ok(DelegationResult(remote_result, ctx)));
+        // Send the value to the handler, and squash handle failures into unit errors
+        fulfill.send(value).map_err(|_| ())
       }
     });
     Self {
@@ -559,8 +562,7 @@ mod tests {
 
             assert_eq!(ctxres, String::from("Test Context"));
 
-            let mut buffer = Vec::<u8>::new();
-            (proto::DelegateResult {
+            let buffer = (proto::DelegateResult {
               result: Some(proto::delegate_result::Result::Completed(
                 proto::delegate_result::Completion {
                   value: Some(
@@ -571,7 +573,7 @@ mod tests {
                 },
               )),
             })
-            .encode_length_delimited(&mut buffer)
+            .encode_length_delimited_vec()
             .unwrap();
 
             delegations_clone.fulfill_blocking(id, buffer).unwrap();
@@ -583,6 +585,7 @@ mod tests {
     let res = res.unwrap().unwrap();
 
     println!("FFI returned result: {:#?}", res);
+    assert_eq!(&res.0, "\"hello world\"");
   }
 
   #[tokio::test]
