@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! `FFI Delegation` is a process of representing remote future-likes as [Futures](::futures::Future).
 //!
 //! This module includes everything necessary to create or use bindings for external

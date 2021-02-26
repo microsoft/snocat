@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use crate::util::{
   self,
   framed::{read_frame_vec, write_frame},

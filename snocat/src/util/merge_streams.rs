@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use anyhow::{Error as AnyErr, Result};
 use async_std::net::TcpStream;
 use futures::future::*;

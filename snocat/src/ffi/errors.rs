@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use anyhow::Error;
 use ffi_support::{ErrorCode, ExternError};
 use serde::{Deserialize, Serialize};

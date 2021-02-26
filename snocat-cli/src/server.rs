@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use crate::util::{
   self,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},

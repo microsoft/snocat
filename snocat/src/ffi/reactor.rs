@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use futures::future::{BoxFuture, FutureExt};
 use futures_io::AsyncBufRead;
 use lazy_static::lazy_static;

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Types supporting authentication of Snocat tunnel connections
 #[deny(unused_imports)]
 mod traits;

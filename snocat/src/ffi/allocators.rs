@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use ffi_support::{rust_string_to_c, ByteBuffer, FfiStr};
 
 const ALLOCATION_TRACING: bool = true;

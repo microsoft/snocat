@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Types for building an Snocat client and forwarding connections
 
 use crate::common::MetaStreamHeader;

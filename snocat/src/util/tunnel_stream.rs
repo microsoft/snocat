@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use std::io::Error as IOError;
 use std::pin::Pin;
 use std::task::{Context, Poll};

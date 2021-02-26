@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Types for building an Snocat server and accepting, authenticating, and routing connections
 
 use crate::common::{authentication, MetaStreamHeader};

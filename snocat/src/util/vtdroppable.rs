@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 #[repr(C)]
 pub struct VTDroppable {
   data: *mut (),

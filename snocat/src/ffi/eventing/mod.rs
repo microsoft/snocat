@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use super::{delegation::CompletionState, ConcurrentHandleMap};
 use futures::Future;
 use prost::Message;

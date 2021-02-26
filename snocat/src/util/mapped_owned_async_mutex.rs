@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 pub struct MappedOwnedMutexGuard<U, T> {

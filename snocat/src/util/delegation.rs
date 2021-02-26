@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Utilities for handling transfer of ownership of a future to an external resolver, and
 //! tracking the ouutstanding tasks without blocking.
 

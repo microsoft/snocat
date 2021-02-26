@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use lazy_static::lazy_static;
 
 pub type ForeignDropCallback = unsafe extern "C" fn(ptr: *const ());

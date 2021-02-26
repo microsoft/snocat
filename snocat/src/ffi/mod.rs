@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Bindings for instantiation and control via C ABI
 
 use crate::ffi::errors::FfiError;

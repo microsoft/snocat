@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 //! Server backend allowing a single-threaded reactor to concurrently run multiple tunnels.
 
 use crate::common::MetaStreamHeader;

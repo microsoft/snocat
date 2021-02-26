@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 #[warn(unused_imports)]
 use anyhow::{Context as AnyhowContext, Result};
 use futures::future;

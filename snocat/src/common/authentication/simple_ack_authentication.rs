@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use super::traits::*;
 #[warn(unused_imports)]
 use crate::server::deferred::SnocatClientIdentifier;
