@@ -197,7 +197,7 @@ pub extern "C" fn snocat_server_start(
       // ConcurrentDeferredTunnelServer::handle_incoming(&*server_cloned, todo!(), todo!()).await;
       use futures::stream::StreamExt;
       use futures::stream::TryStreamExt;
-      let (trigger_shutdown, shutdown_notifier) = triggered::trigger();
+      let (_trigger_shutdown, shutdown_notifier) = triggered::trigger();
       let connections: stream::BoxStream<'_, quinn::NewConnection> = incoming
         .take_until(shutdown_notifier.clone())
         .map(|x| -> anyhow::Result<_> { Ok(x) })
