@@ -3,7 +3,7 @@
 _Streaming Network Overlay Connection Arbitration Tunnel_
 
 [![Crates.io](https://img.shields.io/crates/v/snocat)](https://crates.io/crates/snocat)
-[![docs.rs](https://img.shields.io/docsrs/snocat)](https://docs.rs/snocat/0.1.0/snocat/)
+[![docs.rs](https://img.shields.io/docsrs/snocat)](https://docs.rs/snocat)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 
