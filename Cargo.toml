@@ -4,3 +4,6 @@ members = [
     "snocat",
     "snocat-cli",
 ]
+
+[patch.crates-io]
+snocat = { path = "snocat" }
