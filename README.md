@@ -2,17 +2,19 @@
 
 _Streaming Network Overlay Connection Arbitration Tunnel_
 
+[![Crates.io](https://img.shields.io/crates/v/snocat)](https://crates.io/crates/snocat)
+[![docs.rs](https://img.shields.io/docsrs/snocat)](https://docs.rs/snocat/0.1.0/snocat/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 
 `snocat` is a library and toolkit for TCP reverse tunnelling over the
 [QUIC protocol](https://quicwg.org/).
 
-When used as a library, `libsnocat` allows a dynamic set of `client`s
-to connect over UDP to a `server`, and forwards TCP streams from
-the `server` to the `client`s.
+When used as a library, [`libsnocat`](https://crates.io/crates/snocat)
+allows a dynamic set of `client`s to connect over UDP to a `server`,
+and forwards TCP streams from the `server` to the `client`s.
 
-As a command-line tool, `snocat-cli` exists to allow
+As a command-line tool, [`snocat-cli`](https://crates.io/crates/snocat-cli) exists to allow
 small-scale port redirection akin to SSH Remote Forwarding.
 
 ## Third-Party Dependencies
