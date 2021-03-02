@@ -12,3 +12,12 @@ instructions provided by the bot. You will only need to do this once across all 
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
 or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
+# Creating a release
+
+This project uses [cargo-release](https://github.com/sunng87/cargo-release) for release management.
+
+To get or update the tool, run: `cargo install cargo-release --force`
+
+To create a release, given the appropriate permissions and certificates, you should use
+its CLI, create a `--dry-run`, verify inclusion of the expected changes, then publish.
