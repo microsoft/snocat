@@ -1,23 +1,73 @@
-# SNOCAT
+# SNOCAT-CLI
 
 _Streaming Network Overlay Connection Arbitration Tunnel_
 
-[![Crates.io](https://img.shields.io/crates/v/snocat)](https://crates.io/crates/snocat)
-[![docs.rs](https://img.shields.io/docsrs/snocat)](https://docs.rs/snocat)
+[![Crates.io](https://img.shields.io/crates/v/snocat-cli)](https://crates.io/crates/snocat-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 
-[`snocat`](https://crates.io/crates/snocat) is a framework for forwarding
-streams across authenticated, encrypted [QUIC](https://quicwg.org/) tunnels,
-from a tunnel aggregator to a dynamic set of clients.
-
-When used as a library, [`libsnocat`](snocat)
-allows a dynamic set of `client`s to connect over UDP to a `server`,
-and forwards TCP streams from the `server` to the `client`s.
-
-[`snocat-cli`](snocat-cli) is a command-line tool for TCP reverse
+[`snocat-cli`](https://crates.io/crates/snocat-cli) is a command-line tool for TCP reverse
 tunnelling over the [QUIC protocol](https://quicwg.org/).
 It allows small-scale port redirection akin to SSH Remote Forwarding.
+
+## Usage
+
+Launching a server:
+```sh
+snocat-cli server \
+  --cert $SERVER_CERT_PUB_PEM \
+  --key $SERVER_CERT_PRIV_PEM \
+  --quic 127.0.0.1:9090 \
+  --ports 8080:8090
+```
+
+Binding to a server:
+```sh
+snocat-cli client \
+  --authority $AUTHORITY_CERT_PUB_PEM
+  --driver localhost:9090 \
+  --target $TARGET \
+  --san localhost
+```
+
+### Certificate Generation
+
+As `QUIC` requires a certificate to operate, `snocat-cli` includes a
+tool for self-signed certificate generation, which- while intended for development,
+can also be used in production when full `WebPKI` is unnecessary for your use-case.
+
+See `snocat-cli cert --help` for self-signed certificate generation instructions.
+
+`snocat-cli` does not use the system certificate registry to verify certificates,
+and only uses the certificate you provide as the authority.
+
+Note that the authority can be a chain, with sequence of signers showing that the
+server's chosen cert is trusted by the given authority.
+
+For anything beyond this tool's scope, `openssl` is the de facto solution for
+certificate generation and management. `snocat-cli` operates on `PEM` certificates.
+
+---
+
+## Development
+
+For debug usage, `SSLKEYLOGFILE` and `RUST_LOG` parameters are supported.
+
+`SSLKEYLOGFILE` allows interception with [Wireshark](https://www.wireshark.org/)
+TLS Decryption and QUIC dissection.
+
+For example usage, `snocat-cli` debugging is often performed with a command-line such as the following:
+
+```sh
+SSLKEYLOGFILE=~/keylog.ssl.txt RUST_LOG="trace,quinn=warn,quinn_proto=warn" \
+  cargo run -- client --authority $SERVER_CERT \
+    --driver localhost:9090 \
+    --target $TARGET \
+    --san localhost
+```
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) in the official project
+repository for further development and contribution guidance.
 
 ---
 
@@ -28,9 +78,8 @@ Primary crates used include the [Tokio stack](https://tokio.rs/) and
 [Quinn](https://github.com/quinn-rs/quinn) for its [QUIC](https://quicwg.org/)
 implementation.
 
-Various other dependencies are included under their respective licenses, and may
-be found in [snocat/Cargo.toml](snocat/Cargo.toml) and
-[snocat-cli/Cargo.toml](snocat-cli/Cargo.toml).
+Various other dependencies are included under their respective licenses,
+and may be found in [Cargo.toml](Cargo.toml).
 
 Notable exceptions from _MIT_ or _MIT OR Apache 2.0_ licensing in dependencies are the following crates:
 
