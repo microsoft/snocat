@@ -8,8 +8,6 @@ The SNOCAT Project depends upon packages written by third parties.
 The following third party packages are utilized, and carry
 their own copyright notices and license terms:
 
-
-* [ansi_term v0.11.0]() - MIT
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
 * [anyhow v1.0.38](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
 * [async-attributes v1.1.1](https://github.com/async-rs/async-attributes) - MIT OR Apache-2.0
@@ -24,11 +22,9 @@ their own copyright notices and license terms:
 * [async-task v4.0.3](https://github.com/stjepang/async-task) - Apache-2.0/MIT
 * [async-trait v0.1.42](https://github.com/dtolnay/async-trait) - MIT OR Apache-2.0
 * [atomic-waker v1.0.0](https://github.com/stjepang/atomic-waker) - Apache-2.0 OR MIT
-* [atty v0.2.14](https://github.com/softprops/atty) - MIT
 * [autocfg v1.0.1](https://github.com/cuviper/autocfg) - Apache-2.0 OR MIT
 * [base64 v0.11.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
 * [base64 v0.13.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
-* [bitflags v1.2.1](https://github.com/bitflags/bitflags) - MIT/Apache-2.0
 * [blocking v1.0.2](https://github.com/stjepang/blocking) - Apache-2.0 OR MIT
 * [byteorder v1.4.2](https://github.com/BurntSushi/byteorder) - Unlicense OR MIT
 * [bytes v0.5.6](https://github.com/tokio-rs/bytes) - MIT
@@ -38,7 +34,6 @@ their own copyright notices and license terms:
 * [cfg-if v0.1.10](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [cfg-if v1.0.0](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
-* [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
 * [concurrent-queue v1.2.2](https://github.com/stjepang/concurrent-queue) - Apache-2.0 OR MIT
 * [crossbeam-utils v0.8.1](https://github.com/crossbeam-rs/crossbeam) - MIT OR Apache-2.0
 * [ct-logs v0.6.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
@@ -92,7 +87,6 @@ their own copyright notices and license terms:
 * [once_cell v1.5.2](https://github.com/matklad/once_cell) - MIT OR Apache-2.0
 * [openssl-probe v0.1.2](https://github.com/alexcrichton/openssl-probe) - MIT/Apache-2.0
 * [parking v2.0.0](https://github.com/stjepang/parking) - Apache-2.0 OR MIT
-* [pem v0.8.2](https://github.com/jcreekmore/pem-rs.git) - MIT
 * [percent-encoding v2.1.0](https://github.com/servo/rust-url/) - MIT/Apache-2.0
 * [petgraph v0.5.1](https://github.com/petgraph/petgraph) - MIT/Apache-2.0
 * [pin-project-internal v0.4.27](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
@@ -122,7 +116,6 @@ their own copyright notices and license terms:
 * [rand_core v0.6.2](https://github.com/rust-random/rand) - MIT OR Apache-2.0
 * [rand v0.7.3](https://github.com/rust-random/rand) - MIT OR Apache-2.0
 * [rand v0.8.3](https://github.com/rust-random/rand) - MIT OR Apache-2.0
-* [rcgen v0.8.9](https://github.com/est31/rcgen) - MIT OR Apache-2.0
 * [regex-automata v0.1.9](https://github.com/BurntSushi/regex-automata) - Unlicense/MIT
 * [regex-syntax v0.6.22](https://github.com/rust-lang/regex) - MIT/Apache-2.0
 * [regex v1.4.3](https://github.com/rust-lang/regex) - MIT OR Apache-2.0
@@ -140,15 +133,12 @@ their own copyright notices and license terms:
 * [signal-hook-registry v1.3.0](https://github.com/vorner/signal-hook) - Apache-2.0/MIT
 * [slab v0.4.2](https://github.com/carllerche/slab) - MIT
 * [smallvec v1.6.1](https://github.com/servo/rust-smallvec) - MIT/Apache-2.0
-* [snocat-cli v0.1.0](https://github.com/microsoft/snocat) - MIT OR Apache-2.0
 * [snocat v0.1.0](https://github.com/microsoft/snocat) - MIT OR Apache-2.0
 * [socket2 v0.3.19](https://github.com/alexcrichton/socket2-rs) - MIT/Apache-2.0
 * [spin v0.5.2](https://github.com/mvdnes/spin-rs.git) - MIT
-* [strsim v0.8.0](https://github.com/dguo/strsim-rs) - MIT
 * [synstructure v0.12.4](https://github.com/mystor/synstructure) - MIT
 * [syn v1.0.60](https://github.com/dtolnay/syn) - MIT OR Apache-2.0
 * [tempfile v3.2.0](https://github.com/Stebalien/tempfile) - MIT OR Apache-2.0
-* [textwrap v0.11.0](https://github.com/mgeisler/textwrap) - MIT
 * [thiserror-impl v1.0.24](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
 * [thiserror v1.0.24](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
 * [thread_local v1.1.0](https://github.com/Amanieu/thread_local-rs) - Apache-2.0/MIT
@@ -174,14 +164,11 @@ their own copyright notices and license terms:
 * [triggered v0.1.1](https://github.com/faern/triggered) - MIT OR Apache-2.0
 * [try-lock v0.2.3](https://github.com/seanmonstar/try-lock) - MIT
 * [unicode-segmentation v1.7.1](https://github.com/unicode-rs/unicode-segmentation) - MIT/Apache-2.0
-* [unicode-width v0.1.8](https://github.com/unicode-rs/unicode-width) - MIT/Apache-2.0
 * [unicode-xid v0.2.1](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
 * [vec-arena v1.0.0](https://github.com/stjepang/vec-arena) - Apache-2.0 OR MIT
-* [vec_map v0.8.2](https://github.com/contain-rs/vec-map) - MIT/Apache-2.0
 * [version_check v0.9.2](https://github.com/SergioBenitez/version_check) - MIT/Apache-2.0
 * [waker-fn v1.1.0](https://github.com/stjepang/waker-fn) - Apache-2.0 OR MIT
 * [want v0.3.0](https://github.com/seanmonstar/want) - MIT
 * [webpki v0.21.4](https://github.com/briansmith/webpki) - (**Nonstandard License**, see project link)
 * [which v4.0.2](https://github.com/harryfei/which-rs.git) - MIT
-* [yasna v0.3.2](https://github.com/qnighy/yasna.rs) - MIT/Apache-2.0

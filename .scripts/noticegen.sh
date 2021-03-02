@@ -1,13 +1,22 @@
 #!/bin/bash
 
+set -e
+
 SCRIPTS_ROOT=$(dirname $(realpath $0))
 PROJECT_ROOT=$(dirname $SCRIPTS_ROOT)
 
-cd $PROJECT_ROOT
+function gen_notice () {
+    pushd $1
+    cat $SCRIPTS_ROOT/NOTICE_template.md <( \
+        cargo tree --color=never --prefix none -f '* [{p}]({r}) - {l}' \
+        | perl -pe "s/\\[([^ ]+ v[0-9]+\\.[0-9]+\\.[0-9]+) \\([^\\)]*\\)\\]/[\$1]/g" \
+        | perl -pe "s/ \\(\\*\\)$//" \
+        | perl -pe "s/ - $/ - \\(\\*\\*Nonstandard License\\*\\*, see project link\\)/" \
+        | sort | uniq \
+    ) > $1/NOTICE.md
+    popd
+}
 
-cat $SCRIPTS_ROOT/NOTICE_template.md <( \
-    cargo tree --prefix none -f '* [{p}]({r}) - {l}' \
-    | perl -pe "s/ \\(\\*\\)$//" \
-    | perl -pe "s/ - $/ - \\(\\*\\*Nonstandard License\\*\\*, see project link\\)/" \
-    | sort | uniq \
-) > $PROJECT_ROOT/NOTICE.md
+gen_notice $PROJECT_ROOT
+gen_notice $PROJECT_ROOT/snocat
+gen_notice $PROJECT_ROOT/snocat-cli

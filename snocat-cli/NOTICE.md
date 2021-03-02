@@ -8,7 +8,6 @@ The SNOCAT Project depends upon packages written by third parties.
 The following third party packages are utilized, and carry
 their own copyright notices and license terms:
 
-
 * [ansi_term v0.11.0]() - MIT
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
 * [anyhow v1.0.38](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
