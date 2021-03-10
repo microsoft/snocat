@@ -40,6 +40,22 @@ pub async fn proxy_stream<Send: AsyncWrite + Unpin, Recv: AsyncRead + Unpin>(
     .map_err(Into::into)
 }
 
+pub async fn proxy_tokio_stream<
+  Send: tokio::io::AsyncWrite + Unpin,
+  Recv: tokio::io::AsyncRead + Unpin,
+>(
+  recv: &mut Recv,
+  send: &mut Send,
+) -> Result<u64> {
+  use tokio::io::AsyncWriteExt;
+  tokio::io::copy(
+    &mut tokio::io::BufReader::with_capacity(1024 * 32, recv),
+    send,
+  )
+  .await
+  .map_err(Into::into)
+}
+
 #[tracing::instrument(skip(a, b))]
 pub async fn proxy_generic_streams<
   SenderA: AsyncWrite + Unpin,
@@ -54,6 +70,51 @@ pub async fn proxy_generic_streams<
   let (sender_b, reader_b) = b;
   let proxy_a2b = Box::pin(proxy_stream(reader_a, sender_b).fuse());
   let proxy_b2a = Box::pin(proxy_stream(reader_b, sender_a).fuse());
+  tracing::trace!("polling");
+  let res: Either<(), ()> = match futures::future::try_select(proxy_a2b, proxy_b2a).await {
+    Ok(Either::Left((_i2o, resume_o2i))) => {
+      tracing::debug!("Source connection closed gracefully, shutting down proxy");
+      std::mem::drop(resume_o2i); // Kill the copier, allowing us to send end-of-connection
+      Either::Right(())
+    }
+    Ok(Either::Right((_o2i, resume_i2o))) => {
+      tracing::debug!("Proxy connection closed gracefully, shutting down source");
+      std::mem::drop(resume_i2o); // Kill the copier, allowing us to send end-of-connection
+      Either::Left(())
+    }
+    Err(Either::Left((e_i2o, resume_o2i))) => {
+      tracing::debug!(
+        "Source connection died with error {:#?}, shutting down proxy connection",
+        e_i2o
+      );
+      std::mem::drop(resume_o2i); // Kill the copier, allowing us to send end-of-connection
+      Either::Right(())
+    }
+    Err(Either::Right((e_o2i, resume_i2o))) => {
+      tracing::debug!(
+        "Proxy connection died with error {:#?}, shutting down source connection",
+        e_o2i
+      );
+      std::mem::drop(resume_i2o); // Kill the copier, allowing us to send end-of-connection
+      Either::Left(())
+    }
+  };
+  res
+}
+
+pub async fn proxy_generic_tokio_streams<
+  SenderA: tokio::io::AsyncWrite + Unpin,
+  ReaderA: tokio::io::AsyncRead + Unpin,
+  SenderB: tokio::io::AsyncWrite + Unpin,
+  ReaderB: tokio::io::AsyncRead + Unpin,
+>(
+  a: (&mut SenderA, &mut ReaderA),
+  b: (&mut SenderB, &mut ReaderB),
+) -> Either<(), ()> {
+  let (sender_a, reader_a) = a;
+  let (sender_b, reader_b) = b;
+  let proxy_a2b = Box::pin(proxy_tokio_stream(reader_a, sender_b).fuse());
+  let proxy_b2a = Box::pin(proxy_tokio_stream(reader_b, sender_a).fuse());
   tracing::trace!("polling");
   let res: Either<(), ()> = match futures::future::try_select(proxy_a2b, proxy_b2a).await {
     Ok(Either::Left((_i2o, resume_o2i))) => {

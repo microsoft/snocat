@@ -22,7 +22,7 @@ use std::{
 };
 
 pub mod authentication;
-pub mod routing;
+pub mod protocol;
 
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct MetaStreamHeader {}
