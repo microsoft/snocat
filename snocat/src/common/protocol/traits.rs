@@ -1,9 +1,10 @@
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 use futures::future::{BoxFuture, FutureExt};
-use std::any::Any;
+use std::{any::Any, sync::Arc};
+
+use super::tunnel::Tunnel;
 
 pub type RouteAddress = String;
-pub type Tunnel<'a> = WrappedStream<'a>; // todo: This should be some `Sync` type that provides streams upon request
 
 pub struct Request {
   address: RouteAddress,
@@ -51,7 +52,7 @@ pub trait Router {
   fn route(
     &self,
     request: &Request,
-    lookup: Box<dyn Fn(&str) -> BoxFuture<Option<Tunnel>>>,
+    lookup: Box<dyn Fn(&str) -> BoxFuture<Option<Arc<dyn Tunnel + Send + Sync + Unpin + 'static>>>>,
   ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + 'static>), RoutingError>>;
 }
 

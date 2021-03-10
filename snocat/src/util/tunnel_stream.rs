@@ -213,6 +213,10 @@ mod futures_traits {
 }
 
 pub enum WrappedStream<'a> {
+  Boxed(
+    Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
+    Box<dyn AsyncWrite + Send + Sync + Unpin + 'a>,
+  ),
   QuinnTLS(QuinnTunnelStream<quinn::crypto::rustls::TlsSession>),
   QuinnTLSRef(QuinnTunnelRefStream<'a, quinn::crypto::rustls::TlsSession>),
   DuplexStream(tokio::io::DuplexStream),
@@ -238,6 +242,7 @@ impl<'a> AsyncRead for WrappedStream<'a> {
       WrappedStream::QuinnTLS(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
       WrappedStream::DuplexStream(ref mut s) => AsyncRead::poll_read(Pin::new(s), cx, buf),
+      WrappedStream::Boxed(ref mut s, _) => AsyncRead::poll_read(Pin::new(&mut *s), cx, buf),
     }
   }
 }
@@ -252,6 +257,7 @@ impl<'a> AsyncWrite for WrappedStream<'a> {
       WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_write(Pin::new(&mut s.0), cx, buf),
       WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_write(Pin::new(s), cx, buf),
+      WrappedStream::Boxed(_, ref mut s) => AsyncWrite::poll_write(Pin::new(&mut *s), cx, buf),
     }
   }
 
@@ -260,6 +266,7 @@ impl<'a> AsyncWrite for WrappedStream<'a> {
       WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_flush(Pin::new(&mut s.0), cx),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_flush(Pin::new(&mut s.0), cx),
       WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_flush(Pin::new(s), cx),
+      WrappedStream::Boxed(_, ref mut s) => AsyncWrite::poll_flush(Pin::new(&mut *s), cx),
     }
   }
 
@@ -268,6 +275,7 @@ impl<'a> AsyncWrite for WrappedStream<'a> {
       WrappedStream::QuinnTLS(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(&mut s.0), cx),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(&mut s.0), cx),
       WrappedStream::DuplexStream(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(s), cx),
+      WrappedStream::Boxed(_, ref mut s) => AsyncWrite::poll_shutdown(Pin::new(&mut *s), cx),
     }
   }
 }

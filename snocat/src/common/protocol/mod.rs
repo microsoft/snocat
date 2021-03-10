@@ -24,7 +24,9 @@
 mod traits;
 pub use traits::{
   Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
-  RoutingError, Service, ServiceError, Tunnel,
+  RoutingError, Service, ServiceError,
 };
 
+pub mod negotiation;
 pub mod proxy_tcp;
+pub mod tunnel;

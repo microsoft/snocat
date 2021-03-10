@@ -10,8 +10,8 @@ use tokio::{
 use tracing_futures::Instrument;
 
 use super::{
-  Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
-  RoutingError, Service, ServiceError, Tunnel,
+  tunnel::Tunnel, Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress,
+  Router, RoutingError, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 

@@ -39,6 +39,7 @@ use tracing::{info, instrument, trace};
 use tracing_futures::Instrument;
 
 pub mod deferred;
+pub mod modular;
 
 #[tracing::instrument(skip(source, proxy_connection_provider), err)]
 async fn handle_connection<Provider: ProxyConnectionProvider>(
