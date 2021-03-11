@@ -1,12 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::io::Error as IOError;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::{io::Error as IOError, sync::Arc};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 
 /// A duplex stream abstracting over a connection, allowing use of memory streams and Quinn connections
-pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {}
+pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {
+  fn as_boxed_ref<'a>(self: &'a mut Self) -> Box<&'a mut dyn TunnelStream>
+  where
+    Self: Sized,
+  {
+    Box::new(self)
+  }
+}
 
 impl TunnelStream for tokio::io::DuplexStream {}
 
@@ -183,7 +190,7 @@ mod futures_traits {
     }
   }
 
-  impl futures::io::AsyncWrite for super::WrappedStream<'_> {
+  impl futures::io::AsyncWrite for super::WrappedStream {
     fn poll_write(
       self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -201,7 +208,7 @@ mod futures_traits {
     }
   }
 
-  impl futures::io::AsyncRead for super::WrappedStream<'_> {
+  impl futures::io::AsyncRead for super::WrappedStream {
     fn poll_read(
       self: Pin<&mut Self>,
       cx: &mut Context<'_>,
@@ -212,27 +219,27 @@ mod futures_traits {
   }
 }
 
-pub enum WrappedStream<'a> {
+pub enum WrappedStream {
   Boxed(
-    Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
-    Box<dyn AsyncWrite + Send + Sync + Unpin + 'a>,
+    Box<dyn AsyncRead + Send + Sync + Unpin + 'static>,
+    Box<dyn AsyncWrite + Send + Sync + Unpin + 'static>,
   ),
   QuinnTLS(QuinnTunnelStream<quinn::crypto::rustls::TlsSession>),
-  QuinnTLSRef(QuinnTunnelRefStream<'a, quinn::crypto::rustls::TlsSession>),
+  QuinnTLSRef(QuinnTunnelRefStream<'static, quinn::crypto::rustls::TlsSession>),
   DuplexStream(tokio::io::DuplexStream),
 }
 
-impl WrappedStream<'_> {
+impl WrappedStream {
   #[cfg(test)]
   /// Asserts that WrappedStream complies with TunnelStream, Send, and Unpin traits
   fn _assert_traits() {
-    let _x: &(dyn TunnelStream + Send + Unpin) =
+    let _x: &(dyn TunnelStream + Send + Sync + Unpin) =
       &WrappedStream::DuplexStream(tokio::io::duplex(64).0);
     unreachable!("Compile-time static assertion function should never be called");
   }
 }
 
-impl<'a> AsyncRead for WrappedStream<'a> {
+impl AsyncRead for WrappedStream {
   fn poll_read(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
@@ -247,7 +254,7 @@ impl<'a> AsyncRead for WrappedStream<'a> {
   }
 }
 
-impl<'a> AsyncWrite for WrappedStream<'a> {
+impl AsyncWrite for WrappedStream {
   fn poll_write(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
@@ -280,4 +287,4 @@ impl<'a> AsyncWrite for WrappedStream<'a> {
   }
 }
 
-impl TunnelStream for WrappedStream<'_> {}
+impl TunnelStream for WrappedStream {}

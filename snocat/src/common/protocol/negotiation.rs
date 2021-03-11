@@ -15,8 +15,8 @@ impl NegotiationClient {
   pub fn handle(
     self,
     addr: RouteAddress,
-    link: WrappedStream<'static>,
-  ) -> BoxFuture<Result<(), NegotiationError>> {
+    link: WrappedStream,
+  ) -> BoxFuture<'static, Result<(), NegotiationError>> {
     todo!()
   }
 }
