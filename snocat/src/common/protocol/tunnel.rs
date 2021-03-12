@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, pin::Pin};
 
-use crate::util::tunnel_stream::WrappedStream;
+use crate::{server::deferred::SnocatClientIdentifier, util::tunnel_stream::WrappedStream};
 use futures::{
   future::{BoxFuture, Either},
   stream::{BoxStream, Stream, StreamFuture},
@@ -144,6 +144,9 @@ pub enum TunnelInfo {
   Socket(SocketAddr),
   Port(u16),
 }
+
+pub type TunnelId = u128;
+pub type TunnelName = SnocatClientIdentifier;
 
 pub trait Tunnel: Send + Sync + Unpin {
   fn info(&self) -> TunnelInfo {
