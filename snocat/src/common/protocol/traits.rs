@@ -294,6 +294,6 @@ pub trait Service {
 pub trait ServiceRegistry {
   fn find_service(
     self: Arc<Self>,
-    addr: RouteAddress,
-  ) -> Arc<Box<dyn Service + Send + Sync + 'static>>;
+    addr: &RouteAddress,
+  ) -> Option<Arc<dyn Service + Send + Sync + 'static>>;
 }
