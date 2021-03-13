@@ -237,6 +237,17 @@ impl WrappedStream {
       &WrappedStream::DuplexStream(tokio::io::duplex(64).0);
     unreachable!("Compile-time static assertion function should never be called");
   }
+
+  pub fn duplex(max_buf_size: usize) -> (WrappedStream, WrappedStream) {
+    let (a, b) = tokio::io::duplex(max_buf_size);
+    (a.into(), b.into())
+  }
+}
+
+impl Into<WrappedStream> for tokio::io::DuplexStream {
+  fn into(self) -> WrappedStream {
+    WrappedStream::DuplexStream(self)
+  }
 }
 
 impl AsyncRead for WrappedStream {
