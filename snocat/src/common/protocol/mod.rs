@@ -29,4 +29,5 @@ pub use traits::{
 
 pub mod negotiation;
 pub mod proxy_tcp;
+pub mod request_handler;
 pub mod tunnel;
