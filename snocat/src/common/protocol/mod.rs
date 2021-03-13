@@ -21,7 +21,7 @@
 //
 // Note that authentication doesn't occur on this level- this is *after* tunnel establishment
 
-mod traits;
+pub mod traits;
 pub use traits::{
   Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
   RoutingError, Service, ServiceError,

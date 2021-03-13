@@ -7,8 +7,16 @@ use super::tunnel::{Tunnel, TunnelId, TunnelName};
 pub type RouteAddress = String;
 
 pub struct Request {
-  address: RouteAddress,
-  protocol_client: Box<dyn DynamicResponseClient + Send + 'static>,
+  pub address: RouteAddress,
+  pub protocol_client: Box<dyn DynamicResponseClient + Send + Sync + 'static>,
+}
+
+impl Debug for Request {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Request")
+      .field("address", &self.address)
+      .finish_non_exhaustive()
+  }
 }
 
 pub struct Response {
@@ -30,7 +38,7 @@ impl Response {
 impl Request {
   pub fn new<TProtocolClient>(address: RouteAddress, protocol_client: TProtocolClient) -> Self
   where
-    TProtocolClient: Client + Send + 'static,
+    TProtocolClient: Client + Send + Sync + 'static,
   {
     Self {
       address,
@@ -48,7 +56,10 @@ pub struct TunnelRecord {
 
 impl Debug for TunnelRecord {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "TunnelRecord {{ id: {} }}", self.id)
+    f.debug_struct(stringify!(TunnelRecord))
+      .field("id", &self.id)
+      .field("name", &self.name)
+      .finish_non_exhaustive()
   }
 }
 
@@ -223,10 +234,10 @@ pub enum RoutingError {
 pub trait Router {
   fn route(
     &self,
+    //TODO: Consider taking only a [RouteAddress] here, except if other request metadata is desired
     request: &Request,
-    tunnel_registry: &dyn TunnelRegistry,
-    lookup: Box<dyn Fn(&str) -> BoxFuture<Option<TunnelRecord>>>,
-  ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + 'static>), RoutingError>>;
+    tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync>,
+  ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>), RoutingError>>;
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +260,7 @@ pub trait Client {
 
 pub trait DynamicResponseClient: Send {
   fn handle_dynamic(
-    self,
+    self: Box<Self>,
     addr: RouteAddress,
     tunnel: Box<dyn TunnelStream + Send + 'static>,
   ) -> BoxFuture<Result<Response, ClientError>>;
@@ -259,13 +270,14 @@ impl<TResponse, TClient> DynamicResponseClient for TClient
 where
   TClient: Client<Response = TResponse> + Send + 'static,
   TResponse: Any + Send + 'static,
+  Self: Sized,
 {
   fn handle_dynamic(
-    self,
+    self: Box<Self>,
     addr: RouteAddress,
     tunnel: Box<dyn TunnelStream + Send + 'static>,
   ) -> BoxFuture<Result<Response, ClientError>> {
-    Client::handle(self, addr, tunnel)
+    Client::handle(*self, addr, tunnel)
       .map(|result| result.map(|inner| Response::new(Box::new(inner))))
       .boxed()
   }
