@@ -14,8 +14,8 @@ use tokio::{
   sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
-type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
-type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
+pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
+pub type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
