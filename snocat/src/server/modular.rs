@@ -1,4 +1,9 @@
-use futures::future::{BoxFuture, FutureExt, TryFutureExt};
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
+use futures::{
+  future::{BoxFuture, FutureExt, TryFutureExt},
+  Stream,
+};
 use std::sync::Arc;
 
 use crate::common::protocol::{

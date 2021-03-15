@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use std::{net::SocketAddr, pin::Pin};
 
 use crate::{server::deferred::SnocatClientIdentifier, util::tunnel_stream::WrappedStream};

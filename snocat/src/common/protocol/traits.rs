@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 use futures::future::{BoxFuture, FutureExt};
 use std::{any::Any, collections::BTreeMap, fmt::Debug, sync::Arc};
