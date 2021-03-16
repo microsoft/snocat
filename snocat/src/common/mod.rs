@@ -23,6 +23,7 @@ use std::{
 
 pub mod authentication;
 pub mod protocol;
+pub mod tunnel_source;
 
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct MetaStreamHeader {}
