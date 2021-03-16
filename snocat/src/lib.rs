@@ -7,7 +7,6 @@
 #![feature(label_break_value)]
 #![feature(never_type)]
 #![feature(option_expect_none)]
-#![feature(str_split_once)]
 #![feature(try_blocks)]
 #![feature(type_ascription)]
 #![allow(dead_code)]

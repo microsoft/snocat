@@ -45,10 +45,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!(
+      panic!(
         "Undropped ref of type {:?} as incorrect type {:?} ({})",
         &self.type_id, type_id, type_name
-      ));
+      );
     }
     unsafe { &*(self.data as *mut T) }
   }
@@ -57,10 +57,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!(
+      panic!(
         "Undropped mut ref of type {:?} as incorrect type {:?} ({})",
         &self.type_id, type_id, type_name
-      ));
+      );
     }
     unsafe { &mut *(self.data as *mut T) }
   }
@@ -87,10 +87,10 @@ impl VTDroppable {
     let type_id = std::any::TypeId::of::<T>();
     let type_name: &'static str = std::any::type_name::<T>();
     if self.type_id != type_id {
-      panic!(format!(
+      panic!(
         "Extracted from type {:?} as incorrect type {:?} ({})",
         &self.type_id, type_id, type_name
-      ));
+      );
     }
     let x: Box<T> = unsafe { Box::from_raw(self.data as *mut T) };
     self.data = std::ptr::null_mut(); // Clear out the content, it's invalid now
