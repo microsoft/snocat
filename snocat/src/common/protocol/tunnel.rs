@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::{net::SocketAddr, pin::Pin};
+use std::{net::SocketAddr, pin::Pin, sync::Arc};
 
 use crate::{server::deferred::SnocatClientIdentifier, util::tunnel_stream::WrappedStream};
 use futures::{
@@ -16,6 +16,8 @@ use tokio::{
 
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
+pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
+pub type ArcTunnelPair<'a> = (ArcTunnel<'a>, TunnelIncoming);
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
@@ -147,7 +149,7 @@ pub enum TunnelInfo {
   Port(u16),
 }
 
-pub type TunnelId = u128;
+pub type TunnelId = u64;
 pub type TunnelName = SnocatClientIdentifier;
 
 pub trait Tunnel: Send + Sync + Unpin {

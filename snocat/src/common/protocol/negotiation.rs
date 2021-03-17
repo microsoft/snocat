@@ -145,13 +145,13 @@ impl NegotiationClient {
   }
 }
 
-pub struct NegotiationService<ServiceRegistry> {
+pub struct NegotiationService<ServiceRegistry: ?Sized> {
   service_registry: Arc<ServiceRegistry>,
 }
 
 pub type ArcService = Arc<dyn Service + Send + Sync + 'static>;
 
-impl<R> NegotiationService<R> {
+impl<R: ?Sized> NegotiationService<R> {
   pub fn new(service_registry: Arc<R>) -> Self {
     Self { service_registry }
   }
@@ -159,7 +159,7 @@ impl<R> NegotiationService<R> {
 
 impl<R> NegotiationService<R>
 where
-  R: ServiceRegistry + Send + Sync + 'static,
+  R: ServiceRegistry + Send + Sync + ?Sized + 'static,
 {
   /// Performs negotiation, returning the stream if successful
   ///
