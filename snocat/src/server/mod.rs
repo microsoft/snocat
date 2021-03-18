@@ -17,8 +17,6 @@ use crate::util::{
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
 };
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
-use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
   future,
@@ -37,8 +35,11 @@ use std::{
   ops::RangeInclusive,
   path::{Path, PathBuf},
   pin::Pin,
+  sync::Arc,
   task::{Context, Poll},
 };
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio::sync::Mutex;
 use tracing::{info, instrument, trace};
 use tracing_futures::Instrument;
 
@@ -62,7 +63,7 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
   }
 
   tracing::info!("Beginning proxying...");
-  let (mut receiver, mut sender) = futures::AsyncReadExt::split(&mut proxy_connection);
+  let (mut receiver, mut sender) = tokio::io::split(&mut proxy_connection);
   let proxy_res = util::proxy_from_tcp_stream(source, (&mut sender, &mut receiver)).await;
   if let Err(e) = proxy_res {
     tracing::error!(
