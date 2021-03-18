@@ -1,33 +1,55 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #[warn(unused_imports)]
-use crate::server::deferred::SnocatClientIdentifier;
-use crate::util::tunnel_stream::{QuinnTunnelStream, TunnelStream};
-use anyhow::{Error as AnyErr, Result};
-use futures::future::BoxFuture;
+use crate::{
+  common::protocol::tunnel::{
+    Tunnel, TunnelAddressInfo, TunnelError, TunnelIncoming, TunnelIncomingType, TunnelName,
+    TunnelSide,
+  },
+  util::tunnel_stream::TunnelStream,
+};
+use futures::{future::BoxFuture, FutureExt};
 use std::marker::Unpin;
+use thiserror::Error;
 use tokio::stream::StreamExt;
 use triggered::Listener;
 
+#[derive(Debug, Clone)]
 pub struct TunnelInfo {
-  pub remote_address: std::net::SocketAddr,
+  pub side: TunnelSide,
+  pub addr: TunnelAddressInfo,
 }
 
-impl TunnelInfo {
-  pub fn from_connection<T: quinn::crypto::Session>(
-    connection: &quinn::generic::Connection<T>,
-  ) -> Self {
-    Self {
-      remote_address: connection.remote_address(),
-    }
-  }
-  pub fn from_new_connection(new_connection: &quinn::NewConnection) -> Self {
-    Self::from_connection(&new_connection.connection)
-  }
+/// Errors with the authentication layer considered fatal to the authenticator
+#[derive(Error, Debug)]
+pub enum AuthenticationError {}
 
-  pub fn remote_address(&self) -> std::net::SocketAddr {
-    self.remote_address
-  }
+/// Errors explaining why authentication was refused
+#[derive(Error, Debug)]
+pub enum RemoteAuthenticationError {
+  // The remote failed to authenticate, but followed protocol
+  #[error("Remote authentication refused")]
+  Refused,
+  // Yes, this is technically a local authentication error,
+  // but it's not a fault with the authentication layer,
+  // it's a reason the remote was not authenticated.
+  #[error("Remote authentication link closed locally")]
+  LinkClosedLocally,
+  // The remote closed their [TunnelIncoming] and can't accept a new link
+  #[error("Remote authentication link closed by the remote")]
+  LinkClosedRemotely,
+  // The remote closed their connection, so our [TunnelIncoming] reached end-of-stream.
+  #[error("Connection closed by remote")]
+  IncomingStreamsClosed,
+  // The remote connection timed out at the transport level, or took too long to authenticate.
+  #[error("Remote connection timed out")]
+  TimedOut,
+  // Still need to figure out where this one applies, maybe more specificity can be achieved.
+  #[error("Transport error encountered authenticating remote")]
+  TransportError,
+  // Occurs when an auth protocol is not followed by the remote
+  #[error("Remote authentication protocol violation: {0}")]
+  ProtocolViolation(String),
 }
 
 pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
@@ -35,17 +57,8 @@ pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>>;
-}
-
-pub trait AuthenticationClient: std::fmt::Debug + Send + Sync {
-  fn authenticate_client<'a>(
-    &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
-    tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<()>>;
+    shutdown_notifier: &'a Listener,
+  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>>;
 }
 
 impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
@@ -54,65 +67,86 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a Listener,
-  ) -> BoxFuture<'a, Result<SnocatClientIdentifier, anyhow::Error>> {
+  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
     self
       .as_ref()
       .authenticate(channel, tunnel_info, shutdown_notifier)
   }
 }
 
-impl<T: AuthenticationClient + ?Sized> AuthenticationClient for Box<T> {
-  fn authenticate_client<'a>(
-    &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
-    tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a Listener,
-  ) -> BoxFuture<'a, Result<(), anyhow::Error>> {
-    self
-      .as_ref()
-      .authenticate_client(channel, tunnel_info, shutdown_notifier)
-  }
-}
-
-pub async fn perform_authentication<'a>(
+pub fn perform_authentication<'a>(
   handler: &'a impl AuthenticationHandler,
-  tunnel: &'a mut quinn::NewConnection,
-  shutdown_notifier: &'a triggered::Listener,
-) -> Result<SnocatClientIdentifier> {
-  let auth_channel = tunnel.connection.open_bi().await?;
-  let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
-  handler
-    .authenticate(
-      Box::new(QuinnTunnelStream::new(auth_channel)),
-      tunnel_info,
-      shutdown_notifier,
-    )
-    .await
-}
+  tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
+  incoming: &'a mut TunnelIncoming,
+  shutdown_notifier: &'a Listener,
+) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  use tracing::{debug, span, warn, Instrument, Level};
+  let tunnel_info = TunnelInfo {
+    side: tunnel.side(),
+    addr: tunnel.addr(),
+  };
+  let tracing_span_establishment = span!(Level::DEBUG, "establishment", side=?tunnel_info.side);
+  let tracing_span_authentication =
+    span!(Level::DEBUG, "authentication", side=?tunnel_info.side, addr=?tunnel_info.addr);
+  let establishment = {
+    let side = tunnel_info.side;
+    async move {
+      let auth_channel: Result<Result<_, RemoteAuthenticationError>, AuthenticationError> = match side {
+        TunnelSide::Listen => {
+          let link: Result<_, TunnelError> = tunnel.open_link()
+            .instrument(span!(Level::DEBUG, "open_link"))
+            .await;
+          Ok(match link {
+            Err(TunnelError::ApplicationClosed) => Err(RemoteAuthenticationError::LinkClosedLocally),
+            Err(TunnelError::LocallyClosed) => Err(RemoteAuthenticationError::LinkClosedLocally),
+            Err(TunnelError::ConnectionClosed) => Err(RemoteAuthenticationError::LinkClosedRemotely),
+            Err(TunnelError::TimedOut) => Err(RemoteAuthenticationError::TimedOut),
+            Err(TunnelError::TransportError) => Err(RemoteAuthenticationError::TransportError),
+            Ok(stream) => Ok(stream),
+          })
+        },
+        TunnelSide::Connect => {
+          let next: Result<Option<_>, TunnelError> = incoming
+            .streams_ref()
+            .try_next()
+            .instrument(span!(Level::DEBUG, "accept_link"))
+            .await;
 
-pub async fn perform_client_authentication<'a>(
-  client: &'a impl AuthenticationClient,
-  tunnel: &'a mut quinn::NewConnection,
-  shutdown_notifier: &'a triggered::Listener,
-) -> Result<()> {
-  let auth_channel = tunnel
-    .bi_streams
-    .next()
-    .await
-    .map(|i| i.map_err(|e| AnyErr::new(e)))
-    .unwrap_or_else(|| {
-      Err(AnyErr::msg(
-        "Tunnel connection closed remotely before authentication",
-      ))
-    })?;
-  let tunnel_info = TunnelInfo::from_new_connection(&tunnel);
-  let res = client
-    .authenticate_client(
-      Box::new(QuinnTunnelStream::new(auth_channel)),
-      tunnel_info,
-      shutdown_notifier,
-    )
-    .await;
-  tracing::debug!("Authenticated with result {:?}", &res);
-  res
+          match next {
+            Ok(Some(TunnelIncomingType::BiStream(stream))) => Ok(Ok(stream)),
+            _ => Ok(Err(RemoteAuthenticationError::IncomingStreamsClosed)),
+          }
+        }
+      };
+
+      // Without nicer monadic operations, we're stuck doing this weirdness to work with Result<Result<A, B>, C>
+      match auth_channel {
+        Err(local_err) => {
+          warn!(error=?local_err, "AuthenticationError reported during tunnel establishment phase");
+          return Err(local_err);
+        },
+        Ok(Err(remote_err)) => {
+          debug!(error=?remote_err, "Remote authentication failure reported in tunnel establishment phase");
+          return Ok(Err(remote_err));
+        },
+        Ok(Ok(auth_channel)) => Ok(Ok(auth_channel)),
+      }
+    }.instrument(tracing_span_establishment)
+  };
+
+  async move {
+    let establishment: Result<Result<_, RemoteAuthenticationError>, AuthenticationError> =
+      establishment.await;
+    let auth_channel = match establishment {
+      Ok(Ok(auth_channel)) => auth_channel,
+      Ok(Err(e)) => return Ok(Err(e)),
+      Err(e) => return Err(e),
+    };
+    handler
+      .authenticate(Box::new(auth_channel), tunnel_info, shutdown_notifier)
+      .instrument(span!(Level::DEBUG, "authenticator"))
+      .await
+  }
+  .instrument(tracing_span_authentication)
+  .boxed()
 }

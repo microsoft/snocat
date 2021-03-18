@@ -1,11 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::{net::SocketAddr, pin::Pin, sync::Arc};
+use std::{
+  borrow::{Borrow, BorrowMut},
+  net::SocketAddr,
+  pin::Pin,
+  sync::Arc,
+};
 
 use crate::{server::deferred::SnocatClientIdentifier, util::tunnel_stream::WrappedStream};
 use futures::{
   future::{BoxFuture, Either},
-  stream::{BoxStream, Stream, StreamFuture},
+  stream::{BoxStream, LocalBoxStream, Stream, StreamFuture, TryStreamExt},
   FutureExt, StreamExt,
 };
 use quinn::{crypto::Session, generic::RecvStream, ApplicationClose, SendStream};
@@ -21,6 +26,13 @@ pub type ArcTunnelPair<'a> = (ArcTunnel<'a>, TunnelIncoming);
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
+  side: TunnelSide,
+}
+
+impl<S: quinn::crypto::Session> QuinnTunnel<S> {
+  pub fn into_inner(self) -> (quinn::generic::Connection<S>, TunnelSide) {
+    (self.connection, self.side)
+  }
 }
 
 impl<S> Tunnel for QuinnTunnel<S>
@@ -39,13 +51,18 @@ where
       .boxed()
   }
 
-  fn info(&self) -> TunnelInfo {
-    TunnelInfo::Socket(self.connection.remote_address())
+  fn side(&self) -> TunnelSide {
+    self.side
+  }
+
+  fn addr(&self) -> TunnelAddressInfo {
+    TunnelAddressInfo::Socket(self.connection.remote_address())
   }
 }
 
 pub fn from_quinn_endpoint<S>(
   new_connection: quinn::generic::NewConnection<S>,
+  side: TunnelSide,
 ) -> (QuinnTunnel<S>, TunnelIncoming)
 where
   S: quinn::crypto::Session + 'static,
@@ -56,23 +73,23 @@ where
     ..
   } = new_connection;
   let stream_tunnels = bi_streams
-    .map(|r| match r {
-      Ok((send, recv)) => {
-        TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
-      }
-      Err(e) => TunnelIncomingType::Closed(e.into()),
+    .map_ok(|(send, recv)| {
+      TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
     })
+    .map_err(Into::into)
     .boxed();
   (
-    QuinnTunnel { connection },
+    QuinnTunnel { connection, side },
     TunnelIncoming {
       inner: stream_tunnels,
+      side,
     },
   )
 }
 
 pub struct DuplexTunnel {
   channel_to_remote: UnboundedSender<WrappedStream>,
+  side: TunnelSide,
 }
 
 impl Tunnel for DuplexTunnel {
@@ -87,44 +104,77 @@ impl Tunnel for DuplexTunnel {
     )
     .boxed()
   }
+
+  fn side(&self) -> TunnelSide {
+    self.side
+  }
 }
 
-/// Produces two entangled [Tunnel] Pairs
+/// Two entangled ([Tunnel], [TunnelIncoming]) pairs
 /// Each pair maps its [Tunnel] to the opposite member's entangled [TunnelIncoming]
-pub fn duplex() -> (
-  (DuplexTunnel, TunnelIncoming),
-  (DuplexTunnel, TunnelIncoming),
-) {
+pub struct EntangledTunnels {
+  pub listener: (DuplexTunnel, TunnelIncoming),
+  pub connector: (DuplexTunnel, TunnelIncoming),
+}
+
+impl
+  Into<(
+    (DuplexTunnel, TunnelIncoming),
+    (DuplexTunnel, TunnelIncoming),
+  )> for EntangledTunnels
+{
+  fn into(
+    self,
+  ) -> (
+    (DuplexTunnel, TunnelIncoming),
+    (DuplexTunnel, TunnelIncoming),
+  ) {
+    (self.listener, self.connector)
+  }
+}
+
+/// Produces two entangled ([Tunnel], [TunnelIncoming]) pairs
+/// Each pair maps its [Tunnel] to the opposite member's entangled [TunnelIncoming]
+pub fn duplex() -> EntangledTunnels {
   fn duplex_for(
     up: UnboundedSender<WrappedStream>,
     down: UnboundedReceiver<WrappedStream>,
+    side: TunnelSide,
   ) -> (DuplexTunnel, TunnelIncoming) {
     let tunnel = DuplexTunnel {
       channel_to_remote: up,
+      side,
     };
-    let incoming = down
-      .map(TunnelIncomingType::BiStream)
-      .chain(futures::stream::once(futures::future::ready(
-        TunnelIncomingType::Closed(TunnelError::ConnectionClosed),
-      )))
-      .boxed();
-    (tunnel, TunnelIncoming { inner: incoming })
+    let incoming_inner = down.map(TunnelIncomingType::BiStream).map(Ok).boxed();
+    let incoming = TunnelIncoming {
+      inner: incoming_inner,
+      side,
+    };
+    (tunnel, incoming)
   }
   let (left_up, right_down) = mpsc::unbounded_channel::<WrappedStream>();
   let (right_up, left_down) = mpsc::unbounded_channel::<WrappedStream>();
-  let (left, right) = (
-    duplex_for(left_up, left_down),
-    duplex_for(right_up, right_down),
+  let (listener, connector) = (
+    duplex_for(left_up, left_down, TunnelSide::Listen),
+    duplex_for(right_up, right_down, TunnelSide::Connect),
   );
-  (left, right)
+  EntangledTunnels {
+    listener,
+    connector,
+  }
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TunnelError {
+  #[error("Connection closed")]
   ConnectionClosed,
+  #[error("Connection closed by application")]
   ApplicationClosed,
+  #[error("Connection timed out")]
   TimedOut,
+  #[error("Transport error encountered")]
   TransportError,
+  #[error("Connection closed locally")]
   LocallyClosed,
 }
 
@@ -142,19 +192,37 @@ impl From<quinn::ConnectionError> for TunnelError {
   }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum TunnelSide {
+  Connect,
+  Listen,
+}
+
 #[derive(Debug, Clone)]
-pub enum TunnelInfo {
+pub enum TunnelAddressInfo {
   Unidentified,
   Socket(SocketAddr),
   Port(u16),
+}
+
+impl std::string::ToString for TunnelAddressInfo {
+  fn to_string(&self) -> String {
+    match self {
+      Self::Unidentified => String::from("Unidentified"),
+      Self::Socket(socket_addr) => socket_addr.to_string(),
+      Self::Port(port) => port.to_string(),
+    }
+  }
 }
 
 pub type TunnelId = u64;
 pub type TunnelName = SnocatClientIdentifier;
 
 pub trait Tunnel: Send + Sync + Unpin {
-  fn info(&self) -> TunnelInfo {
-    TunnelInfo::Unidentified
+  fn side(&self) -> TunnelSide;
+
+  fn addr(&self) -> TunnelAddressInfo {
+    TunnelAddressInfo::Unidentified
   }
 
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>>;
@@ -162,16 +230,24 @@ pub trait Tunnel: Send + Sync + Unpin {
 
 pub enum TunnelIncomingType {
   BiStream(WrappedStream),
-  Closed(TunnelError),
 }
 
 pub struct TunnelIncoming {
-  inner: BoxStream<'static, TunnelIncomingType>,
+  inner: BoxStream<'static, Result<TunnelIncomingType, TunnelError>>,
+  side: TunnelSide,
 }
 
 impl TunnelIncoming {
-  pub fn streams(self) -> BoxStream<'static, TunnelIncomingType> {
+  pub fn side(&self) -> TunnelSide {
+    self.side
+  }
+
+  pub fn streams(self) -> BoxStream<'static, Result<TunnelIncomingType, TunnelError>> {
     self.inner
+  }
+
+  pub fn streams_ref<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {
+    self.inner.borrow_mut().boxed()
   }
 }
 
@@ -179,14 +255,15 @@ impl TunnelIncoming {
 mod tests {
   use std::sync::Arc;
 
-  use futures::{AsyncReadExt, AsyncWriteExt};
+  use super::EntangledTunnels;
+  use futures::{AsyncReadExt, AsyncWriteExt, TryStreamExt};
   use tokio::io::AsyncWrite;
 
   #[tokio::test]
   async fn duplex_tunnel() {
     use super::Tunnel;
     use futures::StreamExt;
-    let ((a_tun, a_inc), (b_tun, b_inc)) = super::duplex();
+    let ((a_tun, a_inc), (b_tun, b_inc)) = super::duplex().into();
 
     let fut = async move {
       a_tun.open_link().await.unwrap();
@@ -194,13 +271,13 @@ mod tests {
       let count_of_b: u32 = super::TunnelIncoming::streams(b_inc)
         .fold(0, async move |memo, _stream| memo + 1)
         .await;
-      assert_eq!(count_of_b, 2); // stream then ConnectionClosed event
+      assert_eq!(count_of_b, 1);
       b_tun.open_link().await.unwrap();
       drop(b_tun); // Dropping the B tunnel ends the incoming streams for A
       let count_of_a: u32 = super::TunnelIncoming::streams(a_inc)
         .fold(0, async move |memo, _stream| memo + 1)
         .await;
-      assert_eq!(count_of_a, 2); // stream then ConnectionClosed event
+      assert_eq!(count_of_a, 1);
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), fut)
       .await
@@ -210,11 +287,14 @@ mod tests {
   #[tokio::test]
   async fn duplex_tunnel_concurrency() {
     use super::{Tunnel, TunnelIncomingType};
-    use crate::util::tunnel_stream::TunnelStream;
+    use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
     use futures::{future, FutureExt, StreamExt};
     use std::time::Duration;
     use tokio::{sync::Mutex, time::timeout};
-    let (server, client) = super::duplex();
+    let EntangledTunnels {
+      listener: server,
+      connector: client,
+    } = super::duplex();
 
     // For this test, the server will listen for two incoming streams,
     // echo the content down new outgoing streams, and stop listening.
@@ -227,22 +307,23 @@ mod tests {
       let tun_ref = &tun;
       inc
         .streams()
-        .take(2) // Expect two incoming streams in a row
-        .for_each_concurrent(None, async move |stream| {
-          let incoming_stream = match stream {
-            TunnelIncomingType::Closed(_) => {
-              panic!("Test connection closed before producing 2 streams")
-            }
-            TunnelIncomingType::BiStream(stream) => stream,
-          };
-          let (mut incoming_downlink, _incoming_uplink) = tokio::io::split(incoming_stream);
+        .take(2)
+        .try_filter_map(|x| {
+          future::ready(match x {
+            TunnelIncomingType::BiStream(stream) => Ok(Some(stream)),
+          })
+        })
+        .try_for_each_concurrent(None, async move |stream: WrappedStream| {
+          let (mut incoming_downlink, _incoming_uplink) = tokio::io::split(stream);
           let (_outgoing_downlink, mut outgoing_uplink) =
             tokio::io::split(tun_ref.open_link().await.unwrap());
           crate::util::proxy_tokio_stream(&mut incoming_downlink, &mut outgoing_uplink)
             .await
             .unwrap();
+          Ok(())
         })
-        .await;
+        .await
+        .unwrap();
     };
     // The client will attempt to make 3 streams, and will expect that the third will produce no result
     let fut_client = async move {
@@ -273,11 +354,11 @@ mod tests {
           let inc = inc_streams
             .lock()
             .await
-            .next()
+            .try_next()
             .await
+            .expect("Server must not close before sending a stream")
             .expect("Server must produce one stream per stream sent");
           let mut downlink = match inc {
-            TunnelIncomingType::Closed(_) => panic!("Server closed before responding to stream"),
             TunnelIncomingType::BiStream(stream) => stream,
           };
           // We've received a stream, wait until B receives its own before dropping our write-end
@@ -313,11 +394,11 @@ mod tests {
           let inc = inc_streams
             .lock()
             .await
-            .next()
+            .try_next()
             .await
+            .expect("Server closed before responding to stream")
             .expect("Server must produce one stream per stream sent");
           let mut downlink = match inc {
-            TunnelIncomingType::Closed(_) => panic!("Server closed before responding to stream"),
             TunnelIncomingType::BiStream(stream) => stream,
           };
           drop(s);
@@ -340,8 +421,8 @@ mod tests {
           println!("c1 (skipped)\nc2 (skipped)");
           println!("c3");
           step_3.wait().await;
-          let last = inc_streams.lock().await.next().await.unwrap();
-          assert!(matches!(last, TunnelIncomingType::Closed(_)));
+          let last = inc_streams.lock().await.try_next().await.unwrap();
+          assert!(matches!(last, None));
           println!("c4");
           step_4.wait().await;
         };

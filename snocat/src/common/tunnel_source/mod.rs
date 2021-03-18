@@ -5,7 +5,7 @@
 use futures::stream::{BoxStream, Stream, StreamExt, TryStreamExt};
 use std::{net::SocketAddr, pin::Pin, task::Poll};
 
-use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnelPair};
+use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnelPair, TunnelSide};
 
 pub struct QuinnListenEndpoint<Session: quinn::crypto::Session> {
   bind_addr: SocketAddr,
@@ -49,7 +49,7 @@ where
     match res {
       None => Poll::Ready(None),
       Some(new_connection) => {
-        let (tunnel, incoming) = from_quinn_endpoint(new_connection);
+        let (tunnel, incoming) = from_quinn_endpoint(new_connection, TunnelSide::Listen);
         Poll::Ready(Some((Box::new(tunnel), incoming)))
       }
     }

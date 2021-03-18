@@ -61,7 +61,7 @@ impl SnocatClientIdentifier {
 
 impl std::fmt::Debug for SnocatClientIdentifier {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "(snocat ({}))", self.0)
+    f.debug_struct("Snocat").field("Id", &self.0).finish()
   }
 }
 

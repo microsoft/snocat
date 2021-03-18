@@ -7,7 +7,7 @@ use futures::{
 use std::{any::Any, sync::Arc};
 use tracing::Instrument;
 use triggered::Listener;
-use tunnel::TunnelName;
+use tunnel::{TunnelError, TunnelName};
 
 use crate::common::{
   authentication::{self, AuthenticationHandler},
@@ -156,9 +156,12 @@ impl From<TunnelNamingError> for TunnelLifecycleError {
   }
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 enum RequestProcessingError {
+  #[error("Protocol version mismatch")]
   UnsupportedProtocolVersion,
+  #[error("Tunnel error encountered: {0}")]
+  TunnelError(TunnelError),
 }
 
 impl From<RequestProcessingError> for TunnelLifecycleError {
@@ -266,17 +269,15 @@ where
     let negotiator = Arc::new(NegotiationService::new(service_registry));
     incoming
       .streams()
-      .take_while(|s| future::ready(!matches!(s, tunnel::TunnelIncomingType::Closed(_))))
       // Stop accepting new requests after a graceful shutdown is requested
       .take_until(shutdown.clone())
+      .map_err(|e: TunnelError| RequestProcessingError::TunnelError(e))
       .scan((negotiator, shutdown), |(negotiator, shutdown), link| {
-        let res = (Arc::clone(&*negotiator), shutdown.clone(), link);
-        let res: Result<_, RequestProcessingError> = Ok(res);
+        let res = link.map(|content| (Arc::clone(&*negotiator), shutdown.clone(), content));
         future::ready(Some(res))
       })
       .try_for_each_concurrent(None, |(negotiator, shutdown, link)| async move {
         match link {
-          tunnel::TunnelIncomingType::Closed(_) => unreachable!("We pre-filter this out"),
           link => Self::handle_incoming_request(id, link, negotiator, shutdown).await,
         }
       })
@@ -295,7 +296,6 @@ where
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
   {
     match link {
-      tunnel::TunnelIncomingType::Closed(_) => panic!("\"Closed\" types are not supported"),
       tunnel::TunnelIncomingType::BiStream(link) => {
         Self::handle_incoming_request_bistream(id, link, negotiator, shutdown).await
       }

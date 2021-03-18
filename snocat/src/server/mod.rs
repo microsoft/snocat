@@ -2,7 +2,11 @@
 // Licensed under the MIT license OR Apache 2.0
 //! Types for building an Snocat server and accepting, authenticating, and routing connections
 
-use crate::common::{authentication, MetaStreamHeader};
+use crate::common::{
+  authentication,
+  protocol::tunnel::{Tunnel, TunnelIncomingType, TunnelSide},
+  MetaStreamHeader,
+};
 use crate::server::deferred::{
   ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
 };
@@ -112,7 +116,7 @@ async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
 
 type ProxyConnectionOutput = (MetaStreamHeader, Box<dyn TunnelStream>);
 
-trait ProxyConnectionProvider: Send + Sync + Clone + std::fmt::Debug {
+trait ProxyConnectionProvider: Send + Sync + std::fmt::Debug {
   fn open_connection(&self, peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>>;
 }
 
@@ -126,13 +130,12 @@ impl<T: ProxyConnectionProvider> ProxyConnectionProvider for Arc<T> {
   }
 }
 
-#[derive(Clone)]
 struct BasicProxyConnectionProvider {
-  conn: quinn::Connection,
+  conn: Box<dyn Tunnel + Send + Sync + 'static>,
 }
 
 impl BasicProxyConnectionProvider {
-  pub fn new(conn: quinn::Connection) -> BasicProxyConnectionProvider {
+  pub fn new(conn: Box<dyn Tunnel + Send + Sync + 'static>) -> BasicProxyConnectionProvider {
     BasicProxyConnectionProvider { conn }
   }
 }
@@ -140,8 +143,8 @@ impl BasicProxyConnectionProvider {
 impl ProxyConnectionProvider for BasicProxyConnectionProvider {
   fn open_connection(&self, _peer_address: SocketAddr) -> BoxFuture<Result<ProxyConnectionOutput>> {
     async move {
-      let streams = self.conn.open_bi().await?;
-      let boxed: Box<dyn TunnelStream> = Box::new(QuinnTunnelStream::new(streams));
+      let stream = self.conn.open_link().await?;
+      let boxed: Box<dyn TunnelStream> = Box::new(stream);
       Ok((MetaStreamHeader::new(), boxed))
     }
     .boxed()
@@ -219,88 +222,88 @@ impl TcpTunnelManager {
   }
 
   /// Connection lifetime handler for a single tunnel; multiple tunnels will run concurrently.
-  async fn handle_connection(
-    &self,
-    z: &mut gen_z::Yielder<TunnelServerEvent>,
-    mut tunnel: quinn::NewConnection,
+  fn handle_connection<'a>(
+    &'a self,
+    z: &'a mut gen_z::Yielder<TunnelServerEvent>,
+    tunnel: quinn::NewConnection,
     shutdown_notifier: triggered::Listener,
-  ) -> Result<()> {
+  ) -> BoxFuture<'a, Result<()>> {
     // Capture copies of items needed from &self before the first await
     let bound_ports = self.bound_ports.clone();
     let bind_ip = self.bind_ip;
     if shutdown_notifier.is_triggered() {
-      return Err(AnyErr::msg("Connection aborted due to pre-closure"));
+      return future::ready(Err(AnyErr::msg("Connection aborted due to pre-closure"))).boxed();
     }
 
-    let remote_addr = tunnel.connection.remote_address();
-    let id =
-      authentication::perform_authentication(&self.authenticator, &mut tunnel, &shutdown_notifier)
+    async move {
+      let remote_addr = tunnel.connection.remote_address();
+      let (mut tunnel, mut incoming) = crate::common::protocol::tunnel::from_quinn_endpoint(tunnel, TunnelSide::Listen);
+      let id =
+        authentication::perform_authentication(&self.authenticator, &mut tunnel, &mut incoming, &shutdown_notifier)
+          .await??;
+      z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
+        .await;
+      // TODO: register a connection *only after* session authentication (make an async authn trait)
+      let next_port: u16 = self.bound_ports.allocate().await?;
+      let lifetime_handler_span =
+        tracing::debug_span!("lifetime handler", id=?id, tcp_port=next_port);
+      finally_async(
+        async move || -> Result<(), AnyErr> {
+          let bind_addr = SocketAddr::new(bind_ip, next_port);
+          tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+          let mut listener = TcpListener::bind(bind_addr).await?;
+          tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+
+          let connection_provider = BasicProxyConnectionProvider::new(Box::new(tunnel));
+          let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
+          streams.push(
+            accept_loop(&mut listener, bind_addr, connection_provider)
+              .fuse()
+              .into_stream()
+              .boxed(),
+          );
+          // Watch for SIGINT and close the acceptance loop
+          // This is a bit early of placement for this check- Live connections may be abruptly closed by
+          // this design, and the connection handlers themselves should be watching for shutdown notifications.
+          // The accept loop should gracefully handle its own shutdown notification requests.
+          // TODO: Pass shutdown_notifier as a parameter instead, and add a max-duration hard-timeout here
+          streams.push(
+            shutdown_notifier
+              .map(|_| -> Result<(), AnyErr> {
+                Err(AnyErr::msg("Shutdown aborting acceptance loop"))
+              })
+              .into_stream()
+              .boxed(),
+          );
+          // Waiting for errors on uni-streams allows us to watch for a peer disconnection
+          streams.push(
+            incoming.streams()
+              .map(|_| ())
+              .filter(|_| future::ready(false))
+              .chain(stream::once(future::ready(())))
+              .take(1)
+              .map(|_| Err(anyhow::Error::msg("Peer disconnected")))
+              .fuse()
+              .boxed(),
+          );
+
+          stream::select_all(streams)
+            .boxed()
+            .next()
+            .await
+            .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))?;
+          Ok(())
+        },
+        |_| async move {
+          // On success or failure, unbind port
+          bound_ports.free(next_port).await.map(|_| ())
+        }
+      )
+        .instrument(lifetime_handler_span)
         .await?;
-    z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
-      .await;
-    // TODO: register a connection *only after* session authentication (make an async authn trait)
-    let next_port: u16 = self.bound_ports.allocate().await?;
-    let lifetime_handler_span =
-      tracing::debug_span!("lifetime handler", id=?id, tcp_port=next_port);
-    finally_async(
-      async move || -> Result<(), AnyErr> {
-        let bind_addr = SocketAddr::new(bind_ip, next_port);
-        tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
-        let mut listener = TcpListener::bind(bind_addr).await?;
-        tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
-        let quinn::NewConnection {
-          connection: conn,
-          uni_streams: uni,
-          ..
-        } = tunnel;
 
-        let connection_provider = BasicProxyConnectionProvider::new(conn);
-        let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
-        streams.push(
-          accept_loop(&mut listener, bind_addr, connection_provider)
-            .fuse()
-            .into_stream()
-            .boxed(),
-        );
-        // Watch for SIGINT and close the acceptance loop
-        // This is a bit early of placement for this check- Live connections may be abruptly closed by
-        // this design, and the connection handlers themselves should be watching for shutdown notifications.
-        // The accept loop should gracefully handle its own shutdown notification requests.
-        // TODO: Pass shutdown_notifier as a parameter instead, and add a max-duration hard-timeout here
-        streams.push(
-          shutdown_notifier
-            .map(|_| -> Result<(), AnyErr> {
-              Err(AnyErr::msg("Shutdown aborting acceptance loop"))
-            })
-            .into_stream()
-            .boxed(),
-        );
-        // Waiting for errors on uni-streams allows us to watch for a peer disconnection
-        streams.push(
-          uni
-            .filter_map(async move |x| x.err())
-            .take(1)
-            .map(|x| Err(x).context("Peer disconnected"))
-            .fuse()
-            .boxed(),
-        );
-
-        stream::select_all(streams)
-          .boxed()
-          .next()
-          .await
-          .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))?;
-        Ok(())
-      },
-      |_| async move {
-        // On success or failure, unbind port
-        bound_ports.free(next_port).await.map(|_| ())
-      }
-    )
-      .instrument(lifetime_handler_span)
-      .await?;
-
-    Ok(())
+      Ok(())
+    }.boxed()
   }
 }
 

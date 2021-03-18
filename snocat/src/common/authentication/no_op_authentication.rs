@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use super::traits::*;
+use crate::common::protocol::tunnel::TunnelName;
 #[warn(unused_imports)]
-use crate::server::deferred::SnocatClientIdentifier;
 use crate::util::tunnel_stream::TunnelStream;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
@@ -33,23 +33,12 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<SnocatClientIdentifier>> {
+  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
     async move {
-      let peer_addr = tunnel_info.remote_address();
-      let id = SnocatClientIdentifier::new(peer_addr.to_string());
-      Ok(id)
+      let peer_addr = tunnel_info.addr;
+      let id = TunnelName::new(peer_addr.to_string());
+      Ok(Ok(id))
     }
     .boxed()
-  }
-}
-
-impl AuthenticationClient for NoOpAuthenticationHandler {
-  fn authenticate_client<'a>(
-    &'a self,
-    _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
-    _tunnel: TunnelInfo,
-    _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<()>> {
-    futures::future::ready(Ok(())).boxed()
   }
 }
