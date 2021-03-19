@@ -15,7 +15,10 @@ use crate::common::{
     negotiation::{self, NegotiationError, NegotiationService},
     request_handler::{RequestClientHandler, RequestHandlingError},
     traits::{ServiceRegistry, TunnelNamingError, TunnelRegistrationError, TunnelRegistry},
-    tunnel::{self, ArcTunnel, ArcTunnelPair, BoxedTunnelPair, TunnelId, TunnelIncomingType},
+    tunnel::{
+      self, id::TunnelIDGenerator, ArcTunnel, ArcTunnelPair, BoxedTunnelPair, TunnelId,
+      TunnelIncomingType,
+    },
     Client, Request, Response, RouteAddress, Router, RoutingError, ServiceError,
   },
 };
@@ -30,6 +33,7 @@ pub struct ModularServer {
   router: Arc<dyn Router + Send + Sync + 'static>,
   request_handler: Arc<RequestClientHandler>,
   authentication_handler: Arc<dyn AuthenticationHandler + Send + Sync + 'static>,
+  tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 }
 
 impl ModularServer {
@@ -49,13 +53,6 @@ impl ModularServer {
   }
 }
 
-struct Baggage<T> {
-  id: u64,
-  item: T,
-  server: Arc<ModularServer>,
-  shutdown_request_listener: Listener,
-}
-
 impl ModularServer
 where
   Self: 'static,
@@ -64,8 +61,8 @@ where
     service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
     tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
     router: Arc<dyn Router + Send + Sync + 'static>,
-    // tunnel_source: Arc<TunnelSource>,
     authentication_handler: Arc<dyn AuthenticationHandler + Send + Sync + 'static>,
+    tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
   ) -> Self {
     Self {
       request_handler: Arc::new(RequestClientHandler::new(
@@ -75,8 +72,8 @@ where
       service_registry,
       tunnel_registry,
       router,
-      // tunnel_source,
       authentication_handler,
+      tunnel_id_generator,
     }
   }
 
@@ -99,13 +96,9 @@ where
     // This also generates a u64 as an ID for this tunnel, using a naive interlocked/atomic counter
     // TODO: Replace id generation with a module in the server
     let pipeline = tunnel_source.scan(
-      (
-        this,
-        shutdown_request_listener,
-        std::sync::atomic::AtomicU64::new(0u64),
-      ),
-      |(this, shutdown_request_listener, current_id), tunnel_pair| {
-        let id = current_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      (this, shutdown_request_listener),
+      |(this, shutdown_request_listener), tunnel_pair| {
+        let id = this.tunnel_id_generator.next();
         let tunnel_pair: ArcTunnelPair = (tunnel_pair.0.into(), tunnel_pair.1);
         future::ready(Some((
           tunnel_pair,
@@ -186,7 +179,7 @@ where
         let tunnel = Arc::clone(&tunnel);
         let tunnel_registry = Arc::clone(&server.tunnel_registry);
         Self::register_tunnel(id, tunnel, tunnel_registry)
-          .instrument(tracing::span!(tracing::Level::DEBUG, "registration", id))
+          .instrument(tracing::span!(tracing::Level::DEBUG, "registration", ?id))
       }.await?;
 
       // From here on, any failure must trigger attempted deregistration of the tunnel,
@@ -202,7 +195,7 @@ where
           Err(e)
         }
       }
-    }.instrument(tracing::span!(tracing::Level::DEBUG, "tunnel", id))
+    }.instrument(tracing::span!(tracing::Level::DEBUG, "tunnel", ?id))
   }
 
   async fn registered_tunnel_lifecycle(
@@ -217,7 +210,7 @@ where
       let server = Arc::clone(&server);
       server
         .authenticate_tunnel((tunnel, incoming), &shutdown)
-        .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", id))
+        .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", ?id))
     };
 
     let (tunnel_name, (tunnel, incoming)) = tunnel_authentication
@@ -230,7 +223,7 @@ where
       Self::name_tunnel(id, tunnel_name, tunnel_registry).instrument(tracing::span!(
         tracing::Level::DEBUG,
         "naming",
-        id
+        ?id
       ))
     }
     .await?;
@@ -239,7 +232,7 @@ where
     {
       let service_registry = Arc::clone(&server.service_registry);
       Self::handle_incoming_requests(id, (tunnel, incoming), service_registry, shutdown).instrument(
-        tracing::span!(tracing::Level::DEBUG, "request_handling", id),
+        tracing::span!(tracing::Level::DEBUG, "request_handling", ?id),
       )
     }
     .await?;
@@ -370,7 +363,7 @@ where
       .register_tunnel(id, None, tunnel)
       .map_err(|e| match e {
         TunnelRegistrationError::IdOccupied(id) => {
-          tracing::error!(id, "ID occupied; dropping tunnel");
+          tracing::error!(?id, "ID occupied; dropping tunnel");
           TunnelRegistrationError::IdOccupied(id)
         }
         TunnelRegistrationError::NameOccupied(name) => {
@@ -396,7 +389,7 @@ where
         // If a tunnel registry wishes to keep a tunnel alive past a naming clash, it
         // must rename the existing tunnel then name the new one, and report Ok here.
         TunnelNamingError::NameOccupied(name) => {
-          tracing::error!(id, "Name reports as occupied; dropping tunnel");
+          tracing::error!(?id, "Name reports as occupied; dropping tunnel");
           TunnelNamingError::NameOccupied(name)
         }
         TunnelNamingError::TunnelNotRegistered(id) => {

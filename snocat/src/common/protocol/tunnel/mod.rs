@@ -19,10 +19,15 @@ use tokio::{
   sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
+pub mod id;
+
+pub use self::id::TunnelId;
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnelPair<'a> = (ArcTunnel<'a>, TunnelIncoming);
+
+pub type TunnelName = SnocatClientIdentifier;
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
@@ -214,9 +219,6 @@ impl std::string::ToString for TunnelAddressInfo {
     }
   }
 }
-
-pub type TunnelId = u64;
-pub type TunnelName = SnocatClientIdentifier;
 
 pub trait Tunnel: Send + Sync + Unpin {
   fn side(&self) -> TunnelSide;
