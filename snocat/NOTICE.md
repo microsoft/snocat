@@ -10,36 +10,18 @@ their own copyright notices and license terms:
 
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
 * [anyhow v1.0.38](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
-* [async-attributes v1.1.2](https://github.com/async-rs/async-attributes) - MIT OR Apache-2.0
-* [async-channel v1.6.1](https://github.com/smol-rs/async-channel) - Apache-2.0 OR MIT
-* [async-executor v1.4.0](https://github.com/stjepang/async-executor) - Apache-2.0 OR MIT
-* [async-global-executor v1.4.3](https://github.com/Keruspe/async-global-executor) - Apache-2.0 OR MIT
-* [async-io v1.3.1](https://github.com/stjepang/async-io) - Apache-2.0 OR MIT
-* [async-mutex v1.4.0](https://github.com/stjepang/async-lock) - Apache-2.0 OR MIT
-* [async-std v1.7.0](https://github.com/async-rs/async-std) - Apache-2.0/MIT
 * [async-stream-impl v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
 * [async-stream v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
-* [async-task v4.0.3](https://github.com/stjepang/async-task) - Apache-2.0/MIT
 * [async-trait v0.1.48](https://github.com/dtolnay/async-trait) - MIT OR Apache-2.0
-* [atomic-waker v1.0.0](https://github.com/stjepang/atomic-waker) - Apache-2.0 OR MIT
 * [autocfg v1.0.1](https://github.com/cuviper/autocfg) - Apache-2.0 OR MIT
 * [base64 v0.13.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
-* [blocking v1.0.2](https://github.com/stjepang/blocking) - Apache-2.0 OR MIT
 * [byteorder v1.4.3](https://github.com/BurntSushi/byteorder) - Unlicense OR MIT
-* [bytes v0.5.6](https://github.com/tokio-rs/bytes) - MIT
 * [bytes v1.0.1](https://github.com/tokio-rs/bytes) - MIT
-* [cache-padded v1.1.1](https://github.com/stjepang/cache-padded) - Apache-2.0 OR MIT
 * [cc v1.0.67](https://github.com/alexcrichton/cc-rs) - MIT/Apache-2.0
-* [cfg-if v0.1.10](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [cfg-if v1.0.0](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
-* [concurrent-queue v1.2.2](https://github.com/stjepang/concurrent-queue) - Apache-2.0 OR MIT
-* [crossbeam-utils v0.8.3](https://github.com/crossbeam-rs/crossbeam) - MIT OR Apache-2.0
 * [ct-logs v0.8.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
-* [ctor v0.1.19](https://github.com/mmastrac/rust-ctor) - Apache-2.0 OR MIT
 * [either v1.6.1](https://github.com/bluss/either) - MIT/Apache-2.0
-* [event-listener v2.5.1](https://github.com/stjepang/event-listener) - Apache-2.0 OR MIT
-* [fastrand v1.4.0](https://github.com/stjepang/fastrand) - Apache-2.0 OR MIT
 * [ffi-support v0.4.2](https://github.com/mozilla/application-services) - Apache-2.0 / MIT
 * [fixedbitset v0.2.0](https://github.com/bluss/fixedbitset) - MIT/Apache-2.0
 * [fnv v1.0.7](https://github.com/servo/rust-fnv) - Apache-2.0 / MIT
@@ -47,7 +29,6 @@ their own copyright notices and license terms:
 * [futures-core v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-executor v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-io v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-lite v1.11.3](https://github.com/stjepang/futures-lite) - Apache-2.0 OR MIT
 * [futures-macro v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-sink v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-task v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
@@ -66,7 +47,6 @@ their own copyright notices and license terms:
 * [indexmap v1.6.2](https://github.com/bluss/indexmap) - Apache-2.0/MIT
 * [itertools v0.9.0](https://github.com/bluss/rust-itertools) - MIT/Apache-2.0
 * [itoa v0.4.7](https://github.com/dtolnay/itoa) - MIT OR Apache-2.0
-* [kv-log-macro v1.0.7](https://github.com/yoshuawuyts/kv-log-macro) - MIT OR Apache-2.0
 * [lazy_static v1.4.0](https://github.com/rust-lang-nursery/lazy-static.rs) - MIT/Apache-2.0
 * [libc v0.2.90](https://github.com/rust-lang/libc) - MIT OR Apache-2.0
 * [log v0.4.14](https://github.com/rust-lang/log) - MIT OR Apache-2.0
@@ -74,21 +54,17 @@ their own copyright notices and license terms:
 * [memchr v2.3.4](https://github.com/BurntSushi/rust-memchr) - Unlicense/MIT
 * [mio v0.7.10](https://github.com/tokio-rs/mio) - MIT
 * [multimap v0.8.3](https://github.com/havarnov/multimap) - MIT/Apache-2.0
-* [nb-connect v1.0.3](https://github.com/smol-rs/nb-connect) - Apache-2.0 OR MIT
 * [num_cpus v1.13.0](https://github.com/seanmonstar/num_cpus) - MIT/Apache-2.0
 * [num-integer v0.1.44](https://github.com/rust-num/num-integer) - MIT OR Apache-2.0
 * [num-traits v0.2.14](https://github.com/rust-num/num-traits) - MIT OR Apache-2.0
 * [once_cell v1.7.2](https://github.com/matklad/once_cell) - MIT OR Apache-2.0
 * [openssl-probe v0.1.2](https://github.com/alexcrichton/openssl-probe) - MIT/Apache-2.0
-* [parking v2.0.0](https://github.com/stjepang/parking) - Apache-2.0 OR MIT
 * [percent-encoding v2.1.0](https://github.com/servo/rust-url/) - MIT/Apache-2.0
 * [petgraph v0.5.1](https://github.com/petgraph/petgraph) - MIT/Apache-2.0
 * [pin-project-internal v1.0.5](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
-* [pin-project-lite v0.1.12](https://github.com/taiki-e/pin-project-lite) - Apache-2.0 OR MIT
 * [pin-project-lite v0.2.6](https://github.com/taiki-e/pin-project-lite) - Apache-2.0 OR MIT
 * [pin-project v1.0.5](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
 * [pin-utils v0.1.0](https://github.com/rust-lang-nursery/pin-utils) - MIT OR Apache-2.0
-* [polling v2.0.2](https://github.com/stjepang/polling) - Apache-2.0 OR MIT
 * [ppv-lite86 v0.2.10](https://github.com/cryptocorrosion/cryptocorrosion) - MIT/Apache-2.0
 * [proc-macro2 v1.0.24](https://github.com/alexcrichton/proc-macro2) - MIT OR Apache-2.0
 * [proc-macro-hack v0.5.19](https://github.com/dtolnay/proc-macro-hack) - MIT OR Apache-2.0
@@ -132,7 +108,6 @@ their own copyright notices and license terms:
 * [tokio-macros v1.1.0](https://github.com/tokio-rs/tokio) - MIT
 * [tokio-stream v0.1.4](https://github.com/tokio-rs/tokio) - MIT
 * [tokio-util v0.6.4](https://github.com/tokio-rs/tokio) - MIT
-* [tokio v0.2.25](https://github.com/tokio-rs/tokio) - MIT
 * [tokio v1.3.0](https://github.com/tokio-rs/tokio) - MIT
 * [tonic-build v0.4.1](https://github.com/hyperium/tonic) - MIT
 * [tonic v0.4.1](https://github.com/hyperium/tonic) - MIT
@@ -151,9 +126,6 @@ their own copyright notices and license terms:
 * [unicode-segmentation v1.7.1](https://github.com/unicode-rs/unicode-segmentation) - MIT/Apache-2.0
 * [unicode-xid v0.2.1](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
-* [value-bag v1.0.0-alpha.6](https://github.com/sval-rs/value-bag) - Apache-2.0 OR MIT
-* [vec-arena v1.0.0](https://github.com/stjepang/vec-arena) - Apache-2.0 OR MIT
-* [waker-fn v1.1.0](https://github.com/stjepang/waker-fn) - Apache-2.0 OR MIT
 * [want v0.3.0](https://github.com/seanmonstar/want) - MIT
 * [webpki v0.21.4](https://github.com/briansmith/webpki) - (**Nonstandard License**, see project link)
 * [which v4.0.2](https://github.com/harryfei/which-rs.git) - MIT
