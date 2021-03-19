@@ -67,7 +67,7 @@ pub async fn write_framed_json<TStream: tokio::io::AsyncWrite + Unpin, TInput: s
 mod tests {
   use crate::util::framed::{read_frame_vec, read_framed_json, write_frame, write_framed_json};
 
-  #[async_std::test]
+  #[tokio::test]
   async fn stream_framed_roundtrip() {
     use super::{read_frame_vec, write_frame};
     use ::std::io::Seek;
@@ -113,7 +113,7 @@ mod tests {
     assert_eq!(buffer.len(), std::mem::size_of::<u32>());
   }
 
-  #[async_std::test]
+  #[tokio::test]
   async fn stream_json_serialization_roundtrip() {
     let buffer: Vec<u8> = Vec::new();
     let mut cursor = std::io::Cursor::new(buffer);

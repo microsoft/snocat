@@ -1,19 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use anyhow::{Error as AnyErr, Result};
-use async_std::net::TcpStream;
-use futures::future::*;
-use futures::io::{AsyncRead, AsyncWrite};
-use futures::stream::{self, SelectAll, Stream, StreamExt};
-use futures::AsyncReadExt;
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
+use futures::{
+  future::*,
+  io::{AsyncRead, AsyncWrite},
+  stream::{self, SelectAll, Stream, StreamExt},
+  AsyncReadExt,
 };
-use std::boxed::Box;
-use std::path::Path;
-use std::task::{Context, Poll};
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{
+  boxed::Box,
+  error::Error,
+  net::SocketAddr,
+  path::Path,
+  sync::Arc,
+  task::{Context, Poll},
+};
 
 pub fn merge_streams<'a, T: 'a>(
   source: impl futures::stream::Stream<Item = stream::BoxStream<'a, T>> + 'a + std::marker::Send,

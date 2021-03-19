@@ -8,8 +8,6 @@ use crate::util::{
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
 };
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
-use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use async_std::sync::{Arc, Mutex};
 use futures::future::*;
 use futures::{
   future, pin_mut, select_biased,
@@ -22,6 +20,7 @@ use quinn::{
 };
 use serde::{Deserializer, Serializer};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::{
   boxed::Box,
   path::{Path, PathBuf},

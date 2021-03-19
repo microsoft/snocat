@@ -1,29 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
-use futures::future::*;
-use futures::*;
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
-};
+use futures::{future::*, *};
 use snocat::{
-  common::protocol::tunnel::{from_quinn_endpoint, Tunnel, TunnelIncomingType, TunnelSide},
-  util::{framed::read_framed_json, tunnel_stream::WrappedStream},
+  common::{
+    authentication::SimpleAckAuthenticationHandler,
+    protocol::tunnel::{from_quinn_endpoint, Tunnel, TunnelIncomingType, TunnelSide},
+    MetaStreamHeader,
+  },
+  util::{self, framed::read_framed_json, tunnel_stream::WrappedStream},
 };
-use snocat::{
-  common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader},
-  util::{self, validators::parse_socketaddr},
-};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::{
-  boxed::Box,
-  path::{Path, PathBuf},
-  pin::Pin,
-  sync::Arc,
-  task::{Context, Poll},
-};
-use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::{path::PathBuf, sync::Arc};
+use tokio::net::TcpStream;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ClientArgs {

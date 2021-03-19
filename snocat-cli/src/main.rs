@@ -4,27 +4,12 @@
 #![feature(async_closure)]
 #![feature(label_break_value)]
 #![allow(dead_code)]
-#![allow(unused_imports)]
+#![warn(unused_imports)]
 
-use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
+use anyhow::Result;
 use clap::{App, Arg, SubCommand};
-// #[macro_use]
-use async_std::io::{BufReader, BufWriter};
-use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use async_std::prelude::*;
-use futures::future::Either;
-use futures::{self, Future, FutureExt, *};
-use quinn::TransportConfig;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::{
-  path::{Path, PathBuf},
-  sync::Arc,
-  task::{Context, Poll},
-};
-use tracing::{error, info, info_span, trace};
-use tracing_futures::Instrument as _;
-
-use snocat::{common, util};
+use snocat::util;
+use std::path::Path;
 
 use util::validators::{
   parse_ipaddr, parse_port_range, parse_socketaddr, validate_existing_file, validate_ipaddr,
@@ -213,9 +198,4 @@ async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-  #[async_std::test]
-  async fn stream_one_byte() {
-    use async_std;
-  }
-}
+mod tests {}

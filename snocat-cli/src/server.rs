@@ -1,39 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use crate::util::{
-  self,
-  validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
-};
-use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
-use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use async_std::sync::{Arc, Mutex};
-use futures::future::*;
+use crate::util;
+use anyhow::{Context as AnyhowContext, Result};
 use futures::{
   future,
   future::FutureExt,
-  pin_mut, select_biased,
-  stream::{self, Stream, StreamExt},
+  stream::{self, StreamExt},
 };
-use gen_z::gen_z as generate_stream;
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
-};
-use snocat::common::{authentication::SimpleAckAuthenticationHandler, MetaStreamHeader};
-use snocat::server::{
-  deferred::{
-    ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
-  },
-  TcpTunnelManager,
-};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::{
-  boxed::Box,
-  path::{Path, PathBuf},
-  pin::Pin,
-  task::{Context, Poll},
-};
-use tracing::{info, instrument, trace};
+use quinn::TransportConfig;
+use snocat::common::authentication::SimpleAckAuthenticationHandler;
+use snocat::server::{deferred::ConcurrentDeferredTunnelServer, TcpTunnelManager};
+use std::{boxed::Box, path::PathBuf, sync::Arc};
 
 /// Parameters used to run an Snocat server binding TCP connections
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -79,8 +56,9 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     .and_then(async move |connecting| {
       // When a new connection arrives, establish the connection formally, and pass it on
       let tunnel = connecting.await?; // Performs TLS handshake and migration
-                                      // TODO: Protocol header can occur here, or as part of the later "binding" phase
-                                      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
+
+      // TODO: Protocol header can occur here, or as part of the later "binding" phase
+      // It can also be built as an isomorphic middleware intercepting a TryStream of NewConnection
       Ok(tunnel)
     })
     .inspect_err(|e| {

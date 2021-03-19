@@ -86,7 +86,6 @@ async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
   addr: SocketAddr,
   proxy_provider: Provider,
 ) -> Result<()> {
-  use async_std::prelude::*;
   use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
   listener
     .map_err(|e| -> AnyErr { e.into() })
