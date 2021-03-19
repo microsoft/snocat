@@ -40,6 +40,7 @@ use std::{
 };
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::Mutex;
+use tokio_stream::wrappers::TcpListenerStream;
 use tracing::{info, instrument, trace};
 use tracing_futures::Instrument;
 
@@ -81,14 +82,13 @@ async fn handle_connection<Provider: ProxyConnectionProvider>(
 // Accept connections from a TCP socket and forward them to new connections over Snocat
 // Watch for failures on BuildConnection, which is responsible for timeout logic if needed
 async fn accept_loop<Provider: ProxyConnectionProvider + 'static>(
-  listener: &mut TcpListener,
+  listener: &mut TcpListenerStream,
   addr: SocketAddr,
   proxy_provider: Provider,
 ) -> Result<()> {
   use async_std::prelude::*;
   use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
   listener
-    .incoming()
     .map_err(|e| -> AnyErr { e.into() })
     .scan(
       (Arc::new(proxy_provider), addr),
@@ -252,7 +252,7 @@ impl TcpTunnelManager {
         async move || -> Result<(), AnyErr> {
           let bind_addr = SocketAddr::new(bind_ip, next_port);
           tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
-          let mut listener = TcpListener::bind(bind_addr).await?;
+          let mut listener = TcpListenerStream::new(TcpListener::bind(bind_addr).await?);
           tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
 
           let connection_provider = BasicProxyConnectionProvider::new(Box::new(tunnel));

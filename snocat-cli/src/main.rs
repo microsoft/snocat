@@ -154,8 +154,7 @@ fn main() {
   let matches = app.get_matches();
   let mode = matches.subcommand_name().unwrap_or("<No subcommand?>");
   let handler = main_args_handler(&matches);
-  let mut rt = tokio::runtime::Builder::new()
-    .threaded_scheduler()
+  let rt = tokio::runtime::Builder::new_multi_thread()
     .thread_name("tokio-reactor-worker")
     .enable_all()
     .build()

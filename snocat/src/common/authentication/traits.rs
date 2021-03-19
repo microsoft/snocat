@@ -8,10 +8,9 @@ use crate::{
   },
   util::tunnel_stream::TunnelStream,
 };
-use futures::{future::BoxFuture, FutureExt};
+use futures::{future::BoxFuture, FutureExt, TryStreamExt};
 use std::marker::Unpin;
 use thiserror::Error;
-use tokio::stream::StreamExt;
 use triggered::Listener;
 
 #[derive(Debug, Clone)]

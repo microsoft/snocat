@@ -146,6 +146,8 @@ pub fn duplex() -> EntangledTunnels {
     down: UnboundedReceiver<WrappedStream>,
     side: TunnelSide,
   ) -> (DuplexTunnel, TunnelIncoming) {
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    let down = UnboundedReceiverStream::new(down);
     let tunnel = DuplexTunnel {
       channel_to_remote: up,
       side,
@@ -346,7 +348,7 @@ mod tests {
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_a = vec![1, 2, 3, 4];
-          use tokio::prelude::io::BufWriter;
+          use std::io::BufWriter;
           let mut s: Box<dyn TunnelStream> = Box::new(tun.open_link().await.unwrap());
           s.write_all(test_data_a.as_slice()).await.unwrap();
           AsyncWriteExt::flush(&mut s).await.unwrap();
@@ -383,7 +385,7 @@ mod tests {
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_b = vec![4, 3, 2];
-          use tokio::prelude::io::BufWriter;
+          use std::io::BufWriter;
           // Wait until A has started a stream to ensure ordering
           println!("b1");
           step_1.wait().await;

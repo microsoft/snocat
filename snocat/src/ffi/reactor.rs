@@ -45,8 +45,7 @@ impl Reactor {
   pub fn start(
     report_task_completion_callback: Arc<eventing::ReportEventCompletionCb>,
   ) -> Result<Self, anyhow::Error> {
-    let rt = tokio::runtime::Builder::new()
-      .threaded_scheduler()
+    let rt = tokio::runtime::Builder::new_multi_thread()
       .thread_name("tokio-reactor-worker")
       .enable_all()
       .build()?;

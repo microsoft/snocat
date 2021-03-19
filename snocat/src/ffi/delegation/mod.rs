@@ -550,7 +550,7 @@ mod tests {
   async fn test_ffi_delegation_context() {
     let delegations = Arc::new(DelegationSet::new());
     let delegations_clone = Arc::clone(&delegations);
-    let runtime = tokio::runtime::Handle::current();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     let res: Result<Result<(String, _), RemoteError>, DelegationError> = {
       delegations
         .delegate_ffi_contextual::<String, Arc<String>, _>(
@@ -594,7 +594,7 @@ mod tests {
   async fn test_ffi_delegation_remote_failure() {
     let delegations = Arc::new(DelegationSet::new());
     let delegations_clone = Arc::clone(&delegations);
-    let runtime = tokio::runtime::Handle::current();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     let res: Result<Result<(String, _), RemoteError>, DelegationError> = {
       delegations
         .delegate_ffi_contextual::<String, Arc<String>, _>(

@@ -276,7 +276,7 @@ mod tests {
         .delegate_ffi_contextual::<String, Arc<String>, _>(
           move |id| {
             let ctxres = reactor_arc_clone
-              .runtime_handle()
+              .get_runtime_ref()
               .block_on(
                 reactor_arc_clone
                   .get_delegations()

@@ -100,8 +100,8 @@ impl<TSession: quinn::crypto::Session> AsyncRead for QuinnTunnelRefStream<'_, TS
   fn poll_read(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
-    buf: &mut [u8],
-  ) -> Poll<Result<usize, std::io::Error>> {
+    buf: &mut tokio::io::ReadBuf<'_>,
+  ) -> Poll<futures_io::Result<()>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
     AsyncRead::poll_read(Pin::new(&mut ref_stream), cx, buf)
@@ -112,8 +112,8 @@ impl<TSession: quinn::crypto::Session> AsyncRead for QuinnTunnelStream<TSession>
   fn poll_read(
     mut self: Pin<&mut Self>,
     cx: &mut Context<'_>,
-    buf: &mut [u8],
-  ) -> Poll<Result<usize, std::io::Error>> {
+    buf: &mut tokio::io::ReadBuf<'_>,
+  ) -> Poll<futures_io::Result<()>> {
     let mut parent_ref = self.as_mut();
     AsyncRead::poll_read(Pin::new(&mut parent_ref.1), cx, buf)
   }
@@ -154,11 +154,14 @@ mod futures_traits {
 
   impl<TSession: quinn::crypto::Session> futures::io::AsyncRead for QuinnTunnelStream<TSession> {
     fn poll_read(
-      mut self: Pin<&mut Self>,
+      self: Pin<&mut Self>,
       cx: &mut Context<'_>,
       buf: &mut [u8],
     ) -> Poll<Result<usize, IOError>> {
-      tokio::io::AsyncRead::poll_read(Pin::new(&mut (*self).1), cx, buf)
+      use tokio::io::ReadBuf;
+      let mut buf = ReadBuf::new(buf);
+      futures::ready!(tokio::io::AsyncRead::poll_read(self, cx, &mut buf))?;
+      Poll::Ready(Ok(buf.filled().len()))
     }
   }
 
@@ -186,7 +189,10 @@ mod futures_traits {
       cx: &mut Context<'_>,
       buf: &mut [u8],
     ) -> Poll<Result<usize, IOError>> {
-      tokio::io::AsyncRead::poll_read(self, cx, buf)
+      use tokio::io::ReadBuf;
+      let mut buf = ReadBuf::new(buf);
+      futures::ready!(tokio::io::AsyncRead::poll_read(self, cx, &mut buf))?;
+      Poll::Ready(Ok(buf.filled().len()))
     }
   }
 
@@ -214,7 +220,10 @@ mod futures_traits {
       cx: &mut Context<'_>,
       buf: &mut [u8],
     ) -> Poll<Result<usize, IOError>> {
-      tokio::io::AsyncRead::poll_read(self, cx, buf)
+      use tokio::io::ReadBuf;
+      let mut buf = ReadBuf::new(buf);
+      futures::ready!(tokio::io::AsyncRead::poll_read(self, cx, &mut buf))?;
+      Poll::Ready(Ok(buf.filled().len()))
     }
   }
 }
@@ -254,8 +263,8 @@ impl AsyncRead for WrappedStream {
   fn poll_read(
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
-    buf: &mut [u8],
-  ) -> Poll<Result<usize, IOError>> {
+    buf: &mut tokio::io::ReadBuf<'_>,
+  ) -> Poll<futures_io::Result<()>> {
     match self.get_mut() {
       WrappedStream::QuinnTLS(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
       WrappedStream::QuinnTLSRef(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),

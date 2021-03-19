@@ -6,8 +6,7 @@ use crate::common::protocol::tunnel::TunnelName;
 use crate::util::tunnel_stream::TunnelStream;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
-use futures::{AsyncWriteExt, FutureExt};
-use tokio::stream::StreamExt;
+use futures::{AsyncWriteExt, FutureExt, StreamExt};
 
 pub struct NoOpAuthenticationHandler {}
 

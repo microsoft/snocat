@@ -9,9 +9,8 @@ use crate::{
 };
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::{future::BoxFuture, TryFutureExt};
-use futures::{AsyncWriteExt, FutureExt};
+use futures::{AsyncWriteExt, FutureExt, StreamExt};
 use std::marker::Unpin;
-use tokio::stream::StreamExt;
 
 pub struct SimpleAckAuthenticationHandler {}
 

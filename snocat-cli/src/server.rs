@@ -123,9 +123,9 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   config.use_stateless_retry(true);
   let mut transport_config = TransportConfig::default();
   transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-  transport_config.receive_window(512 * 1024 * 1024);
+  transport_config.receive_window(512 * 1024 * 1024)?;
   transport_config.send_window(512 * 1024 * 1024);
-  transport_config.stream_receive_window(512 * 1024 * 1024 / 8);
+  transport_config.stream_receive_window(512 * 1024 * 1024 / 8)?;
   transport_config
     .max_idle_timeout(Some(std::time::Duration::from_secs(30)))
     .unwrap();

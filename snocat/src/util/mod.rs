@@ -14,7 +14,7 @@ use std::boxed::Box;
 use std::path::Path;
 use std::task::{Context, Poll};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 pub mod delegation;
@@ -103,7 +103,7 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
   };
   match res {
     Either::Left(_) => {
-      if let Err(shutdown_failure) = source.shutdown(async_std::net::Shutdown::Both) {
+      if let Err(shutdown_failure) = source.shutdown().await {
         tracing::error!(
           "Failed to shut down source connection with error:\n{:#?}",
           shutdown_failure
@@ -111,7 +111,7 @@ pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> R
       }
     }
     Either::Right(_) => {
-      if let Err(shutdown_failure) = proxy.shutdown(async_std::net::Shutdown::Both) {
+      if let Err(shutdown_failure) = proxy.shutdown().await {
         tracing::error!(
           "Failed to shut down proxy connection with error:\n{:#?}",
           shutdown_failure
@@ -132,7 +132,7 @@ pub async fn proxy_from_tcp_stream<Sender: AsyncWrite + Unpin, Reader: AsyncRead
   };
   match res {
     Either::Left(_) => {
-      if let Err(shutdown_failure) = source.shutdown(async_std::net::Shutdown::Both) {
+      if let Err(shutdown_failure) = source.shutdown().await {
         tracing::error!(
           "Failed to shut down source connection with error:\n{:#?}",
           shutdown_failure
