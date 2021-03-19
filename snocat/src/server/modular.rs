@@ -1,3 +1,4 @@
+use authentication::perform_authentication;
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use futures::{
@@ -43,12 +44,21 @@ impl ModularServer {
 
   fn authenticate_tunnel<'a>(
     self: &Arc<Self>,
-    (tunnel, incoming): tunnel::ArcTunnelPair<'a>,
+    (tunnel, mut incoming): tunnel::ArcTunnelPair<'a>,
     shutdown: &Listener,
   ) -> impl Future<Output = Result<(tunnel::TunnelName, tunnel::ArcTunnelPair<'a>), anyhow::Error>> + 'a
   {
+    let shutdown = shutdown.clone();
+    let authentication_handler = Arc::clone(&self.authentication_handler);
     async move {
-      todo!("Make tunnel authentication symmetric to unify ModularServer and the client-side")
+      let result = perform_authentication(
+        authentication_handler.as_ref(),
+        tunnel.as_ref(),
+        &mut incoming,
+        &shutdown,
+      )
+      .await??;
+      Ok((result, (tunnel, incoming)))
     }
   }
 }

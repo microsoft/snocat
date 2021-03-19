@@ -75,7 +75,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
 }
 
 pub fn perform_authentication<'a>(
-  handler: &'a impl AuthenticationHandler,
+  handler: &'a (impl AuthenticationHandler + ?Sized),
   tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
   incoming: &'a mut TunnelIncoming,
   shutdown_notifier: &'a Listener,
