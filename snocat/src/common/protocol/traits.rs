@@ -107,6 +107,40 @@ pub trait TunnelRegistry {
   fn deregister_tunnel(&self, tunnel_id: TunnelId) -> BoxFuture<Result<TunnelRecord, ()>>;
 }
 
+impl<T> TunnelRegistry for Arc<T>
+where
+  T: TunnelRegistry + Send + Sync + 'static,
+{
+  fn lookup_by_id(&self, tunnel_id: TunnelId) -> BoxFuture<'_, Option<TunnelRecord>> {
+    self.as_ref().lookup_by_id(tunnel_id)
+  }
+
+  fn lookup_by_name(&self, tunnel_name: TunnelName) -> BoxFuture<'_, Option<TunnelRecord>> {
+    self.as_ref().lookup_by_name(tunnel_name)
+  }
+
+  fn register_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    name: Option<TunnelName>,
+    tunnel: Arc<dyn Tunnel + Send + Sync + Unpin>,
+  ) -> BoxFuture<'_, Result<(), TunnelRegistrationError>> {
+    self.as_ref().register_tunnel(tunnel_id, name, tunnel)
+  }
+
+  fn name_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    name: TunnelName,
+  ) -> BoxFuture<'_, Result<(), TunnelNamingError>> {
+    self.as_ref().name_tunnel(tunnel_id, name)
+  }
+
+  fn deregister_tunnel(&self, tunnel_id: TunnelId) -> BoxFuture<'_, Result<TunnelRecord, ()>> {
+    self.as_ref().deregister_tunnel(tunnel_id)
+  }
+}
+
 pub struct InMemoryTunnelRegistry {
   tunnels: Arc<tokio::sync::Mutex<BTreeMap<TunnelId, TunnelRecord>>>,
 }
@@ -232,11 +266,14 @@ impl TunnelRegistry for InMemoryTunnelRegistry {
 ///
 /// TODO: A more performant method would be a key-based locking mechanism on TunnelID
 pub struct SerializedTunnelRegistry<TInner: ?Sized> {
-  inner: Arc<tokio::sync::RwLock<TInner>>,
+  inner: Arc<tokio::sync::RwLock<Arc<TInner>>>,
 }
 
-impl<TInner> SerializedTunnelRegistry<TInner> {
-  pub fn new(inner: TInner) -> Self {
+impl<TInner> SerializedTunnelRegistry<TInner>
+where
+  TInner: ?Sized,
+{
+  pub fn new(inner: Arc<TInner>) -> Self {
     Self {
       inner: Arc::new(tokio::sync::RwLock::new(inner)),
     }

@@ -10,6 +10,7 @@ use tracing::Instrument;
 use triggered::Listener;
 use tunnel::{TunnelError, TunnelName};
 
+use crate::common::protocol::traits::SerializedTunnelRegistry;
 use crate::common::{
   authentication::{self, AuthenticationHandler},
   protocol::{
@@ -104,7 +105,6 @@ where
     // Attach baggage - Arcs need cloned once per incoming tunnel, if they need to access it
     // The baggage attachment phase takes the initial Arc items clones them per-stream
     // This also generates a u64 as an ID for this tunnel, using a naive interlocked/atomic counter
-    // TODO: Replace id generation with a module in the server
     let pipeline = tunnel_source.scan(
       (this, shutdown_request_listener),
       |(this, shutdown_request_listener), tunnel_pair| {
@@ -184,10 +184,14 @@ where
     shutdown: Listener,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError>> + 'static {
     async move {
+      // A registry mutex that prevents us from racing when calling the registry for
+      // this particular tunnel entry. This should also be enforced at the registry level.
+      let serialized_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static> = Arc::new(SerializedTunnelRegistry::new(Arc::clone(&server.tunnel_registry)));
+
       // Tunnel registration - The tunnel registry is called to imbue the tunnel with an ID
       {
         let tunnel = Arc::clone(&tunnel);
-        let tunnel_registry = Arc::clone(&server.tunnel_registry);
+        let tunnel_registry = Arc::clone(&serialized_registry);
         Self::register_tunnel(id, tunnel, tunnel_registry)
           .instrument(tracing::span!(tracing::Level::DEBUG, "registration", ?id))
       }.await?;
@@ -196,11 +200,11 @@ where
       // So further phases return their result to check for failures, which then result
       // in a deregistration call.
       // Phases resume in registered_tunnel_lifecycle.
-      let tunnel_registry = Arc::clone(&server.tunnel_registry);
-      match Self::registered_tunnel_lifecycle(id, (tunnel, incoming), server, shutdown).await {
+      let tunnel_registry = Arc::clone(&serialized_registry);
+      match Self::registered_tunnel_lifecycle(id, (tunnel, incoming), server, shutdown, tunnel_registry).await {
         Ok(lifecycle_result) => Ok(lifecycle_result),
         Err(e) => {
-          let record = tunnel_registry.deregister_tunnel(id).await;
+          let record = serialized_registry.deregister_tunnel(id).await;
           tracing::info!(error=?e, ?record, "Deregistered due to lifecycle error; possible record retrieved");
           Err(e)
         }
@@ -213,6 +217,7 @@ where
     (tunnel, incoming): ArcTunnelPair<'static>,
     server: Arc<ModularServer>,
     shutdown: Listener,
+    serialized_tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   ) -> Result<(), TunnelLifecycleError> {
     // Authenticate connections - Each connection will be piped into the authenticator,
     // which has the option of declining the connection, and may save additional metadata.
@@ -229,7 +234,7 @@ where
 
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
     {
-      let tunnel_registry = Arc::clone(&server.tunnel_registry);
+      let tunnel_registry = Arc::clone(&serialized_tunnel_registry);
       Self::name_tunnel(id, tunnel_name, tunnel_registry).instrument(tracing::span!(
         tracing::Level::DEBUG,
         "naming",
@@ -248,9 +253,7 @@ where
     .await?;
 
     // Deregister closed tunnels after graceful exit
-    let _record = Arc::clone(&server.tunnel_registry)
-      .deregister_tunnel(id)
-      .await;
+    let _record = serialized_tunnel_registry.deregister_tunnel(id).await;
 
     Ok(())
   }
