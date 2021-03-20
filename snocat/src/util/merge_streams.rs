@@ -27,6 +27,12 @@ pub fn merge_streams<'a, T: 'a>(
       match Stream::poll_next(source_ref, ctx) {
         Poll::Ready(Some(new_stream)) => {
           items.push(new_stream);
+          // Since we polled Ready, we need to poll again until Pending
+          // or we won't be woken up for the next available result.
+          //
+          // The following call schedules us for immediate re-wake until we pend or complete.
+          // See test merge_sequential_wake for verification
+          ctx.waker().wake_by_ref();
         }
         Poll::Ready(None) => {
           source_empty = true;
@@ -57,6 +63,9 @@ pub fn merge_streams<'a, T: 'a>(
 
 #[cfg(test)]
 mod tests {
+  use crate::util::merge_streams::merge_streams;
+  use futures::{AsyncReadExt, StreamExt};
+
   #[tokio::test]
   async fn test_stream_merging() {
     use futures::{
@@ -182,5 +191,35 @@ mod tests {
       pos_of(-2) + 1,
       "X must end just after Z reaches -2"
     );
+  }
+
+  // Ensures that new streams will be polled even if current streams produce no new events
+  // This checks that the poll path on the outer stream schedules for wakes properly,
+  // but does not test for fairness between loading new streams and reading events from
+  // event streams that are already being observed.
+  #[tokio::test]
+  async fn merge_sequential_wake() {
+    use futures::{
+      future::{self, FutureExt},
+      stream::{self, Stream, StreamExt},
+    };
+    use tokio::time::timeout;
+
+    // A set of streams with only end-of-stream events
+    let empty_sources = stream::repeat_with(|| stream::iter(Vec::new()).boxed()).take(10);
+
+    // The non-empty event stream has less items than the empty-sources stream to ensure we poll
+    // for new streams more than we poll for new items
+    let non_empty = stream::once(future::ready(stream::iter(vec![1u32, 2u32]).boxed()));
+
+    let source = empty_sources.chain(non_empty);
+    let results = timeout(
+      std::time::Duration::from_secs(5),
+      merge_streams(source).collect::<Vec<u32>>(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(results.as_slice(), &[1u32, 2u32]);
   }
 }
