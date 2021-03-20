@@ -270,6 +270,7 @@ where
     shutdown: Listener,
   ) -> Result<(), RequestProcessingError> {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
+
     incoming
       .streams()
       // Stop accepting new requests after a graceful shutdown is requested
@@ -279,14 +280,12 @@ where
         let res = link.map(|content| (Arc::clone(&*negotiator), shutdown.clone(), content));
         future::ready(Some(res))
       })
-      .try_for_each_concurrent(None, |(negotiator, shutdown, link)| async move {
-        match link {
-          link => Self::handle_incoming_request(id, link, negotiator, shutdown).await,
-        }
+      .try_for_each_concurrent(None, |(negotiator, shutdown, link)| {
+        Self::handle_incoming_request(id, link, negotiator, shutdown)
       })
       .await?;
 
-    todo!("Process incoming requests and await closure");
+    Ok(())
   }
 
   async fn handle_incoming_request<Services>(

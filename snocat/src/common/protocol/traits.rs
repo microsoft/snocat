@@ -224,6 +224,84 @@ impl TunnelRegistry for InMemoryTunnelRegistry {
   }
 }
 
+/// A TunnelRegistry wrapper that ensures that mutations are performed sequentially,
+/// using a RwLock to serialize all write operations while allowing lookups to be concurrent.
+///
+/// Use this when your registry would otherwise perform or evaluate requests out-of-order,
+/// as a means of avoiding updates occurring before registrations complete or similar.
+///
+/// TODO: A more performant method would be a key-based locking mechanism on TunnelID
+pub struct SerializedTunnelRegistry<TInner: ?Sized> {
+  inner: Arc<tokio::sync::RwLock<TInner>>,
+}
+
+impl<TInner> SerializedTunnelRegistry<TInner> {
+  pub fn new(inner: TInner) -> Self {
+    Self {
+      inner: Arc::new(tokio::sync::RwLock::new(inner)),
+    }
+  }
+}
+
+impl<TInner> TunnelRegistry for SerializedTunnelRegistry<TInner>
+where
+  TInner: TunnelRegistry + Send + Sync + ?Sized,
+{
+  fn lookup_by_id(&self, tunnel_id: TunnelId) -> BoxFuture<Option<TunnelRecord>> {
+    let inner = Arc::clone(&self.inner);
+    async move {
+      let lock = inner.read().await;
+      lock.lookup_by_id(tunnel_id).await
+    }
+    .boxed()
+  }
+
+  fn lookup_by_name(&self, tunnel_name: TunnelName) -> BoxFuture<Option<TunnelRecord>> {
+    let inner = Arc::clone(&self.inner);
+    async move {
+      let lock = inner.read().await;
+      lock.lookup_by_name(tunnel_name).await
+    }
+    .boxed()
+  }
+
+  fn register_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    name: Option<TunnelName>,
+    tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
+  ) -> BoxFuture<Result<(), TunnelRegistrationError>> {
+    let inner = Arc::clone(&self.inner);
+    async move {
+      let lock = inner.write().await;
+      lock.register_tunnel(tunnel_id, name, tunnel).await
+    }
+    .boxed()
+  }
+
+  fn name_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    name: TunnelName,
+  ) -> BoxFuture<Result<(), TunnelNamingError>> {
+    let inner = Arc::clone(&self.inner);
+    async move {
+      let lock = inner.write().await;
+      lock.name_tunnel(tunnel_id, name).await
+    }
+    .boxed()
+  }
+
+  fn deregister_tunnel(&self, tunnel_id: TunnelId) -> BoxFuture<Result<TunnelRecord, ()>> {
+    let inner = Arc::clone(&self.inner);
+    async move {
+      let lock = inner.write().await;
+      lock.deregister_tunnel(tunnel_id).await
+    }
+    .boxed()
+  }
+}
+
 #[derive(Debug, Clone)]
 pub enum RoutingError {
   NoMatchingTunnel,
