@@ -79,8 +79,8 @@ their own copyright notices and license terms:
 * [prost-derive v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
 * [prost-types v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
 * [prost v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
-* [quinn-proto v0.7.0](https://github.com/djc/quinn) - MIT OR Apache-2.0
-* [quinn v0.7.0](https://github.com/djc/quinn) - MIT OR Apache-2.0
+* [quinn-proto v0.7.1](https://github.com/djc/quinn) - MIT OR Apache-2.0
+* [quinn v0.7.1](https://github.com/djc/quinn) - MIT OR Apache-2.0
 * [quote v1.0.9](https://github.com/dtolnay/quote) - MIT OR Apache-2.0
 * [rand_chacha v0.3.0](https://github.com/rust-random/rand) - MIT OR Apache-2.0
 * [rand_core v0.6.2](https://github.com/rust-random/rand) - MIT OR Apache-2.0

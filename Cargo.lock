@@ -697,9 +697,9 @@ dependencies = [
 
 [[package]]
 name = "quinn"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624cfcfa9fcfc826945183ecd4a613480f67a1cf6b55d9d8df0d43bf3c12e951"
+checksum = "87bdccefa3cdb51023b4fc0e2f5ed279883087c2000d10540535546748b95d7e"
 dependencies = [
  "bytes",
  "futures",
@@ -717,9 +717,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819acc105414fe4eacc122dc6a59d39b9b65915e66b8f7a787a9490c9d71e836"
+checksum = "72b2ef51cf07e3d73ef0b2374423efe1a7fe6d439f8aec92514d9ccb28e95f5a"
 dependencies = [
  "bytes",
  "ct-logs",
