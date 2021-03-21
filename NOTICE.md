@@ -11,7 +11,7 @@ their own copyright notices and license terms:
 
 * [ansi_term v0.11.0]() - MIT
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
-* [anyhow v1.0.38](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
+* [anyhow v1.0.39](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
 * [async-stream-impl v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
 * [async-stream v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
 * [async-trait v0.1.48](https://github.com/dtolnay/async-trait) - MIT OR Apache-2.0
@@ -45,7 +45,7 @@ their own copyright notices and license terms:
 * [hashbrown v0.9.1](https://github.com/rust-lang/hashbrown) - Apache-2.0/MIT
 * [heck v0.3.2](https://github.com/withoutboats/heck) - MIT OR Apache-2.0
 * [httparse v1.3.5](https://github.com/seanmonstar/httparse) - MIT/Apache-2.0
-* [http-body v0.4.0](https://github.com/hyperium/http-body) - MIT
+* [http-body v0.4.1](https://github.com/hyperium/http-body) - MIT
 * [httpdate v0.3.2](https://github.com/pyfisch/httpdate) - MIT/Apache-2.0
 * [http v0.2.3](https://github.com/hyperium/http) - MIT/Apache-2.0
 * [hyper v0.14.4](https://github.com/hyperium/hyper) - MIT
@@ -116,9 +116,9 @@ their own copyright notices and license terms:
 * [tinyvec_macros v0.1.0](https://github.com/Soveu/tinyvec_macros) - MIT OR Apache-2.0 OR Zlib
 * [tinyvec v1.1.1](https://github.com/Lokathor/tinyvec) - Zlib OR Apache-2.0 OR MIT
 * [tokio-macros v1.1.0](https://github.com/tokio-rs/tokio) - MIT
-* [tokio-stream v0.1.4](https://github.com/tokio-rs/tokio) - MIT
-* [tokio-util v0.6.4](https://github.com/tokio-rs/tokio) - MIT
-* [tokio v1.3.0](https://github.com/tokio-rs/tokio) - MIT
+* [tokio-stream v0.1.5](https://github.com/tokio-rs/tokio) - MIT
+* [tokio-util v0.6.5](https://github.com/tokio-rs/tokio) - MIT
+* [tokio v1.4.0](https://github.com/tokio-rs/tokio) - MIT
 * [tonic-build v0.4.1](https://github.com/hyperium/tonic) - MIT
 * [tonic v0.4.1](https://github.com/hyperium/tonic) - MIT
 * [tower-layer v0.3.1](https://github.com/tower-rs/tower) - MIT
