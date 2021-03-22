@@ -8,7 +8,7 @@ use std::{net::SocketAddr, pin::Pin, task::Poll};
 use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnelPair, TunnelSide};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::TryLockError;
+use std::sync::{Arc, TryLockError};
 use std::task::Context;
 use tokio_stream::StreamMap;
 
@@ -120,13 +120,22 @@ pub struct DynamicStreamSet<Id, TStream> {
   //
   // As this is to facilitate async, this is likely to be a near-uncontested mutex, but
   // we use a std::sync::Mutex instead of an async one as we only expect to lock briefly.
-  streams: std::sync::Mutex<StreamMap<Id, NamedBoxedStream<Id, TStream>>>,
+  streams: Arc<std::sync::Mutex<StreamMap<Id, NamedBoxedStream<Id, TStream>>>>,
+}
+
+pub struct DynamicStreamSetHandle<Id, TStream> {
+  // RwLock is semantically better here but poll_next is a mutation, so we'd have to
+  // trick it by using something like a refcell internally, losing most of the benefits.
+  //
+  // As this is to facilitate async, this is likely to be a near-uncontested mutex, but
+  // we use a std::sync::Mutex instead of an async one as we only expect to lock briefly.
+  streams: Arc<std::sync::Mutex<StreamMap<Id, NamedBoxedStream<Id, TStream>>>>,
 }
 
 impl<Id, StreamItem> DynamicStreamSet<Id, StreamItem> {
   pub fn new() -> Self {
     Self {
-      streams: std::sync::Mutex::new(StreamMap::new()),
+      streams: Arc::new(std::sync::Mutex::new(StreamMap::new())),
     }
   }
 
@@ -160,17 +169,28 @@ impl<Id, StreamItem> DynamicStreamSet<Id, StreamItem> {
     let mut streams = self.streams.lock().expect("Mutex poisoned");
     streams.remove(id)
   }
-}
 
-impl<Id, StreamItem> Stream for DynamicStreamSet<Id, StreamItem>
-where
-  Id: Clone + Unpin,
-{
-  type Item = (Id, StreamItem);
+  pub fn handle(&self) -> DynamicStreamSetHandle<Id, StreamItem> {
+    DynamicStreamSetHandle {
+      streams: self.streams.clone(),
+    }
+  }
 
-  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+  pub fn into_handle(self) -> DynamicStreamSetHandle<Id, StreamItem> {
+    DynamicStreamSetHandle {
+      streams: self.streams,
+    }
+  }
+
+  fn poll_next(
+    streams: &std::sync::Mutex<StreamMap<Id, NamedBoxedStream<Id, StreamItem>>>,
+    cx: &mut Context<'_>,
+  ) -> Poll<Option<(Id, StreamItem)>>
+  where
+    Id: Clone + Unpin,
+  {
     // Use try_lock to ensure that we don't deadlock in a single-threaded async scenario
-    let mut streams = match self.streams.try_lock() {
+    let mut streams = match streams.try_lock() {
       Ok(s) => s,
       Err(TryLockError::WouldBlock) => {
         // Queue for another wake, to retry the mutex; essentially, yield for other async
@@ -183,10 +203,35 @@ where
     };
     Stream::poll_next(Pin::new(&mut *streams), cx)
   }
+}
+
+impl<Id, StreamItem> Stream for DynamicStreamSet<Id, StreamItem>
+where
+  Id: Clone + Unpin,
+{
+  type Item = (Id, StreamItem);
+
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    Self::poll_next(&*self.streams, cx)
+  }
 
   // Size is hintable but slow to calculate and only useful if all sub-stream hints are precise
   // Implement this only if the maintainability cost of a membership-update driven design is lower
   // than that of the performance cost of doing so. Also consider the cost of mutex locking.
+  // fn size_hint(&self) -> (usize, Option<usize>) { (0, None) }
+}
+
+impl<Id, StreamItem> Stream for DynamicStreamSetHandle<Id, StreamItem>
+where
+  Id: Clone + Unpin,
+{
+  type Item = (Id, StreamItem);
+
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    DynamicStreamSet::poll_next(&*self.streams, cx)
+  }
+
+  // See size_hint note on [DynamicStreamSet] for why we do not implement this
   // fn size_hint(&self) -> (usize, Option<usize>) { (0, None) }
 }
 
@@ -259,5 +304,20 @@ mod tests {
       results,
       HashSet::from_iter(vec![(1, 'a'), (2, 'c')].into_iter())
     );
+  }
+
+  #[tokio::test]
+  async fn end_of_stream_removal() {
+    use std::sync::Arc;
+    let set = Arc::new(DynamicStreamSet::<u32, i32>::new());
+    let a = stream::iter(vec![1, 2, 3]).boxed();
+    set
+      .attach_stream(1u32, a)
+      .expect_none("Must attach to blank");
+    let collected = set.handle().collect::<Vec<_>>().await;
+    assert_eq!(collected.as_slice(), &[(1, 1), (1, 2), (1, 3)]);
+    set
+      .detach(&1u32)
+      .expect_none("Must have already detached if polled to empty");
   }
 }
