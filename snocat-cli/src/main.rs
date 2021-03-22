@@ -3,6 +3,7 @@
 #![feature(nll)]
 #![feature(async_closure)]
 #![feature(label_break_value)]
+#![feature(option_expect_none)]
 #![allow(dead_code)]
 #![warn(unused_imports)]
 
