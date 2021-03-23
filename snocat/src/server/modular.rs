@@ -29,7 +29,7 @@ use crate::{
   util::tunnel_stream::{TunnelStream, WrappedStream},
 };
 
-pub struct ModularServer {
+pub struct ModularDaemon {
   service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
   tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   router: Arc<dyn Router + Send + Sync + 'static>,
@@ -38,7 +38,7 @@ pub struct ModularServer {
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 }
 
-impl ModularServer {
+impl ModularDaemon {
   pub fn requests<'a>(&'a self) -> &Arc<RequestClientHandler> {
     &self.request_handler
   }
@@ -64,7 +64,7 @@ impl ModularServer {
   }
 }
 
-impl ModularServer
+impl ModularDaemon
 where
   Self: 'static,
 {
@@ -173,14 +173,14 @@ impl From<RequestProcessingError> for TunnelLifecycleError {
   }
 }
 
-impl ModularServer
+impl ModularDaemon
 where
   Self: 'static,
 {
   fn tunnel_lifecycle(
     id: TunnelId,
     (tunnel, incoming): ArcTunnelPair<'static>,
-    server: Arc<ModularServer>,
+    server: Arc<ModularDaemon>,
     shutdown: Listener,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError>> + 'static {
     async move {
@@ -215,7 +215,7 @@ where
   async fn registered_tunnel_lifecycle(
     id: TunnelId,
     (tunnel, incoming): ArcTunnelPair<'static>,
-    server: Arc<ModularServer>,
+    server: Arc<ModularDaemon>,
     shutdown: Listener,
     serialized_tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   ) -> Result<(), TunnelLifecycleError> {
@@ -265,7 +265,7 @@ where
   //
   // The request handler for this side should be configured to send a close request for
   // the tunnel with the given ID when it sees a request fail due to tunnel closure.
-  // TODO: configure request handler (?) to do that using a std::sync::Weak<ModularServer>.
+  // TODO: configure request handler (?) to do that using a std::sync::Weak<ModularDaemon>.
   async fn handle_incoming_requests(
     id: TunnelId,
     (_tunnel, incoming): ArcTunnelPair<'static>,
