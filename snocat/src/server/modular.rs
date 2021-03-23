@@ -98,7 +98,7 @@ where
     shutdown_request_listener: Listener,
   ) -> tokio::task::JoinHandle<()>
   where
-    TunnelSource: Stream<Item = BoxedTunnelPair<'static>> + Send + Sync + Unpin + 'static,
+    TunnelSource: Stream<Item = BoxedTunnelPair<'static>> + Send + 'static,
   {
     let this = Arc::clone(&self);
     // Pipeline phases:

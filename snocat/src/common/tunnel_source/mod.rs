@@ -41,8 +41,8 @@ impl<Session: quinn::crypto::Session + 'static> QuinnListenEndpoint<Session> {
 
 impl<Session> Stream for QuinnListenEndpoint<Session>
 where
-  Session: quinn::crypto::Session + 'static,
-  Self: Unpin,
+  Session: quinn::crypto::Session + Send + 'static,
+  Self: Send + Unpin,
 {
   type Item = BoxedTunnelPair<'static>;
 
