@@ -17,9 +17,13 @@ pub struct RequestClientHandler {
   router: Arc<dyn Router + Send + Sync + 'static>,
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum RequestHandlingError {
+  #[error("Route not found for request")]
   RouteNotFound(Request),
+  #[error("Route found but unavailable for request")]
+  RouteUnavailable(Request),
+  #[error("The Protocol Client failed when handling the request")]
   ProtocolClientError(ClientError),
 }
 
@@ -68,6 +72,9 @@ impl RequestClientHandler {
         match router.route(&request, tunnel_registry).await {
           Err(RoutingError::NoMatchingTunnel) => {
             return Err(RequestHandlingError::RouteNotFound(request));
+          }
+          Err(RoutingError::LinkOpenFailure(_e)) => {
+            return Err(RequestHandlingError::RouteUnavailable(request));
           }
           Ok((resolved_address, tunnel)) => (resolved_address, tunnel),
         };

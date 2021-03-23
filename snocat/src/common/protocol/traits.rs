@@ -5,6 +5,7 @@ use futures::future::{BoxFuture, FutureExt};
 use std::{any::Any, collections::BTreeMap, fmt::Debug, sync::Arc};
 
 use super::tunnel::{Tunnel, TunnelId, TunnelName};
+use crate::common::protocol::tunnel::TunnelError;
 
 pub type RouteAddress = String;
 
@@ -51,9 +52,9 @@ impl Request {
 
 #[derive(Clone)]
 pub struct TunnelRecord {
-  id: TunnelId,
-  name: Option<TunnelName>,
-  tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
+  pub id: TunnelId,
+  pub name: Option<TunnelName>,
+  pub tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
 }
 
 impl Debug for TunnelRecord {
@@ -150,6 +151,16 @@ impl InMemoryTunnelRegistry {
     Self {
       tunnels: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
     }
+  }
+
+  pub async fn keys(&self) -> Vec<TunnelId> {
+    let lock = self.tunnels.lock().await;
+    lock.keys().cloned().collect()
+  }
+
+  pub async fn max_key(&self) -> Option<TunnelId> {
+    let lock = self.tunnels.lock().await;
+    lock.keys().max().cloned()
   }
 }
 
@@ -339,9 +350,12 @@ where
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum RoutingError {
+  #[error("No matching tunnel could be found")]
   NoMatchingTunnel,
+  #[error("The tunnel failed to provide a link")]
+  LinkOpenFailure(TunnelError),
 }
 
 /// Routers are responsible for taking an address and forwarding it to
