@@ -2,7 +2,12 @@
 // Licensed under the MIT license OR Apache 2.0
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 use futures::future::{BoxFuture, FutureExt};
-use std::{any::Any, collections::BTreeMap, fmt::Debug, sync::Arc};
+use std::{
+  any::Any,
+  collections::BTreeMap,
+  fmt::Debug,
+  sync::{Arc, Weak},
+};
 
 use super::tunnel::{Tunnel, TunnelId, TunnelName};
 use crate::common::protocol::tunnel::TunnelError;
@@ -371,11 +376,15 @@ pub trait Router {
   ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>), RoutingError>>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum ClientError {
+  #[error("Invalid address provided to client")]
   InvalidAddress,
+  #[error("Address refused by client")]
   Refused,
+  #[error("Unexpected end of stream with remote")]
   UnexpectedEnd,
+  #[error("Illegal response from remote")]
   IllegalResponse,
 }
 
@@ -424,19 +433,21 @@ pub enum ServiceError {
 }
 
 pub trait Service {
-  fn accepts(&self, addr: &RouteAddress) -> bool;
+  fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool;
   // fn protocol_id() -> String where Self: Sized;
 
-  fn handle(
-    &'_ self,
+  fn handle<'a>(
+    &'a self,
     addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<'_, Result<(), ServiceError>>;
+    stream: Box<dyn TunnelStream + Send + 'static>,
+    tunnel_id: TunnelId,
+  ) -> BoxFuture<'a, Result<(), ServiceError>>;
 }
 
 pub trait ServiceRegistry {
   fn find_service(
     self: Arc<Self>,
     addr: &RouteAddress,
+    tunnel_id: &TunnelId,
   ) -> Option<Arc<dyn Service + Send + Sync + 'static>>;
 }

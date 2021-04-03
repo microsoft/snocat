@@ -308,7 +308,7 @@ where
   }
 
   async fn handle_incoming_request_bistream<Services>(
-    _id: TunnelId,
+    tunnel_id: TunnelId,
     link: WrappedStream,
     negotiator: Arc<NegotiationService<Services>>,
     _shutdown: Listener,
@@ -316,7 +316,7 @@ where
   where
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
   {
-    match negotiator.negotiate(link).await {
+    match negotiator.negotiate(link, tunnel_id).await {
       // Tunnels established on an invalid negotiation protocol are useless; consider this fatal
       Err(NegotiationError::UnsupportedProtocolVersion) => {
         Err(RequestProcessingError::UnsupportedProtocolVersion)
@@ -344,7 +344,10 @@ where
         }
         let route_addr: RouteAddress = route_addr;
         let service: negotiation::ArcService = service;
-        match service.handle(route_addr.clone(), Box::new(link)).await {
+        match service
+          .handle(route_addr.clone(), Box::new(link), tunnel_id)
+          .await
+        {
           // TODO: Figure out which of these should be considered fatal to the tunnel, if any
           Err(e) => {
             tracing::debug!(

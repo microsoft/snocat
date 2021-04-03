@@ -4,7 +4,10 @@ use futures::{
   future::{BoxFuture, FutureExt},
   AsyncReadExt,
 };
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+  net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+  sync::Weak,
+};
 use tokio::{
   io::{AsyncRead, AsyncWrite},
   net::{TcpStream, ToSocketAddrs},
@@ -12,8 +15,9 @@ use tokio::{
 use tracing_futures::Instrument;
 
 use super::{
-  tunnel::Tunnel, Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress,
-  Router, RoutingError, Service, ServiceError,
+  tunnel::{Tunnel, TunnelId},
+  Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
+  RoutingError, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 
@@ -118,15 +122,16 @@ impl TcpStreamService {
 }
 
 impl Service for TcpStreamService {
-  fn accepts(&self, addr: &RouteAddress) -> bool {
+  fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool {
     addr.starts_with("/tcp/") || addr.starts_with("/ip4/") || addr.starts_with("/ip6/")
   }
 
-  fn handle(
-    &'_ self,
+  fn handle<'a>(
+    &'a self,
     addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<'_, Result<(), ServiceError>> {
+    stream: Box<dyn TunnelStream + Send + 'static>,
+    _tunnel_id: TunnelId,
+  ) -> BoxFuture<'a, Result<(), ServiceError>> {
     use futures::future::Either;
     tracing::debug!(
       "TCP proxy connection received for {}; building span...",
@@ -156,7 +161,7 @@ impl Service for TcpStreamService {
       tracing::debug!(target = "proxy_tcp_streaming", "Performing proxy streaming");
 
       let (mut tcpr, mut tcpw) = connection.split();
-      let (mut tunr, mut tunw) = tokio::io::split(tunnel);
+      let (mut tunr, mut tunw) = tokio::io::split(stream);
 
       proxy_generic_tokio_streams((&mut tcpw, &mut tcpr), (&mut tunw, &mut tunr)).await;
       tracing::info!(target = "proxy_tcp_close", "Closing stream");

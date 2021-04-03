@@ -11,7 +11,7 @@ use tracing_futures::Instrument;
 
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 
-use super::{traits::ServiceRegistry, RouteAddress, Service};
+use super::{traits::ServiceRegistry, tunnel::TunnelId, RouteAddress, Service};
 
 /// Identifies the SNOCAT protocol over a stream
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
@@ -170,6 +170,7 @@ where
   pub fn negotiate<'a, S: TunnelStream + Send + 'a>(
     &self,
     mut link: S,
+    tunnel_id: TunnelId,
   ) -> BoxFuture<'a, Result<(S, RouteAddress, ArcService), NegotiationError>> {
     const CURRENT_PROTOCOL_VERSION: u8 = 0u8;
     let service_registry = Arc::clone(&self.service_registry);
@@ -194,7 +195,7 @@ where
       let addr = String::from_utf8(addr).map_err(|_| NegotiationError::ProtocolViolation)?; // Addresses must be valid UTF-8
 
       tracing::trace!("searching service registry for address handlers");
-      let found = service_registry.find_service(&addr);
+      let found = service_registry.find_service(&addr, &tunnel_id);
 
       match found {
         None => {
@@ -226,11 +227,18 @@ where
 
 #[cfg(test)]
 mod tests {
-  use std::{sync::Arc, time::Duration};
+  use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+  };
   use tokio::time::timeout;
 
   use super::{ArcService, NegotiationClient, NegotiationError, NegotiationService};
-  use crate::common::protocol::{traits::ServiceRegistry, Service};
+  use crate::common::protocol::{
+    traits::ServiceRegistry,
+    tunnel::{Tunnel, TunnelId},
+    Service,
+  };
   use crate::util::tunnel_stream::WrappedStream;
 
   struct TestServiceRegistry {
@@ -241,11 +249,12 @@ mod tests {
     fn find_service(
       self: std::sync::Arc<Self>,
       addr: &crate::common::protocol::RouteAddress,
+      tunnel_id: &TunnelId,
     ) -> Option<std::sync::Arc<dyn crate::common::protocol::Service + Send + Sync + 'static>> {
       self
         .services
         .iter()
-        .find(|s| s.accepts(addr))
+        .find(|s| s.accepts(addr, tunnel_id))
         .map(Arc::clone)
     }
   }
@@ -253,14 +262,15 @@ mod tests {
   struct NoOpServiceAcceptAll;
 
   impl Service for NoOpServiceAcceptAll {
-    fn accepts(&self, _addr: &crate::common::protocol::RouteAddress) -> bool {
+    fn accepts(&self, _addr: &crate::common::protocol::RouteAddress, tunnel_id: &TunnelId) -> bool {
       true
     }
 
     fn handle(
       &'_ self,
       _addr: crate::common::protocol::RouteAddress,
-      _tunnel: Box<dyn crate::util::tunnel_stream::TunnelStream + Send + 'static>,
+      _stream: Box<dyn crate::util::tunnel_stream::TunnelStream + Send + 'static>,
+      _tunnel_id: TunnelId,
     ) -> futures::future::BoxFuture<'_, Result<(), crate::common::protocol::ServiceError>> {
       use futures::FutureExt;
       futures::future::ready(Ok(())).boxed()
@@ -291,7 +301,9 @@ mod tests {
 
     let server_future = async move {
       // server
-      let (_stream, addr, service) = service.negotiate(server_stream).await?;
+      let (_stream, addr, service) = service
+        .negotiate(server_stream, TunnelId::new(1u64))
+        .await?;
       Result::<_, NegotiationError>::Ok((addr, service))
     };
     let fut = futures::future::try_join(client_future, server_future);
