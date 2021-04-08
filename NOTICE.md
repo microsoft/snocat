@@ -26,6 +26,7 @@ their own copyright notices and license terms:
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
 * [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
 * [ct-logs v0.8.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
+* [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
 * [either v1.6.1](https://github.com/bluss/either) - MIT/Apache-2.0
 * [ffi-support v0.4.2](https://github.com/mozilla/application-services) - Apache-2.0 / MIT
 * [fixedbitset v0.2.0](https://github.com/bluss/fixedbitset) - MIT/Apache-2.0

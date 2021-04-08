@@ -21,6 +21,7 @@ their own copyright notices and license terms:
 * [cfg-if v1.0.0](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
 * [ct-logs v0.8.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
+* [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
 * [either v1.6.1](https://github.com/bluss/either) - MIT/Apache-2.0
 * [ffi-support v0.4.2](https://github.com/mozilla/application-services) - Apache-2.0 / MIT
 * [fixedbitset v0.2.0](https://github.com/bluss/fixedbitset) - MIT/Apache-2.0

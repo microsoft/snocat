@@ -11,6 +11,7 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
 anyhow = "~1.0.38"
+downcast-rs = "^1.2.0"
 ffi-support = "0.4.2"
 futures = "^0.3.12"
 futures-io = "^0.3.12"
