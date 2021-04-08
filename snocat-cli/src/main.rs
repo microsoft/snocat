@@ -2,6 +2,8 @@
 // Licensed under the MIT license OR Apache 2.0
 #![feature(nll)]
 #![feature(async_closure)]
+#![feature(backtrace)]
+#![feature(debug_non_exhaustive)]
 #![feature(label_break_value)]
 #![feature(option_expect_none)]
 #![allow(dead_code)]
@@ -16,6 +18,8 @@ use util::validators::{
   parse_ipaddr, parse_port_range, parse_socketaddr, validate_existing_file, validate_ipaddr,
   validate_port_range, validate_socketaddr,
 };
+
+mod services;
 
 mod certgen;
 mod client;

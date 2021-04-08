@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
+use crate::services::demand_proxy::DemandProxyClient;
+use crate::services::PresetServiceRegistry;
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use futures::{future::*, *};
 use snocat::common::protocol::proxy_tcp::TcpStreamService;
 use snocat::{
-  common::protocol::traits::{InMemoryTunnelRegistry, ServiceRegistry, TunnelRegistry},
+  common::protocol::traits::{InMemoryTunnelRegistry, TunnelRegistry},
   common::protocol::tunnel::id::MonotonicAtomicGenerator,
   common::protocol::tunnel::BoxedTunnelPair,
-  common::protocol::{Request, RouteAddress, Router, RoutingError, Service},
+  common::protocol::{Request, RouteAddress, Router, RoutingError},
   common::tunnel_source::DynamicConnectionSet,
   common::{
     authentication::SimpleAckAuthenticationHandler,
@@ -27,31 +29,6 @@ pub struct ClientArgs {
   pub driver_host: std::net::SocketAddr,
   pub driver_san: String,
   pub proxy_target_host: std::net::SocketAddr,
-}
-
-struct PresetServiceRegistry {
-  pub services: Vec<Arc<dyn Service + Send + Sync>>,
-}
-
-impl PresetServiceRegistry {
-  pub fn new() -> Self {
-    Self {
-      services: Vec::new(),
-    }
-  }
-}
-
-impl ServiceRegistry for PresetServiceRegistry {
-  fn find_service(
-    self: std::sync::Arc<Self>,
-    addr: &RouteAddress,
-  ) -> Option<std::sync::Arc<dyn Service + Send + Sync>> {
-    self
-      .services
-      .iter()
-      .find(|s| s.accepts(addr))
-      .map(Arc::clone)
-  }
 }
 
 pub struct SnocatClientRouter {
@@ -130,12 +107,14 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     (shutdown_listener, sigint_handler_task)
   };
 
-  let mut service_registry = PresetServiceRegistry::new();
+  let proxy_target = config.proxy_target_host.clone();
+
+  let service_registry = Arc::new(PresetServiceRegistry::new());
 
   let tcp_proxy_service = TcpStreamService::new(false);
-  service_registry.services.push(Arc::new(tcp_proxy_service));
+  service_registry.add_service_blocking(Arc::new(tcp_proxy_service));
 
-  let tunnel_registry = Arc::new(InMemoryTunnelRegistry::new());
+  let tunnel_registry: Arc<InMemoryTunnelRegistry> = Arc::new(InMemoryTunnelRegistry::new());
 
   let router = Arc::new(SnocatClientRouter::new(Arc::downgrade(&tunnel_registry)));
 
@@ -152,7 +131,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   ));
 
   let modular = Arc::new(ModularDaemon::new(
-    Arc::new(service_registry),
+    service_registry,
     tunnel_registry,
     router,
     authentication_handler,
@@ -193,10 +172,66 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   }
 
   tracing::debug!("Setting up stream handling...");
-  modular
-    .run(connections_handle.map(|(_k, v)| v), shutdown_listener)
-    .await
-    .expect("Modular runtime panicked and lost context");
+  let request_handler = Arc::clone(modular.requests());
+
+  let daemon = modular
+    .run(
+      connections_handle.map(|(_k, v)| v),
+      shutdown_listener.clone(),
+    )
+    .map_err(|_| anyhow::Error::msg("Daemon panicked and lost context"))
+    .boxed();
+
+  let tcp_watcher = {
+    let shutdown_listener = shutdown_listener;
+    tokio::task::spawn(async move {
+      // TODO: Wait until a connection is completed before requesting a proxy
+      // TODO: While shutdown is not requested, attempt to reconnect every second
+      tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+      let demand_proxy = DemandProxyClient {
+        proxied_subject: "".into(),
+      };
+      let (_remote_addr, wait_close) = request_handler
+        .handle(
+          format!(
+            "/proxyme/0.0.1/{}/{}",
+            proxy_target.ip().to_string(),
+            proxy_target.port()
+          ),
+          demand_proxy,
+        )
+        .await?;
+      let res = futures::future::select(wait_close, shutdown_listener).await;
+      match res {
+        Either::Left((Err(res), _listener)) => Err(res)?,
+        Either::Left((Ok(()), _listener)) => (),
+        Either::Right(((), _finish_listener)) => (),
+      };
+      Result::<(), anyhow::Error>::Ok(())
+    })
+    .boxed()
+    // JoinHandle
+    .map_err(|join_error| {
+      if join_error.is_panic() {
+        anyhow::Error::msg("TCP Watcher panicked and lost context")
+      } else {
+        anyhow::Error::context(
+          anyhow::Error::msg(join_error.to_string()),
+          "TCP Watcher join handle failed",
+        )
+      }
+    })
+    // Flatten Result<Result<T, E>, E> to Result<T, E>; this is why we need HKT, Rust!
+    .map(|result| match result {
+      Ok(Ok(ok)) => Ok(ok),
+      Ok(Err(err)) => Err(err),
+      Err(err) => Err(err),
+    })
+    .boxed()
+  };
+
+  let ((), ()) = futures::future::try_join(daemon, tcp_watcher).await?;
+
   sigint_handler_task.abort();
   tracing::info!("Disconnecting...");
   Ok(())

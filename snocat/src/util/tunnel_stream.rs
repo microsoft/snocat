@@ -15,7 +15,11 @@ pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {
   }
 }
 
-impl TunnelStream for tokio::io::DuplexStream {}
+impl<
+    T: std::ops::Deref<Target = dyn TunnelStream + Send> + AsyncWrite + AsyncRead + Send + Unpin,
+  > TunnelStream for T
+{
+}
 
 pub struct QuinnTunnelRefStream<'a, TSession: quinn::crypto::Session>(
   &'a mut quinn::generic::SendStream<TSession>,

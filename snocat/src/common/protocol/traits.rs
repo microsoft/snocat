@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
+use downcast_rs::{impl_downcast, Downcast, DowncastSync};
 use futures::future::{BoxFuture, FutureExt};
 use std::{
   any::Any,
+  backtrace::Backtrace,
   collections::BTreeMap,
   fmt::Debug,
   sync::{Arc, Weak},
@@ -83,7 +85,7 @@ pub enum TunnelNamingError {
   TunnelNotRegistered(TunnelId),
 }
 
-pub trait TunnelRegistry {
+pub trait TunnelRegistry: Downcast + DowncastSync {
   fn lookup_by_id(&self, tunnel_id: TunnelId) -> BoxFuture<Option<TunnelRecord>>;
   fn lookup_by_name(&self, tunnel_name: TunnelName) -> BoxFuture<Option<TunnelRecord>>;
 
@@ -112,6 +114,7 @@ pub trait TunnelRegistry {
   /// an Arc containing the Tunnel instance, which will extend its lifetime.
   fn deregister_tunnel(&self, tunnel_id: TunnelId) -> BoxFuture<Result<TunnelRecord, ()>>;
 }
+impl_downcast!(sync TunnelRegistry);
 
 impl<T> TunnelRegistry for Arc<T>
 where
@@ -367,7 +370,7 @@ pub enum RoutingError {
 /// the appropriate tunnel. When forwarding, the router can alter the
 /// address to remove any routing-specific information before it is
 /// handed to the Request's protocol::Client.
-pub trait Router {
+pub trait Router: Downcast + DowncastSync {
   fn route(
     &self,
     //TODO: Consider taking only a [RouteAddress] here, except if other request metadata is desired
@@ -375,8 +378,9 @@ pub trait Router {
     tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync>,
   ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>), RoutingError>>;
 }
+impl_downcast!(sync Router);
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum ClientError {
   #[error("Invalid address provided to client")]
   InvalidAddress,
@@ -385,7 +389,7 @@ pub enum ClientError {
   #[error("Unexpected end of stream with remote")]
   UnexpectedEnd,
   #[error("Illegal response from remote")]
-  IllegalResponse,
+  IllegalResponse(Option<Backtrace>),
 }
 
 pub trait Client {
@@ -423,13 +427,22 @@ where
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum ServiceError {
+  #[error("Address refused by client")]
   Refused,
+  #[error("Unexpected end of stream with remote")]
   UnexpectedEnd,
+  #[error("Illegal response from remote")]
   IllegalResponse,
+  #[error("Invalid address provided by remote client")]
   AddressError,
+  #[error("An internal dependency failed")]
   DependencyFailure,
+  #[error("An internal dependency failed with a backtrace")]
+  BacktraceDependencyFailure(Backtrace),
+  #[error(transparent)]
+  InternalFailure(#[from] anyhow::Error),
 }
 
 pub trait Service {

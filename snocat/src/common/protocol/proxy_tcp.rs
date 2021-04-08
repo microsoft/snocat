@@ -5,7 +5,9 @@ use futures::{
   AsyncReadExt,
 };
 use std::{
+  fmt::Display,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+  str::FromStr,
   sync::Weak,
 };
 use tokio::{
@@ -25,6 +27,16 @@ use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 pub struct TcpStreamClient<Reader, Writer> {
   recv: Reader,
   send: Writer,
+}
+
+impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
+  pub fn new(recv: Reader, send: Writer) -> Self {
+    Self { recv, send }
+  }
+
+  pub fn build_addr(target: TcpStreamTarget) -> RouteAddress {
+    target.to_string()
+  }
 }
 
 impl<Reader, Writer> Client for TcpStreamClient<Reader, Writer>
@@ -64,36 +76,164 @@ enum TcpConnectError {
   NoLoopbackAddressesFound,
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum TargetResolutionError {
+  #[error("DNS resolution failure")]
+  IOError(#[from] std::io::Error, std::backtrace::Backtrace),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsTarget {
+  PreferHigher { host: String, port: u16 },
+  Dns4 { host: String, port: u16 },
+  Dns6 { host: String, port: u16 },
+}
+
+impl DnsTarget {
+  pub fn includes_ipv6(&self) -> bool {
+    match self {
+      DnsTarget::PreferHigher { .. } => true,
+      DnsTarget::Dns6 { .. } => true,
+      DnsTarget::Dns4 { .. } => false,
+    }
+  }
+
+  pub fn includes_ipv4(&self) -> bool {
+    match self {
+      DnsTarget::PreferHigher { .. } => true,
+      DnsTarget::Dns6 { .. } => false,
+      DnsTarget::Dns4 { .. } => true,
+    }
+  }
+
+  /// Exposed port for the specified address
+  ///
+  /// Not all DNS records have a constant, known port; See [SRV records](https://en.wikipedia.org/wiki/SRV_record)
+  pub fn port(&self) -> Option<u16> {
+    match self {
+      DnsTarget::PreferHigher { port, .. } => Some(*port),
+      DnsTarget::Dns6 { port, .. } => Some(*port),
+      DnsTarget::Dns4 { port, .. } => Some(*port),
+    }
+  }
+
+  /// Checks that a [SocketAddr] is valid in the range of the specified DNS class
+  pub fn contains(&self, addr: &SocketAddr, check_port: bool) -> bool {
+    if check_port && Some(addr.port()) != self.port() {
+      false
+    } else {
+      addr.is_ipv6() && self.includes_ipv6() || addr.is_ipv4() && self.includes_ipv4()
+    }
+  }
+}
+
+impl Into<TcpStreamTarget> for DnsTarget {
+  fn into(self) -> TcpStreamTarget {
+    TcpStreamTarget::Dns(self)
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TcpStreamTarget {
+  Port(u16),
+  SocketAddr(SocketAddr),
+  Dns(DnsTarget),
+}
+
+/// Format a [RouteAddress] from a [TcpStreamTarget]
+impl Display for TcpStreamTarget {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    use std::net::{SocketAddrV4, SocketAddrV6};
+    match self {
+      TcpStreamTarget::Port(port) => write!(f, "/tcp/{}", port),
+      TcpStreamTarget::SocketAddr(SocketAddr::V4(s)) => {
+        write!(f, "/ip4/{}/tcp/{}", s.ip(), s.port())
+      }
+      TcpStreamTarget::SocketAddr(SocketAddr::V6(s)) => {
+        write!(f, "/ip6/{}/tcp/{}", s.ip(), s.port())
+      }
+      TcpStreamTarget::Dns(DnsTarget::PreferHigher { host, port }) => {
+        write!(f, "/dns/{}/tcp/{}", host, port)
+      }
+      TcpStreamTarget::Dns(DnsTarget::Dns4 { host, port }) => {
+        write!(f, "/dns4/{}/tcp/{}", host, port)
+      }
+      TcpStreamTarget::Dns(DnsTarget::Dns6 { host, port }) => {
+        write!(f, "/dns6/{}/tcp/{}", host, port)
+      }
+    }
+  }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TcpStreamTargetParseError {
+  #[error("Not enough segments present to represent valid target")]
+  TooFewSegments,
+  #[error("Addresses must start with a '/' character")]
+  InvalidPrefix,
+  #[error("No supported address type matches the provided format")]
+  NoMatchingFormat,
+  #[error("Port specification invalid")]
+  InvalidPort(#[from] std::num::ParseIntError, std::backtrace::Backtrace),
+  #[error("IP format invalid")]
+  InvalidIP(#[from] std::net::AddrParseError, std::backtrace::Backtrace),
+}
+
+/// Try to parse a [RouteAddress] into a [TcpStreamTarget]
+///
+/// Expects /tcp/<port>, /ip[46]/address/tcp/port, or /dns[46]?/address/tcp/port
+///
+/// DNS resolution is not handled here, only parsed to its own class for use later.
+///
+/// /tcp/<port> directs to localhost with an IPv6 preference, and is equivalent to
+/// /dns/localhost/tcp/<port> but skips the DNS resolver and ignores the hostfile.
+// TODO: hostname validation; use a dedicated DNS library and fail invalid names.
+// TODO: Use a recursive descent parsing combinator library such as Nom
+impl FromStr for TcpStreamTarget {
+  type Err = TcpStreamTargetParseError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let parts = s.splitn(5, '/').collect::<Vec<_>>();
+    let (prefix, parts) = parts
+      .split_first()
+      .ok_or(TcpStreamTargetParseError::TooFewSegments)?;
+    if !prefix.is_empty() {
+      return Err(TcpStreamTargetParseError::InvalidPrefix);
+    }
+    let (port, parts) = parts
+      .split_last()
+      .ok_or(TcpStreamTargetParseError::TooFewSegments)?;
+    let port: u16 = port.parse()?;
+    match parts {
+      ["tcp"] => Ok(TcpStreamTarget::SocketAddr(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+      ))),
+      ["ip4", addr, "tcp"] => addr
+        .parse::<Ipv4Addr>()
+        .map_err(Into::into)
+        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(addr), port))),
+      ["ip6", addr, "tcp"] => addr
+        .parse::<Ipv6Addr>()
+        .map_err(Into::into)
+        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V6(addr), port))),
+      [dns_class @ ("dns" | "dns4" | "dns6"), host, "tcp"] => {
+        let host = host.to_string();
+        Ok(TcpStreamTarget::Dns(match *dns_class {
+          "dns" => DnsTarget::PreferHigher { host, port },
+          "dns6" => DnsTarget::Dns6 { host, port },
+          "dns4" => DnsTarget::Dns4 { host, port },
+          _ => unreachable!("Checked statically via matcher"),
+        }))
+      }
+      _ => Err(TcpStreamTargetParseError::NoMatchingFormat),
+    }
+  }
+}
+
 impl TcpStreamService {
   pub fn new(local_only: bool) -> Self {
     Self { local_only }
-  }
-
-  fn parse_address(addr: &str) -> Result<SocketAddr, ()> {
-    // lack of an ip* prefix implies localhost
-    // dns resolution will occur in a middleware service
-    // Expects /tcp/<port>, /ip4/address/tcp/port, or /ip6/address/tcp/port
-    let parts = addr.splitn(5, '/').collect::<Vec<_>>();
-    let (addr, port) = match parts.as_slice() {
-      ["", "tcp", port] => port
-        .parse::<u16>()
-        .map_err(|_| ())
-        .map(|port| (IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
-      ["", "ip4", addr, "tcp", port] => port.parse::<u16>().map_err(|_| ()).and_then(|port| {
-        addr
-          .parse::<Ipv4Addr>()
-          .map_err(|_| ())
-          .map(|addr| (IpAddr::V4(addr), port))
-      }),
-      ["", "ip6", addr, "tcp", port] => port.parse::<u16>().map_err(|_| ()).and_then(|port| {
-        addr
-          .parse::<Ipv6Addr>()
-          .map_err(|_| ())
-          .map(|addr| (IpAddr::V6(addr), port))
-      }),
-      _ => Err(()),
-    }?;
-    Ok(SocketAddr::new(addr, port))
   }
 
   /// The `connect` future outlives the read reference lifetime to `self`
@@ -119,11 +259,43 @@ impl TcpStreamService {
     };
     fut.fuse().boxed()
   }
+
+  async fn resolve_dns(&self, target: DnsTarget) -> Result<Vec<SocketAddr>, TargetResolutionError> {
+    // TODO: use a purpose-built library for DNS resolution
+    use tokio::net::lookup_host;
+    let resolved = lookup_host(match &target {
+      DnsTarget::PreferHigher { host, port }
+      | DnsTarget::Dns6 { host, port }
+      | DnsTarget::Dns4 { host, port } => {
+        format!("{}:{}", host, port)
+      }
+    })
+    .await?;
+    let matching_scheme = resolved.filter(|addr| target.contains(addr, true));
+    Ok(matching_scheme.collect())
+  }
+
+  async fn resolve(
+    &self,
+    target: TcpStreamTarget,
+  ) -> Result<Vec<SocketAddr>, TargetResolutionError> {
+    match target {
+      TcpStreamTarget::Port(port) => Ok(
+        [
+          SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+          SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        ]
+        .to_vec(),
+      ),
+      TcpStreamTarget::SocketAddr(s) => Ok([s].to_vec()),
+      TcpStreamTarget::Dns(dns_target) => self.resolve_dns(dns_target).await,
+    }
+  }
 }
 
 impl Service for TcpStreamService {
-  fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool {
-    addr.starts_with("/tcp/") || addr.starts_with("/ip4/") || addr.starts_with("/ip6/")
+  fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
+    addr.parse::<TcpStreamTarget>().is_ok()
   }
 
   fn handle<'a>(
@@ -138,15 +310,22 @@ impl Service for TcpStreamService {
       addr
     );
     let span = tracing::span!(tracing::Level::DEBUG, "proxy_tcp", target = ?addr);
-    let addrs = match Self::parse_address(&addr).map_err(|_| ServiceError::AddressError) {
+    let target = match addr
+      .parse::<TcpStreamTarget>()
+      .map_err(|_| ServiceError::AddressError)
+    {
       Err(e) => return futures::future::ready(Err(e)).boxed(),
-      Ok(addr) => addr,
+      Ok(target) => target,
     };
-    let connector = self.connect(vec![addrs]);
     let fut = async move {
       // TODO: Read protocol version here, and ServiceError::Refused if unsupported
       // TODO: Send protocol version here, allow other side to refuse if unsupported
       // If a confirmation of support is received by the reading side, resume as supported version
+      let addrs = self
+        .resolve(target)
+        .await
+        .or(Err(ServiceError::AddressError))?;
+      let connector = self.connect(addrs);
       tracing::debug!(
         target = "proxy_tcp_connecting",
         "Connecting to proxy destination"

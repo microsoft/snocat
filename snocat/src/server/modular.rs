@@ -78,6 +78,7 @@ where
     Self {
       request_handler: Arc::new(RequestClientHandler::new(
         Arc::clone(&tunnel_registry),
+        Arc::clone(&service_registry),
         Arc::clone(&router),
       )),
       service_registry,
@@ -105,19 +106,21 @@ where
     // Attach baggage - Arcs need cloned once per incoming tunnel, if they need to access it
     // The baggage attachment phase takes the initial Arc items clones them per-stream
     // This also generates a u64 as an ID for this tunnel, using a naive interlocked/atomic counter
-    let pipeline = tunnel_source.scan(
-      (this, shutdown_request_listener),
-      |(this, shutdown_request_listener), tunnel_pair| {
-        let id = this.tunnel_id_generator.next();
-        let tunnel_pair: ArcTunnelPair = (tunnel_pair.0.into(), tunnel_pair.1);
-        future::ready(Some((
-          tunnel_pair,
-          id,
-          this.clone(),
-          shutdown_request_listener.clone(),
-        )))
-      },
-    );
+    let pipeline = tunnel_source
+      .take_until(shutdown_request_listener.clone())
+      .scan(
+        (this, shutdown_request_listener),
+        |(this, shutdown_request_listener), tunnel_pair| {
+          let id = this.tunnel_id_generator.next();
+          let tunnel_pair: ArcTunnelPair = (tunnel_pair.0.into(), tunnel_pair.1);
+          future::ready(Some((
+            tunnel_pair,
+            id,
+            this.clone(),
+            shutdown_request_listener.clone(),
+          )))
+        },
+      );
 
     // Tunnel Lifecycle - Sub-pipeline performed by futures on a per-tunnel basis
     // This could be done at the stream level, but Rust-Analyzer's typesystem struggles
@@ -311,7 +314,7 @@ where
     tunnel_id: TunnelId,
     link: WrappedStream,
     negotiator: Arc<NegotiationService<Services>>,
-    _shutdown: Listener,
+    shutdown: Listener, // TODO: Respond to shutdown listener requests
   ) -> Result<(), RequestProcessingError>
   where
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
@@ -337,7 +340,7 @@ where
         Ok(())
       }
       Ok((link, route_addr, service)) => {
-        if _shutdown.is_triggered() {
+        if shutdown.is_triggered() {
           // Drop services post-negotiation if the connection is awaiting
           // shutdown, instead of handing them to the service to be performed.
           return Ok(());

@@ -9,20 +9,26 @@ use futures::{
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing_futures::Instrument;
 
-use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
+use crate::util::tunnel_stream::TunnelStream;
 
 use super::{traits::ServiceRegistry, tunnel::TunnelId, RouteAddress, Service};
 
 /// Identifies the SNOCAT protocol over a stream
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum NegotiationError {
+  #[error("Stream read failed")]
   ReadError,
+  #[error("Stream write failed")]
   WriteError,
+  #[error("Protocol violated by remote")]
   ProtocolViolation,
+  #[error("Protocol refused")]
   Refused,
+  #[error("Protocol version not supported")]
   UnsupportedProtocolVersion,
+  #[error("Service version not supported")]
   UnsupportedServiceVersion,
 }
 
@@ -91,11 +97,14 @@ impl NegotiationClient {
     Self {}
   }
 
-  pub fn handle(
+  pub fn handle<S>(
     self,
     addr: RouteAddress,
-    mut link: WrappedStream,
-  ) -> BoxFuture<'static, Result<WrappedStream, NegotiationError>> {
+    mut link: S,
+  ) -> BoxFuture<'static, Result<S, NegotiationError>>
+  where
+    S: TunnelStream + Send + 'static,
+  {
     const LOCAL_PROTOCOL_VERSION: u8 = 0;
     async move {
       // Absolute most-basic negotiation protocol - sends the address in a frame and waits for 0u8-or-fail
@@ -239,7 +248,7 @@ mod tests {
     tunnel::{Tunnel, TunnelId},
     Service,
   };
-  use crate::util::tunnel_stream::WrappedStream;
+  use crate::util::tunnel_stream::TunnelStream;
 
   struct TestServiceRegistry {
     services: Vec<ArcService>,
@@ -262,7 +271,11 @@ mod tests {
   struct NoOpServiceAcceptAll;
 
   impl Service for NoOpServiceAcceptAll {
-    fn accepts(&self, _addr: &crate::common::protocol::RouteAddress, tunnel_id: &TunnelId) -> bool {
+    fn accepts(
+      &self,
+      _addr: &crate::common::protocol::RouteAddress,
+      _tunnel_id: &TunnelId,
+    ) -> bool {
       true
     }
 
@@ -292,6 +305,7 @@ mod tests {
     };
     let service = NegotiationService::new(Arc::new(service_registry));
     let client = NegotiationClient::new();
+    use crate::common::util::tunnel_stream::WrappedStream;
     let (client_stream, server_stream) = WrappedStream::duplex(8192);
 
     let client_future = async move {

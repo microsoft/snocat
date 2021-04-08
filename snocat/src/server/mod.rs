@@ -17,10 +17,9 @@ use crate::util::{
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
 };
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
-use futures::future::*;
 use futures::{
-  future,
   future::FutureExt,
+  future::{self, *},
   pin_mut, select_biased,
   stream::{self, Stream, StreamExt},
 };
@@ -29,7 +28,6 @@ use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{
   boxed::Box,
   ops::RangeInclusive,
@@ -37,6 +35,10 @@ use std::{
   pin::Pin,
   sync::Arc,
   task::{Context, Poll},
+};
+use std::{
+  collections::HashSet,
+  net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::Mutex;
@@ -161,6 +163,15 @@ impl std::fmt::Debug for BasicProxyConnectionProvider {
 pub struct PortRangeAllocator {
   range: std::ops::RangeInclusive<u16>,
   allocated: Arc<Mutex<std::collections::HashSet<u16>>>,
+  mark_queue: tokio::sync::mpsc::UnboundedSender<u16>,
+  // UnboundedReceiver does not implement clone, so we need an ArcMut of it
+  mark_receiver: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<u16>>>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum PortRangeAllocationError {
+  #[error("No ports were available to be allocated in range {0:?}")]
+  NoFreePorts(std::ops::RangeInclusive<u16>),
 }
 
 impl PortRangeAllocator {
@@ -169,34 +180,117 @@ impl PortRangeAllocator {
       let (a, b) = bind_port_range.into_inner();
       (a.into(), b.into())
     };
+    let (mark_sender, mark_receiver) = tokio::sync::mpsc::unbounded_channel();
     PortRangeAllocator {
       range: std::ops::RangeInclusive::new(start, end),
       allocated: Default::default(),
+      mark_queue: mark_sender,
+      mark_receiver: Arc::new(Mutex::new(mark_receiver)),
     }
   }
 
-  pub async fn allocate(&self) -> Result<u16> {
+  pub async fn allocate(&self) -> Result<PortRangeAllocationHandle, PortRangeAllocationError> {
+    // Used for cleaning up in the deallocator
+    let cloned_self = self.clone();
     let range = self.range.clone();
+    let mark_receiver = Arc::clone(&self.mark_receiver);
     let mut lock = self.allocated.lock().await;
+
+    // Consume existing marks for freed ports
+    {
+      let mut mark_receiver = mark_receiver.lock().await;
+      Self::cleanup_freed_ports(&mut *lock, &mut *mark_receiver);
+    }
+
     let port = range
       .clone()
       .into_iter()
       .filter(|test_port| !lock.contains(test_port))
       .min()
-      .ok_or_else(|| AnyErr::msg(format!("No free ports available in range {:?}", &range)))?;
-    lock.insert(port);
-    Ok(port)
+      .ok_or_else(|| PortRangeAllocationError::NoFreePorts(range.clone()))?;
+
+    let allocation = PortRangeAllocationHandle::new(port, cloned_self);
+    lock.insert(allocation.port);
+    Ok(allocation)
   }
 
   pub async fn free(&self, port: u16) -> Result<bool> {
+    let mark_receiver = Arc::clone(&self.mark_receiver);
     let mut lock = self.allocated.lock().await;
     let removed = lock.remove(&port);
-    tracing::trace!(port = port, "unbound port");
+    if removed {
+      tracing::trace!(port = port, "unbound port");
+    }
+    let mut mark_receiver = mark_receiver.lock().await;
+    Self::cleanup_freed_ports(&mut *lock, &mut *mark_receiver);
     Ok(removed)
+  }
+
+  fn cleanup_freed_ports(
+    allocations: &mut HashSet<u16>,
+    mark_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<u16>,
+  ) {
+    // recv waits forever if a sender can still produce values
+    // skip that by only receiving those immediately available
+    // HACK: Relies on unbounded receivers being immediately available without intermediate polling
+    while let Some(Some(marked)) = mark_receiver.recv().now_or_never() {
+      let removed = allocations.remove(&marked);
+      if removed {
+        tracing::trace!(port = marked, "unbound marked port");
+      }
+    }
+  }
+
+  pub fn mark_freed(&self, port: u16) {
+    match self.allocated.try_lock() {
+      // fast path if synchronous is possible, skipping the mark queue
+      Ok(mut allocations) => {
+        // remove specified port; we don't care if it succeeded or not
+        let _removed = allocations.remove(&port);
+        return;
+      }
+      Err(_would_block) => {
+        match self.mark_queue.send(port) {
+          // Message queued, do nothing
+          Ok(()) => (),
+          // Other side was closed
+          // Without a receiver, we don't actually need to free anything, so do nothing
+          Err(_send_error) => (),
+        }
+      }
+    }
   }
 
   pub fn range(&self) -> &RangeInclusive<u16> {
     &self.range
+  }
+}
+
+pub struct PortRangeAllocationHandle {
+  port: u16,
+  allocated_in: Option<PortRangeAllocator>,
+}
+
+impl PortRangeAllocationHandle {
+  pub fn new(port: u16, allocated_in: PortRangeAllocator) -> Self {
+    Self {
+      port,
+      allocated_in: Some(allocated_in),
+    }
+  }
+  pub fn port(&self) -> u16 {
+    self.port
+  }
+}
+
+impl Drop for PortRangeAllocationHandle {
+  fn drop(&mut self) {
+    match std::mem::replace(&mut self.allocated_in, None) {
+      None => (),
+      Some(allocator) => {
+        allocator.mark_freed(self.port);
+      }
+    }
   }
 }
 
@@ -244,63 +338,59 @@ impl TcpTunnelManager {
       z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
         .await;
       // TODO: register a connection *only after* session authentication (make an async authn trait)
-      let next_port: u16 = self.bound_ports.allocate().await?;
+      let next_port: PortRangeAllocationHandle = bound_ports.allocate().await?;
       let lifetime_handler_span =
-        tracing::debug_span!("lifetime handler", id=?id, tcp_port=next_port);
-      finally_async(
-        async move || -> Result<(), AnyErr> {
-          let bind_addr = SocketAddr::new(bind_ip, next_port);
-          tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
-          let mut listener = TcpListenerStream::new(TcpListener::bind(bind_addr).await?);
-          tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+        tracing::debug_span!("lifetime handler", id=?id, tcp_port=next_port.port());
+      let lifetime_handler_res: Result<(), AnyErr> = async move {
+        let bind_addr = SocketAddr::new(bind_ip, next_port.port());
+        tracing::info!(target: "binding tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
+        let mut listener = TcpListenerStream::new(TcpListener::bind(bind_addr).await?);
+        tracing::info!(target: "bound tcp listener", id=?id, remote=?remote_addr, addr=?bind_addr);
 
-          let connection_provider = BasicProxyConnectionProvider::new(Box::new(tunnel));
-          let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
-          streams.push(
-            accept_loop(&mut listener, bind_addr, connection_provider)
-              .fuse()
-              .into_stream()
-              .boxed(),
-          );
-          // Watch for SIGINT and close the acceptance loop
-          // This is a bit early of placement for this check- Live connections may be abruptly closed by
-          // this design, and the connection handlers themselves should be watching for shutdown notifications.
-          // The accept loop should gracefully handle its own shutdown notification requests.
-          // TODO: Pass shutdown_notifier as a parameter instead, and add a max-duration hard-timeout here
-          streams.push(
-            shutdown_notifier
-              .map(|_| -> Result<(), AnyErr> {
-                Err(AnyErr::msg("Shutdown aborting acceptance loop"))
-              })
-              .into_stream()
-              .boxed(),
-          );
-          // Waiting for errors on uni-streams allows us to watch for a peer disconnection
-          streams.push(
-            incoming.streams()
-              .map(|_| ())
-              .filter(|_| future::ready(false))
-              .chain(stream::once(future::ready(())))
-              .take(1)
-              .map(|_| Err(anyhow::Error::msg("Peer disconnected")))
-              .fuse()
-              .boxed(),
-          );
+        let connection_provider = BasicProxyConnectionProvider::new(Box::new(tunnel));
+        let mut streams: Vec<stream::BoxStream<Result<(), AnyErr>>> = Vec::new();
+        streams.push(
+          accept_loop(&mut listener, bind_addr, connection_provider)
+            .fuse()
+            .into_stream()
+            .boxed(),
+        );
+        // Watch for SIGINT and close the acceptance loop
+        // This is a bit early of placement for this check- Live connections may be abruptly closed by
+        // this design, and the connection handlers themselves should be watching for shutdown notifications.
+        // The accept loop should gracefully handle its own shutdown notification requests.
+        // TODO: Pass shutdown_notifier as a parameter instead, and add a max-duration hard-timeout here
+        streams.push(
+          shutdown_notifier
+            .map(|_| -> Result<(), AnyErr> {
+              Err(AnyErr::msg("Shutdown aborting acceptance loop"))
+            })
+            .into_stream()
+            .boxed(),
+        );
+        // Waiting for errors on uni-streams allows us to watch for a peer disconnection
+        streams.push(
+          incoming.streams()
+            .map(|_| ())
+            .filter(|_| future::ready(false))
+            .chain(stream::once(future::ready(())))
+            .take(1)
+            .map(|_| Err(anyhow::Error::msg("Peer disconnected")))
+            .fuse()
+            .boxed(),
+        );
 
-          stream::select_all(streams)
-            .boxed()
-            .next()
-            .await
-            .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))?;
-          Ok(())
-        },
-        |_| async move {
-          // On success or failure, unbind port
-          bound_ports.free(next_port).await.map(|_| ())
-        }
-      )
-        .instrument(lifetime_handler_span)
-        .await?;
+        stream::select_all(streams)
+          .boxed()
+          .next()
+          .await
+          .unwrap_or_else(|| Err(AnyErr::msg("All streams ended without a message?")))?;
+        Ok(())
+      }
+      .instrument(lifetime_handler_span)
+      .await;
+
+      lifetime_handler_res?;
 
       Ok(())
     }.boxed()
