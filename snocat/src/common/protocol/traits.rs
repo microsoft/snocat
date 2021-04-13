@@ -73,15 +73,19 @@ impl Debug for TunnelRecord {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TunnelRegistrationError {
+  #[error("Tunnel ID was already occupied")]
   IdOccupied(TunnelId),
+  #[error("Tunnel name was already occupied and auto-replacement was refused")]
   NameOccupied(TunnelName),
 }
 
-#[derive(Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TunnelNamingError {
+  #[error("Tunnel name was already occupied and auto-replacement was refused")]
   NameOccupied(TunnelName),
+  #[error("The tunnel to be named was not found")]
   TunnelNotRegistered(TunnelId),
 }
 
