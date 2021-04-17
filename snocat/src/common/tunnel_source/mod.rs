@@ -251,12 +251,11 @@ mod tests {
     let a = stream::iter(vec!['a']).boxed();
     let b = stream::iter(vec!['b']).boxed();
     let c = stream::iter(vec!['c']).boxed();
-    set
-      .attach_stream(1u32, a)
-      .expect_none("Must attach to blank");
-    set
-      .attach_stream(2u32, b)
-      .expect_none("Must attach to non-blank with new key");
+    assert!(set.attach_stream(1u32, a).is_none(), "Must attach to blank");
+    assert!(
+      set.attach_stream(2u32, b).is_none(),
+      "Must attach to non-blank with new key"
+    );
     let mut replaced_b = set
       .attach_stream(2u32, c)
       .expect("Must overwrite keys and return an old one");
@@ -288,12 +287,11 @@ mod tests {
     let a = stream::iter(vec!['a']).boxed();
     let b = stream::iter(vec!['b']).boxed();
     let c = stream::iter(vec!['c']).boxed();
-    set
-      .attach_stream(1u32, a)
-      .expect_none("Must attach to blank");
-    set
-      .attach_stream(2u32, b)
-      .expect_none("Must attach to non-blank with new key");
+    assert!(set.attach_stream(1u32, a).is_none(), "Must attach to blank");
+    assert!(
+      set.attach_stream(2u32, b).is_none(),
+      "Must attach to non-blank with new key"
+    );
     set
       .attach_stream(2u32, c)
       .expect("Must replace existing keys");
@@ -311,13 +309,12 @@ mod tests {
     use std::sync::Arc;
     let set = Arc::new(DynamicStreamSet::<u32, i32>::new());
     let a = stream::iter(vec![1, 2, 3]).boxed();
-    set
-      .attach_stream(1u32, a)
-      .expect_none("Must attach to blank");
+    assert!(set.attach_stream(1u32, a).is_none(), "Must attach to blank");
     let collected = set.handle().collect::<Vec<_>>().await;
     assert_eq!(collected.as_slice(), &[(1, 1), (1, 2), (1, 3)]);
-    set
-      .detach(&1u32)
-      .expect_none("Must have already detached if polled to empty");
+    assert!(
+      set.detach(&1u32).is_none(),
+      "Must have already detached if polled to empty"
+    );
   }
 }

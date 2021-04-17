@@ -217,16 +217,19 @@ impl TunnelRegistry for InMemoryTunnelRegistry {
       if name.is_some() && tunnels.iter().any(|(_id, record)| record.name == name) {
         return Err(TunnelRegistrationError::NameOccupied(name.unwrap()));
       }
-      tunnels
-        .insert(
-          tunnel_id,
-          TunnelRecord {
-            id: tunnel_id,
-            name: name,
-            tunnel,
-          },
-        )
-        .expect_none("TunnelId overlap despite locked map where contains_key returned false");
+      assert!(
+        tunnels
+          .insert(
+            tunnel_id,
+            TunnelRecord {
+              id: tunnel_id,
+              name: name,
+              tunnel,
+            },
+          )
+          .is_none(),
+        "TunnelId overlap despite locked map where contains_key returned false"
+      );
       Ok(())
     }
     .boxed()

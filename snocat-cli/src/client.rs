@@ -151,9 +151,12 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     let add_new_connection = move |pair: BoxedTunnelPair<'static>| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
-      connections
-        .attach_stream(connection_id, stream::once(future::ready(pair)).boxed())
-        .expect_none("Connection IDs must be unique");
+      assert!(
+        connections
+          .attach_stream(connection_id, stream::once(future::ready(pair)).boxed())
+          .is_none(),
+        "Connection IDs must be unique"
+      );
       connection_id
     };
     (add_new_connection, connections_handle)
