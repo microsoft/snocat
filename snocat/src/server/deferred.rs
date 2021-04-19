@@ -2,7 +2,7 @@
 // Licensed under the MIT license OR Apache 2.0
 //! Server backend allowing a single-threaded reactor to concurrently run multiple tunnels.
 
-use crate::common::MetaStreamHeader;
+use crate::common::{protocol::tunnel::TunnelName, MetaStreamHeader};
 use crate::util::{
   self,
   validators::{parse_ipaddr, parse_port_range, parse_socketaddr},
@@ -18,7 +18,6 @@ use quinn::{
   Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
   ServerConfig, ServerConfigBuilder, TransportConfig,
 };
-use serde::{Deserializer, Serializer};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::{
@@ -29,41 +28,6 @@ use std::{
 };
 use tracing::{info, instrument, trace};
 
-/// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
-#[repr(transparent)]
-pub struct SnocatClientIdentifier(Arc<String>);
-
-impl serde::Serialize for SnocatClientIdentifier {
-  fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
-  where
-    S: Serializer,
-  {
-    serializer.serialize_str(&self.0)
-  }
-}
-impl<'de> serde::de::Deserialize<'de> for SnocatClientIdentifier {
-  fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error>
-  where
-    D: Deserializer<'de>,
-  {
-    let s: String = serde::Deserialize::deserialize(deserializer)?;
-    Ok(SnocatClientIdentifier::new(s))
-  }
-}
-
-impl SnocatClientIdentifier {
-  pub fn new<T: std::convert::Into<String>>(t: T) -> SnocatClientIdentifier {
-    SnocatClientIdentifier(t.into().into())
-  }
-}
-
-impl std::fmt::Debug for SnocatClientIdentifier {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("Snocat").field("Id", &self.0).finish()
-  }
-}
-
 /// High-level logging events a [`TunnelManager`] *may* report to its connection handler.
 /// Should only be used for high-level logging; individual stream monitoring and lifecycle watching
 /// should instead be done by implementing or wrapping a [`TunnelManager`] to monitor connections.
@@ -71,9 +35,9 @@ impl std::fmt::Debug for SnocatClientIdentifier {
 pub enum TunnelServerEvent {
   DebugMessage(String),
   Open(SocketAddr),
-  Identified(SnocatClientIdentifier, SocketAddr),
-  Close(SnocatClientIdentifier, SocketAddr),
-  Failure(SocketAddr, Option<SnocatClientIdentifier>, String),
+  Identified(TunnelName, SocketAddr),
+  Close(TunnelName, SocketAddr),
+  Failure(SocketAddr, Option<TunnelName>, String),
 }
 
 /// A [`TunnelManager`](trait@TunnelManager) is responsible for the lifecycle of individual tunnels.

@@ -3,7 +3,6 @@
 //! Bindings for instantiation and control via C ABI
 
 use crate::ffi::errors::FfiError;
-use crate::server::deferred::SnocatClientIdentifier;
 use crate::util::tunnel_stream::TunnelStream;
 use crate::{
   common::authentication::{self, TunnelInfo},

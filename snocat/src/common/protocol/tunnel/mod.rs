@@ -7,13 +7,14 @@ use std::{
   sync::Arc,
 };
 
-use crate::{server::deferred::SnocatClientIdentifier, util::tunnel_stream::WrappedStream};
+use crate::util::tunnel_stream::WrappedStream;
 use futures::{
   future::{BoxFuture, Either},
   stream::{BoxStream, LocalBoxStream, Stream, StreamFuture, TryStreamExt},
   FutureExt, StreamExt,
 };
 use quinn::{crypto::Session, generic::RecvStream, ApplicationClose, SendStream};
+use serde::{Deserializer, Serializer};
 use tokio::{
   io::{AsyncRead, AsyncWrite},
   sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -27,7 +28,50 @@ pub type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnelPair<'a> = (ArcTunnel<'a>, TunnelIncoming);
 
-pub type TunnelName = SnocatClientIdentifier;
+/// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
+#[repr(transparent)]
+pub struct TunnelName(Arc<String>);
+
+impl serde::Serialize for TunnelName {
+  fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(&self.0)
+  }
+}
+impl<'de> serde::de::Deserialize<'de> for TunnelName {
+  fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let s: String = serde::Deserialize::deserialize(deserializer)?;
+    Ok(TunnelName::new(s))
+  }
+}
+
+impl TunnelName {
+  pub fn new<T: std::convert::Into<String>>(t: T) -> TunnelName {
+    TunnelName(t.into().into())
+  }
+
+  pub fn raw(&self) -> &str {
+    &self.0
+  }
+}
+
+impl Into<String> for TunnelName {
+  fn into(self) -> String {
+    self.0.as_ref().clone()
+  }
+}
+
+impl std::fmt::Debug for TunnelName {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Snocat").field("Id", &self.0).finish()
+  }
+}
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,

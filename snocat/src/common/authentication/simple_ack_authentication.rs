@@ -2,7 +2,6 @@
 // Licensed under the MIT license OR Apache 2.0
 use super::traits::*;
 #[warn(unused_imports)]
-use crate::server::deferred::SnocatClientIdentifier;
 use crate::{
   common::protocol::tunnel::{TunnelName, TunnelSide},
   util::tunnel_stream::TunnelStream,
@@ -58,7 +57,7 @@ impl SimpleAckAuthenticationHandler {
       };
       tracing::trace!("client_ack");
       let peer_addr = tunnel_info.addr;
-      let id = SnocatClientIdentifier::new(peer_addr.to_string());
+      let id = TunnelName::new(peer_addr.to_string());
       Ok(Ok(id))
     }
     .boxed()
@@ -99,7 +98,7 @@ impl SimpleAckAuthenticationHandler {
         Err(e) => return Ok(Err(e)),
       };
       let peer_addr = tunnel_info.addr;
-      let id = SnocatClientIdentifier::new(peer_addr.to_string());
+      let id = TunnelName::new(peer_addr.to_string());
       Ok(Ok(id))
     }
     .map(Into::into)

@@ -7,9 +7,7 @@ use crate::common::{
   protocol::tunnel::{Tunnel, TunnelIncomingType, TunnelSide},
   MetaStreamHeader,
 };
-use crate::server::deferred::{
-  ConcurrentDeferredTunnelServer, SnocatClientIdentifier, TunnelManager, TunnelServerEvent,
-};
+use crate::server::deferred::{ConcurrentDeferredTunnelServer, TunnelManager, TunnelServerEvent};
 use crate::util::framed::write_framed_json;
 use crate::util::tunnel_stream::{QuinnTunnelStream, TunnelStream};
 use crate::util::{
