@@ -73,20 +73,24 @@ impl Debug for TunnelRecord {
   }
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum TunnelRegistrationError {
   #[error("Tunnel ID was already occupied")]
   IdOccupied(TunnelId),
   #[error("Tunnel name was already occupied and auto-replacement was refused")]
   NameOccupied(TunnelName),
+  #[error(transparent)]
+  ApplicationError(anyhow::Error),
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum TunnelNamingError {
   #[error("Tunnel name was already occupied and auto-replacement was refused")]
   NameOccupied(TunnelName),
   #[error("The tunnel to be named was not found")]
   TunnelNotRegistered(TunnelId),
+  #[error(transparent)]
+  ApplicationError(anyhow::Error),
 }
 
 pub trait TunnelRegistry: Downcast + DowncastSync {

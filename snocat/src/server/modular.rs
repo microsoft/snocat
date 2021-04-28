@@ -177,7 +177,7 @@ enum TunnelLifecycleError {
   #[error(transparent)]
   RegistryNamingError(#[from] TunnelNamingError),
   #[error(transparent)]
-  RequestProcessingError(#[from] RequestProcessingError),
+  RequestProcessingError(RequestProcessingError),
   #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
   AuthenticationRefused,
   #[error("Fatal error encountered in tunnel lifecycle: {0:?}")]
@@ -190,6 +190,19 @@ enum RequestProcessingError {
   UnsupportedProtocolVersion,
   #[error("Tunnel error encountered: {0}")]
   TunnelError(TunnelError),
+  #[error(transparent)]
+  FatalError(anyhow::Error),
+}
+
+impl From<RequestProcessingError> for TunnelLifecycleError {
+  fn from(e: RequestProcessingError) -> TunnelLifecycleError {
+    match e {
+      RequestProcessingError::FatalError(fatal_error) => {
+        TunnelLifecycleError::FatalError(fatal_error)
+      }
+      non_fatal => TunnelLifecycleError::RequestProcessingError(non_fatal),
+    }
+  }
 }
 
 impl ModularDaemon
@@ -363,6 +376,16 @@ where
         tracing::debug!("Refused request due to unsupported service version");
         Ok(())
       }
+      Err(NegotiationError::ApplicationError(e)) => {
+        tracing::warn!(err=?e, "Refused request due to application error in negotiation");
+        Ok(())
+      }
+      Err(NegotiationError::FatalError(e)) => {
+        tracing::error!(err=?e, "Refused request due to fatal application error in negotiation");
+        Err(RequestProcessingError::FatalError(
+          NegotiationError::FatalError(e).into(),
+        ))
+      }
       Ok((link, route_addr, service)) => {
         if shutdown.is_triggered() {
           // Drop services post-negotiation if the connection is awaiting
@@ -416,6 +439,10 @@ where
           );
           TunnelRegistrationError::NameOccupied(name)
         }
+        TunnelRegistrationError::ApplicationError(e) => {
+          tracing::error!(err=?e, "ApplicationError in tunnel registration");
+          TunnelRegistrationError::ApplicationError(e)
+        }
       })
       .await
   }
@@ -441,6 +468,10 @@ where
           // serialize all registry changes using a tokio::task with an ordered channel.
           tracing::error!("Tunnel reported as not registered from naming task");
           TunnelNamingError::TunnelNotRegistered(id)
+        }
+        TunnelNamingError::ApplicationError(e) => {
+          tracing::error!(err=?e, "ApplicationError in tunnel naming");
+          TunnelNamingError::ApplicationError(e)
         }
       })
       .await

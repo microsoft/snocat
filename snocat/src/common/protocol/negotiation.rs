@@ -16,7 +16,7 @@ use super::{traits::ServiceRegistry, tunnel::TunnelId, RouteAddress, Service};
 /// Identifies the SNOCAT protocol over a stream
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum NegotiationError {
   #[error("Stream read failed")]
   ReadError,
@@ -30,6 +30,10 @@ pub enum NegotiationError {
   UnsupportedProtocolVersion,
   #[error("Service version not supported")]
   UnsupportedServiceVersion,
+  #[error(transparent)]
+  ApplicationError(#[from] anyhow::Error),
+  #[error(transparent)]
+  FatalError(anyhow::Error),
 }
 
 /// Write future to send our magic and version to the remote,
