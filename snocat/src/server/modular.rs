@@ -2,10 +2,10 @@ use authentication::perform_authentication;
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use futures::{
-  future::{self, BoxFuture, FutureExt, TryFutureExt},
-  stream, Future, Stream, StreamExt, TryStreamExt,
+  future::{self, TryFutureExt},
+  Future, Stream, StreamExt, TryStreamExt,
 };
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 use tracing::Instrument;
 use triggered::Listener;
 use tunnel::{TunnelError, TunnelName};
@@ -14,23 +14,20 @@ use crate::common::{
   authentication::{self, AuthenticationHandler},
   protocol::{
     negotiation::{self, NegotiationError, NegotiationService},
-    request_handler::{RequestClientHandler, RequestHandlingError},
+    request_handler::RequestClientHandler,
     traits::{ServiceRegistry, TunnelNamingError, TunnelRegistrationError, TunnelRegistry},
     tunnel::{
       self, id::TunnelIDGenerator, ArcTunnel, ArcTunnelPair, BoxedTunnelPair, TunnelId,
       TunnelIncomingType,
     },
-    Client, Request, Response, RouteAddress, Router, RoutingError, ServiceError,
+    RouteAddress, Router,
   },
 };
 use crate::common::{
-  authentication::{AuthenticationError, AuthenticationHandlingError, RemoteAuthenticationError},
+  authentication::{AuthenticationError, AuthenticationHandlingError},
   protocol::traits::SerializedTunnelRegistry,
 };
-use crate::{
-  common::protocol::ClientError,
-  util::tunnel_stream::{TunnelStream, WrappedStream},
-};
+use crate::util::tunnel_stream::WrappedStream;
 
 pub struct ModularDaemon {
   service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,

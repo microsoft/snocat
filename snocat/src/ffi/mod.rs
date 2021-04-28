@@ -6,11 +6,6 @@ use crate::ffi::errors::FfiError;
 use crate::util::tunnel_stream::TunnelStream;
 use crate::{
   common::authentication::{self, TunnelInfo},
-  server::{
-    self,
-    deferred::{ConcurrentDeferredTunnelServer, TunnelManager},
-    PortRangeAllocator, TcpTunnelManager,
-  },
   util::{self, vtdroppable::VTDroppable},
   DroppableCallback,
 };
@@ -122,32 +117,6 @@ pub extern "C" fn snocat_report_async_update(
       .map_err(Into::into)
   })
 }
-
-struct ServerHandle(
-  Arc<ConcurrentDeferredTunnelServer<Arc<dyn TunnelManager>>>,
-  tokio::task::JoinHandle<()>,
-);
-impl Drop for ServerHandle {
-  fn drop(&mut self) {
-    // println!("Calling Server Handle destructor");
-  }
-}
-
-lazy_static! {
-  static ref SERVER_HANDLES: ConcurrentHandleMap<ServerHandle> = ConcurrentHandleMap::new();
-}
-unsafe impl IntoFfi for ServerHandle {
-  type Value = u64;
-
-  fn ffi_default() -> Self::Value {
-    ffi_support::Handle::ffi_default()
-  }
-
-  fn into_ffi_value(self) -> Self::Value {
-    SERVER_HANDLES.insert(self).into_u64()
-  }
-}
-define_handle_map_deleter!(SERVER_HANDLES, snocat_free_server_handle);
 
 #[cfg(test)]
 lazy_static! {
