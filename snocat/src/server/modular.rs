@@ -10,7 +10,6 @@ use tracing::Instrument;
 use triggered::Listener;
 use tunnel::{TunnelError, TunnelName};
 
-use crate::common::protocol::traits::SerializedTunnelRegistry;
 use crate::common::{
   authentication::{self, AuthenticationHandler},
   protocol::{
@@ -23,6 +22,10 @@ use crate::common::{
     },
     Client, Request, Response, RouteAddress, Router, RoutingError, ServiceError,
   },
+};
+use crate::common::{
+  authentication::{AuthenticationError, AuthenticationHandlingError, RemoteAuthenticationError},
+  protocol::traits::SerializedTunnelRegistry,
 };
 use crate::{
   common::protocol::ClientError,
@@ -47,10 +50,12 @@ impl ModularDaemon {
     self: &Arc<Self>,
     (tunnel, mut incoming): tunnel::ArcTunnelPair<'a>,
     shutdown: &Listener,
-  ) -> impl Future<Output = Result<(tunnel::TunnelName, tunnel::ArcTunnelPair<'a>), anyhow::Error>> + 'a
-  {
+  ) -> impl Future<
+    Output = Result<Option<(tunnel::TunnelName, tunnel::ArcTunnelPair<'a>)>, anyhow::Error>,
+  > + 'a {
     let shutdown = shutdown.clone();
     let authentication_handler = Arc::clone(&self.authentication_handler);
+
     async move {
       let result = perform_authentication(
         authentication_handler.as_ref(),
@@ -58,8 +63,34 @@ impl ModularDaemon {
         &mut incoming,
         &shutdown,
       )
-      .await??;
-      Ok((result, (tunnel, incoming)))
+      .await;
+      match result {
+        Err(AuthenticationError::Handling(AuthenticationHandlingError::FatalApplicationError(
+          fatal_error,
+        ))) => {
+          tracing::error!(reason=?fatal_error, "Authentication encountered fatal error!");
+          anyhow::Context::context(
+            Err(fatal_error),
+            "Fatal error encountered while handling authentication",
+          )
+        }
+        Err(AuthenticationError::Handling(handling_error)) => {
+          // Non-fatal handling errors are passed to tracing and close the tunnel
+          tracing::warn!(
+            reason = (&handling_error as &dyn std::error::Error),
+            "Tunnel closed due to authentication handling failure"
+          );
+          Ok(None)
+        }
+        Err(AuthenticationError::Remote(remote_error)) => {
+          tracing::debug!(
+            reason = (&remote_error as &dyn std::error::Error),
+            "Tunnel closed due to remote authentication failure"
+          );
+          Ok(None)
+        }
+        Ok(tunnel_name) => Ok(Some((tunnel_name, (tunnel, incoming)))),
+      }
     }
   }
 }
@@ -142,24 +173,18 @@ where
   }
 }
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 enum TunnelLifecycleError {
-  RegistrationError(TunnelRegistrationError),
-  RegistryNamingError(TunnelNamingError),
-  AuthenticationFailure(anyhow::Error), // TODO: Define a stronger type for authentication failures
-  RequestProcessingError(RequestProcessingError),
-}
-
-impl From<TunnelRegistrationError> for TunnelLifecycleError {
-  fn from(e: TunnelRegistrationError) -> Self {
-    Self::RegistrationError(e)
-  }
-}
-
-impl From<TunnelNamingError> for TunnelLifecycleError {
-  fn from(e: TunnelNamingError) -> Self {
-    Self::RegistryNamingError(e)
-  }
+  #[error(transparent)]
+  RegistrationError(#[from] TunnelRegistrationError),
+  #[error(transparent)]
+  RegistryNamingError(#[from] TunnelNamingError),
+  #[error(transparent)]
+  RequestProcessingError(#[from] RequestProcessingError),
+  #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
+  AuthenticationRefused,
+  #[error("Fatal error encountered in tunnel lifecycle: {0:?}")]
+  FatalError(anyhow::Error),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -168,12 +193,6 @@ enum RequestProcessingError {
   UnsupportedProtocolVersion,
   #[error("Tunnel error encountered: {0}")]
   TunnelError(TunnelError),
-}
-
-impl From<RequestProcessingError> for TunnelLifecycleError {
-  fn from(e: RequestProcessingError) -> Self {
-    Self::RequestProcessingError(e)
-  }
 }
 
 impl ModularDaemon
@@ -207,8 +226,11 @@ where
       match Self::registered_tunnel_lifecycle(id, (tunnel, incoming), server, shutdown, tunnel_registry).await {
         Ok(lifecycle_result) => Ok(lifecycle_result),
         Err(e) => {
-          let record = serialized_registry.deregister_tunnel(id).await;
-          tracing::info!(error=?e, ?record, "Deregistered due to lifecycle error; possible record retrieved");
+          let deregistered = serialized_registry.deregister_tunnel(id).await.ok();
+          match &e {
+            &TunnelLifecycleError::AuthenticationRefused => tracing::debug!(err=?e, record=?deregistered, "Deregistered due to authentication refusal"),
+            e => tracing::info!(err=?e, record=?deregistered, "Deregistered due to lifecycle error")
+          }
           Err(e)
         }
       }
@@ -229,11 +251,16 @@ where
       server
         .authenticate_tunnel((tunnel, incoming), &shutdown)
         .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", ?id))
+        .map_err(TunnelLifecycleError::FatalError)
     };
 
-    let (tunnel_name, (tunnel, incoming)) = tunnel_authentication
-      .await
-      .map_err(TunnelLifecycleError::AuthenticationFailure)?;
+    let (tunnel_name, tunnel, incoming) = match tunnel_authentication.await? {
+      Some((tunnel_name, (tunnel, incoming))) => (tunnel_name, tunnel, incoming),
+      None => {
+        let _ = serialized_tunnel_registry.deregister_tunnel(id).await;
+        return Ok(());
+      }
+    };
 
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
     {

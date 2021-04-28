@@ -19,9 +19,16 @@ pub struct TunnelInfo {
   pub addr: TunnelAddressInfo,
 }
 
-/// Errors with the authentication layer considered fatal to the authenticator
-#[derive(Error, Debug)]
-pub enum AuthenticationError {}
+/// Some errors within the authentication layer are considered fatal to the authenticator
+#[derive(thiserror::Error, Debug)]
+pub enum AuthenticationHandlingError {
+  #[error("A dependency for authentication failed")]
+  DependencyFailure(String, anyhow::Error),
+  #[error(transparent)]
+  ApplicationError(#[from] anyhow::Error),
+  #[error(transparent)]
+  FatalApplicationError(anyhow::Error),
+}
 
 /// Errors explaining why authentication was refused
 #[derive(Error, Debug)]
@@ -51,13 +58,43 @@ pub enum RemoteAuthenticationError {
   ProtocolViolation(String),
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum AuthenticationError {
+  #[error(transparent)]
+  Handling(#[from] AuthenticationHandlingError),
+  #[error(transparent)]
+  Remote(#[from] RemoteAuthenticationError),
+}
+
+impl AuthenticationError {
+  pub fn to_nested_result<T>(
+    res: Result<T, Self>,
+  ) -> Result<Result<T, RemoteAuthenticationError>, AuthenticationHandlingError> {
+    match res {
+      Ok(res) => Ok(Ok(res)),
+      Err(AuthenticationError::Handling(e)) => Err(e),
+      Err(AuthenticationError::Remote(e)) => Ok(Err(e)),
+    }
+  }
+
+  pub fn from_nested_result<T>(
+    res: Result<Result<T, RemoteAuthenticationError>, AuthenticationHandlingError>,
+  ) -> Result<T, Self> {
+    match res {
+      Ok(Ok(res)) => Ok(res),
+      Err(e) => Err(AuthenticationError::Handling(e)),
+      Ok(Err(e)) => Err(AuthenticationError::Remote(e)),
+    }
+  }
+}
+
 pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
   fn authenticate<'a>(
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>>;
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>>;
 }
 
 impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
@@ -66,7 +103,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     self
       .as_ref()
       .authenticate(channel, tunnel_info, shutdown_notifier)
@@ -78,7 +115,7 @@ pub fn perform_authentication<'a>(
   tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
   incoming: &'a mut TunnelIncoming,
   shutdown_notifier: &'a Listener,
-) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
   use tracing::{debug, span, warn, Instrument, Level};
   let tunnel_info = TunnelInfo {
     side: tunnel.side(),
@@ -90,19 +127,18 @@ pub fn perform_authentication<'a>(
   let establishment = {
     let side = tunnel_info.side;
     async move {
-      let auth_channel: Result<Result<_, RemoteAuthenticationError>, AuthenticationError> = match side {
+      let auth_channel: Result<_, AuthenticationError> = match side {
         TunnelSide::Listen => {
           let link: Result<_, TunnelError> = tunnel.open_link()
             .instrument(span!(Level::DEBUG, "open_link"))
             .await;
-          Ok(match link {
-            Err(TunnelError::ApplicationClosed) => Err(RemoteAuthenticationError::LinkClosedLocally),
-            Err(TunnelError::LocallyClosed) => Err(RemoteAuthenticationError::LinkClosedLocally),
-            Err(TunnelError::ConnectionClosed) => Err(RemoteAuthenticationError::LinkClosedRemotely),
-            Err(TunnelError::TimedOut) => Err(RemoteAuthenticationError::TimedOut),
-            Err(TunnelError::TransportError) => Err(RemoteAuthenticationError::TransportError),
-            Ok(stream) => Ok(stream),
-          })
+          link.map_err(|e| match e {
+            TunnelError::ApplicationClosed => RemoteAuthenticationError::LinkClosedLocally,
+            TunnelError::LocallyClosed => RemoteAuthenticationError::LinkClosedLocally,
+            TunnelError::ConnectionClosed => RemoteAuthenticationError::LinkClosedRemotely,
+            TunnelError::TimedOut => RemoteAuthenticationError::TimedOut,
+            TunnelError::TransportError => RemoteAuthenticationError::TransportError,
+          }.into())
         },
         TunnelSide::Connect => {
           let next: Result<Option<_>, TunnelError> = incoming
@@ -112,35 +148,28 @@ pub fn perform_authentication<'a>(
             .await;
 
           match next {
-            Ok(Some(TunnelIncomingType::BiStream(stream))) => Ok(Ok(stream)),
-            _ => Ok(Err(RemoteAuthenticationError::IncomingStreamsClosed)),
+            Ok(Some(TunnelIncomingType::BiStream(stream))) => Ok(stream),
+            _ => Err(RemoteAuthenticationError::IncomingStreamsClosed.into()),
           }
         }
       };
 
-      // Without nicer monadic operations, we're stuck doing this weirdness to work with Result<Result<A, B>, C>
-      match auth_channel {
-        Err(local_err) => {
+      auth_channel.map_err(|e| match e {
+        AuthenticationError::Handling(local_err) => {
           warn!(error=?local_err, "AuthenticationError reported during tunnel establishment phase");
-          return Err(local_err);
+          local_err.into()
         },
-        Ok(Err(remote_err)) => {
+        AuthenticationError::Remote(remote_err) => {
           debug!(error=?remote_err, "Remote authentication failure reported in tunnel establishment phase");
-          return Ok(Err(remote_err));
-        },
-        Ok(Ok(auth_channel)) => Ok(Ok(auth_channel)),
-      }
+          remote_err.into()
+        }
+      })
     }.instrument(tracing_span_establishment)
   };
 
   async move {
-    let establishment: Result<Result<_, RemoteAuthenticationError>, AuthenticationError> =
-      establishment.await;
-    let auth_channel = match establishment {
-      Ok(Ok(auth_channel)) => auth_channel,
-      Ok(Err(e)) => return Ok(Err(e)),
-      Err(e) => return Err(e),
-    };
+    let establishment: Result<_, AuthenticationError> = establishment.await;
+    let auth_channel = establishment?;
     handler
       .authenticate(Box::new(auth_channel), tunnel_info, shutdown_notifier)
       .instrument(span!(Level::DEBUG, "authenticator"))

@@ -23,7 +23,7 @@ impl SimpleAckAuthenticationHandler {
     mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       tracing::info!("Sending HELO...");
       let mut buffer = [0u8; 64];
@@ -31,34 +31,33 @@ impl SimpleAckAuthenticationHandler {
       use tokio::io::AsyncReadExt;
       use tokio::io::AsyncWriteExt;
       write!(&mut buffer[..], "HELO").unwrap();
-      match channel
+      channel
         .write_all(&buffer)
         .map_err(|_e| RemoteAuthenticationError::ProtocolViolation("Write refused".into()))
-        .await
-      {
-        Ok(()) => (),
-        Err(e) => return Ok(Err(e)),
-      };
+        .await?;
       buffer = [0u8; 64];
-      match channel
+      channel
         .read_exact(&mut buffer)
         .map_err(|_e| RemoteAuthenticationError::ProtocolViolation("Read unavailable".into()))
-        .await
-      {
-        Ok(_read_count) => (),
-        Err(e) => return Ok(Err(e)),
-      };
-      let read_string = std::str::from_utf8(&buffer).unwrap();
-      if !read_string.starts_with("HELO/HELO\0") {
-        tracing::trace!(raw = read_string, "bad_client_ack");
-        return Ok(Err(RemoteAuthenticationError::ProtocolViolation(
-          "Invalid client ack".to_string(),
-        )));
-      };
-      tracing::trace!("client_ack");
+        .await?;
+      std::str::from_utf8(&buffer)
+        .map_err(|_| {
+          RemoteAuthenticationError::ProtocolViolation("Received string was not valid UTF8".into())
+        })
+        .and_then(|decoded| {
+          if !decoded.starts_with("HELO/HELO\0") {
+            tracing::trace!(raw = decoded, "bad_client_ack");
+            Err(
+              RemoteAuthenticationError::ProtocolViolation("Invalid client ack".to_string()).into(),
+            )
+          } else {
+            tracing::trace!("client_ack");
+            Ok(())
+          }
+        })?;
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(Ok(id))
+      Ok(id)
     }
     .boxed()
   }
@@ -68,38 +67,32 @@ impl SimpleAckAuthenticationHandler {
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let (mut recv, mut send) = tokio::io::split(channel);
       use std::io::Write;
       use tokio::io::AsyncReadExt;
       use tokio::io::AsyncWriteExt;
       let mut header = [0u8; 64];
-      match AsyncReadExt::read_exact(&mut recv, &mut header)
+      // TODO: Actually read the contents of the header
+      AsyncReadExt::read_exact(&mut recv, &mut header)
         .map_err(|_| RemoteAuthenticationError::ProtocolViolation("Read unavailable".into()))
-        .await
-      {
-        // TODO: Actually read the header
-        Ok(_read_count) => (),
-        Err(e) => return Ok(Err(e)),
-      };
+        .await?;
       let first_zero = header.iter().position(|x| *x == 0).unwrap_or(32);
       let read_string = std::str::from_utf8(&header[0..first_zero])
-        .unwrap()
+        .map_err(|_| {
+          RemoteAuthenticationError::ProtocolViolation("Received string was not valid UTF8".into())
+        })?
         .to_string();
       tracing::debug!("Received header: {}", read_string);
       header = [0u8; 64];
       write!(&mut header[..], "{}/{}", &read_string, &read_string).unwrap();
-      match AsyncWriteExt::write_all(&mut send, &header)
+      AsyncWriteExt::write_all(&mut send, &header)
         .map_err(|_| RemoteAuthenticationError::ProtocolViolation("Write refused".into()))
-        .await
-      {
-        Ok(()) => (),
-        Err(e) => return Ok(Err(e)),
-      };
+        .await?;
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(Ok(id))
+      Ok(id)
     }
     .map(Into::into)
     .boxed()
@@ -122,7 +115,7 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     match tunnel_info.side {
       TunnelSide::Listen => self
         .authenticate_listen_side(channel, tunnel_info, shutdown_notifier)
@@ -164,13 +157,7 @@ mod tests {
       perform_authentication(&auth_server, &listener.0, &mut listener.1, &never_shutdown);
 
     let (client_res, server_res) = futures::future::join(client_auth_task, server_auth_task).await;
-    assert_eq!(
-      client_res.unwrap().unwrap(),
-      TunnelName::new("Unidentified")
-    );
-    assert_eq!(
-      server_res.unwrap().unwrap(),
-      TunnelName::new("Unidentified")
-    );
+    assert_eq!(client_res.unwrap(), TunnelName::new("Unidentified"));
+    assert_eq!(server_res.unwrap(), TunnelName::new("Unidentified"));
   }
 }

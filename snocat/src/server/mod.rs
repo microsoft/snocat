@@ -332,7 +332,7 @@ impl TcpTunnelManager {
       let (mut tunnel, mut incoming) = crate::common::protocol::tunnel::from_quinn_endpoint(tunnel, TunnelSide::Listen);
       let id =
         authentication::perform_authentication(&self.authenticator, &mut tunnel, &mut incoming, &shutdown_notifier)
-          .await??;
+          .await?;
       z.send(TunnelServerEvent::Identified(id.clone(), remote_addr))
         .await;
       // TODO: register a connection *only after* session authentication (make an async authn trait)

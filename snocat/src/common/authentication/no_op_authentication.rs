@@ -32,11 +32,11 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a triggered::Listener,
-  ) -> BoxFuture<'a, Result<Result<TunnelName, RemoteAuthenticationError>, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(Ok(id))
+      Ok(id)
     }
     .boxed()
   }
