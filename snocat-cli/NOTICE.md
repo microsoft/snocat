@@ -11,9 +11,6 @@ their own copyright notices and license terms:
 * [ansi_term v0.11.0]() - MIT
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
 * [anyhow v1.0.39](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
-* [async-stream-impl v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
-* [async-stream v0.3.0](https://github.com/tokio-rs/async-stream) - MIT
-* [async-trait v0.1.48](https://github.com/dtolnay/async-trait) - MIT OR Apache-2.0
 * [atty v0.2.14](https://github.com/softprops/atty) - MIT
 * [autocfg v1.0.1](https://github.com/cuviper/autocfg) - Apache-2.0 OR MIT
 * [base64 v0.13.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
@@ -26,10 +23,7 @@ their own copyright notices and license terms:
 * [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
 * [ct-logs v0.8.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
 * [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
-* [either v1.6.1](https://github.com/bluss/either) - MIT/Apache-2.0
 * [ffi-support v0.4.2](https://github.com/mozilla/application-services) - Apache-2.0 / MIT
-* [fixedbitset v0.2.0](https://github.com/bluss/fixedbitset) - MIT/Apache-2.0
-* [fnv v1.0.7](https://github.com/servo/rust-fnv) - Apache-2.0 / MIT
 * [futures-channel v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-core v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-executor v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
@@ -41,16 +35,6 @@ their own copyright notices and license terms:
 * [futures v0.3.13](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [gen-z v0.1.0](https://github.com/Dessix/gen-z-rs) - MIT OR Apache-2.0
 * [getrandom v0.2.2](https://github.com/rust-random/getrandom) - MIT OR Apache-2.0
-* [h2 v0.3.1](https://github.com/hyperium/h2) - MIT
-* [hashbrown v0.9.1](https://github.com/rust-lang/hashbrown) - Apache-2.0/MIT
-* [heck v0.3.2](https://github.com/withoutboats/heck) - MIT OR Apache-2.0
-* [httparse v1.3.5](https://github.com/seanmonstar/httparse) - MIT/Apache-2.0
-* [http-body v0.4.1](https://github.com/hyperium/http-body) - MIT
-* [httpdate v0.3.2](https://github.com/pyfisch/httpdate) - MIT/Apache-2.0
-* [http v0.2.3](https://github.com/hyperium/http) - MIT/Apache-2.0
-* [hyper v0.14.4](https://github.com/hyperium/hyper) - MIT
-* [indexmap v1.6.2](https://github.com/bluss/indexmap) - Apache-2.0/MIT
-* [itertools v0.9.0](https://github.com/bluss/rust-itertools) - MIT/Apache-2.0
 * [itoa v0.4.7](https://github.com/dtolnay/itoa) - MIT OR Apache-2.0
 * [lazy_static v1.4.0](https://github.com/rust-lang-nursery/lazy-static.rs) - MIT/Apache-2.0
 * [libc v0.2.90](https://github.com/rust-lang/libc) - MIT OR Apache-2.0
@@ -58,15 +42,12 @@ their own copyright notices and license terms:
 * [matchers v0.0.1](https://github.com/hawkw/matchers) - MIT
 * [memchr v2.3.4](https://github.com/BurntSushi/rust-memchr) - Unlicense/MIT
 * [mio v0.7.10](https://github.com/tokio-rs/mio) - MIT
-* [multimap v0.8.3](https://github.com/havarnov/multimap) - MIT/Apache-2.0
 * [num_cpus v1.13.0](https://github.com/seanmonstar/num_cpus) - MIT/Apache-2.0
 * [num-integer v0.1.44](https://github.com/rust-num/num-integer) - MIT OR Apache-2.0
 * [num-traits v0.2.14](https://github.com/rust-num/num-traits) - MIT OR Apache-2.0
 * [once_cell v1.7.2](https://github.com/matklad/once_cell) - MIT OR Apache-2.0
 * [openssl-probe v0.1.2](https://github.com/alexcrichton/openssl-probe) - MIT/Apache-2.0
 * [pem v0.8.3](https://github.com/jcreekmore/pem-rs.git) - MIT
-* [percent-encoding v2.1.0](https://github.com/servo/rust-url/) - MIT/Apache-2.0
-* [petgraph v0.5.1](https://github.com/petgraph/petgraph) - MIT/Apache-2.0
 * [pin-project-internal v1.0.5](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
 * [pin-project-lite v0.2.6](https://github.com/taiki-e/pin-project-lite) - Apache-2.0 OR MIT
 * [pin-project v1.0.5](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
@@ -75,10 +56,6 @@ their own copyright notices and license terms:
 * [proc-macro2 v1.0.24](https://github.com/alexcrichton/proc-macro2) - MIT OR Apache-2.0
 * [proc-macro-hack v0.5.19](https://github.com/dtolnay/proc-macro-hack) - MIT OR Apache-2.0
 * [proc-macro-nested v0.1.7](https://github.com/dtolnay/proc-macro-hack) - MIT OR Apache-2.0
-* [prost-build v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
-* [prost-derive v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
-* [prost-types v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
-* [prost v0.7.0](https://github.com/danburkert/prost) - Apache-2.0
 * [quinn-proto v0.7.1](https://github.com/djc/quinn) - MIT OR Apache-2.0
 * [quinn v0.7.1](https://github.com/djc/quinn) - MIT OR Apache-2.0
 * [quote v1.0.9](https://github.com/dtolnay/quote) - MIT OR Apache-2.0
@@ -89,7 +66,6 @@ their own copyright notices and license terms:
 * [regex-automata v0.1.9](https://github.com/BurntSushi/regex-automata) - Unlicense/MIT
 * [regex-syntax v0.6.23](https://github.com/rust-lang/regex) - MIT/Apache-2.0
 * [regex v1.4.5](https://github.com/rust-lang/regex) - MIT OR Apache-2.0
-* [remove_dir_all v0.5.3](https://github.com/XAMPPRocky/remove_dir_all.git) - MIT/Apache-2.0
 * [ring v0.16.20](https://github.com/briansmith/ring) - (**Nonstandard License**, see project link)
 * [rustls-native-certs v0.5.0](https://github.com/ctz/rustls-native-certs) - Apache-2.0/ISC/MIT
 * [rustls v0.19.0](https://github.com/ctz/rustls) - Apache-2.0/ISC/MIT
@@ -102,13 +78,10 @@ their own copyright notices and license terms:
 * [signal-hook-registry v1.3.0](https://github.com/vorner/signal-hook) - Apache-2.0/MIT
 * [slab v0.4.2](https://github.com/carllerche/slab) - MIT
 * [smallvec v1.6.1](https://github.com/servo/rust-smallvec) - MIT/Apache-2.0
-* [snocat-cli v0.1.2](https://github.com/microsoft/snocat) - MIT OR Apache-2.0
-* [snocat v0.1.2](https://github.com/microsoft/snocat) - MIT OR Apache-2.0
 * [socket2 v0.3.19](https://github.com/alexcrichton/socket2-rs) - MIT/Apache-2.0
 * [spin v0.5.2](https://github.com/mvdnes/spin-rs.git) - MIT
 * [strsim v0.8.0](https://github.com/dguo/strsim-rs) - MIT
 * [syn v1.0.64](https://github.com/dtolnay/syn) - MIT OR Apache-2.0
-* [tempfile v3.2.0](https://github.com/Stebalien/tempfile) - MIT OR Apache-2.0
 * [textwrap v0.11.0](https://github.com/mgeisler/textwrap) - MIT
 * [thiserror-impl v1.0.24](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
 * [thiserror v1.0.24](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
@@ -117,13 +90,7 @@ their own copyright notices and license terms:
 * [tinyvec v1.1.1](https://github.com/Lokathor/tinyvec) - Zlib OR Apache-2.0 OR MIT
 * [tokio-macros v1.1.0](https://github.com/tokio-rs/tokio) - MIT
 * [tokio-stream v0.1.5](https://github.com/tokio-rs/tokio) - MIT
-* [tokio-util v0.6.5](https://github.com/tokio-rs/tokio) - MIT
 * [tokio v1.4.0](https://github.com/tokio-rs/tokio) - MIT
-* [tonic-build v0.4.1](https://github.com/hyperium/tonic) - MIT
-* [tonic v0.4.1](https://github.com/hyperium/tonic) - MIT
-* [tower-layer v0.3.1](https://github.com/tower-rs/tower) - MIT
-* [tower-service v0.3.1](https://github.com/tower-rs/tower) - MIT
-* [tower v0.4.6](https://github.com/tower-rs/tower) - MIT
 * [tracing-attributes v0.1.15](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-core v0.1.17](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-futures v0.2.5](https://github.com/tokio-rs/tracing) - MIT
@@ -132,13 +99,9 @@ their own copyright notices and license terms:
 * [tracing-subscriber v0.2.17](https://github.com/tokio-rs/tracing) - MIT
 * [tracing v0.1.25](https://github.com/tokio-rs/tracing) - MIT
 * [triggered v0.1.1](https://github.com/faern/triggered) - MIT OR Apache-2.0
-* [try-lock v0.2.3](https://github.com/seanmonstar/try-lock) - MIT
-* [unicode-segmentation v1.7.1](https://github.com/unicode-rs/unicode-segmentation) - MIT/Apache-2.0
 * [unicode-width v0.1.8](https://github.com/unicode-rs/unicode-width) - MIT/Apache-2.0
 * [unicode-xid v0.2.1](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
 * [vec_map v0.8.2](https://github.com/contain-rs/vec-map) - MIT/Apache-2.0
-* [want v0.3.0](https://github.com/seanmonstar/want) - MIT
 * [webpki v0.21.4](https://github.com/briansmith/webpki) - (**Nonstandard License**, see project link)
-* [which v4.0.2](https://github.com/harryfei/which-rs.git) - MIT
 * [yasna v0.3.2](https://github.com/qnighy/yasna.rs) - MIT/Apache-2.0
