@@ -16,6 +16,3 @@ pub mod util;
 
 pub mod client;
 pub mod server;
-
-#[cfg(feature = "ffi")]
-pub mod ffi;

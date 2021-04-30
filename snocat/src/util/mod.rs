@@ -21,7 +21,6 @@ pub mod delegation;
 pub mod framed;
 mod mapped_owned_async_mutex;
 pub(crate) mod merge_streams;
-pub(crate) mod messenger;
 pub mod tunnel_stream;
 pub mod validators;
 pub(crate) mod vtdroppable;
