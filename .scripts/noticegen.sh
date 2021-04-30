@@ -12,6 +12,8 @@ function gen_notice () {
         | perl -pe "s/\\[([^ ]+ v[0-9]+\\.[0-9]+\\.[0-9]+) \\([^\\)]*\\)\\]/[\$1]/g" \
         | perl -pe "s/ \\(\\*\\)$//" \
         | perl -pe "s/ - $/ - \\(\\*\\*Nonstandard License\\*\\*, see project link\\)/" \
+	| grep -v "^\\* \\[snocat " \
+	| grep -v "^\\* \\[snocat-cli " \
         | sort | uniq \
     ) > $1/NOTICE.md
     popd
