@@ -6,6 +6,9 @@ following the release of version 1.0.0.
 <!-- next-header -->
 
 ## [Unreleased] - ReleaseDate
+Revamped networking system to use a `ModularDaemon` for both client and server management.
+Protocol is now P2P-capable and uses connection sidedness rather than server or client identity.
+
 ## [0.1.2] - 2021-03-01
 Add release and changelog management mechanisms
 
