@@ -255,7 +255,10 @@ impl TcpStreamService {
           return Err(TcpConnectError::NoLoopbackAddressesFound);
         }
       }
-      Ok(TcpStream::connect(addrs.as_slice()).await)
+      Ok(TcpStream::connect(addrs.as_slice()).await.and_then(|c| {
+        c.set_nodelay(true)?;
+        Ok(c)
+      }))
     };
     fut.fuse().boxed()
   }
