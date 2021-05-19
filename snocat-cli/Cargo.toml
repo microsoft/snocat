@@ -10,7 +10,7 @@ categories = ["network-programming", "command-line-utilities"]
 include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
-snocat = { version = "^0.1.3" }
+snocat = { version = "^0.2.0-alpha.1"}
 anyhow = "~1.0.38"
 downcast-rs = "^1.2.0"
 clap = "~2.33.3"
