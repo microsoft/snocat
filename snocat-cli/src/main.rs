@@ -10,7 +10,10 @@
 use anyhow::Result;
 use clap::{App, Arg, SubCommand};
 use snocat::util;
-use std::path::Path;
+use std::{
+  path::{Path, PathBuf},
+  str::FromStr,
+};
 
 use util::validators::{
   parse_ipaddr, parse_port_range, parse_socketaddr, validate_existing_file, validate_ipaddr,
@@ -50,7 +53,7 @@ fn main() {
             .short("a")
             .validator(validate_existing_file)
             .takes_value(true)
-            .required(true),
+            .required(false),
         )
         .arg(
           Arg::with_name("driver")
@@ -156,9 +159,13 @@ fn main() {
 }
 
 pub async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<client::ClientArgs> {
-  let cert_path = Path::new(args.value_of("authority").unwrap()).to_path_buf();
+  let authority_cert_path = args
+    .value_of("authority")
+    .map(|path| PathBuf::from_str(path))
+    // flip Option<Result<T, E>> to Result<Option<T>, E>
+    .map_or(Ok(None), |v| v.map(Some))?;
   Ok(client::ClientArgs {
-    authority_cert: cert_path,
+    authority_cert: authority_cert_path,
     driver_host: parse_socketaddr(args.value_of("driver").unwrap())?,
     driver_san: args.value_of("driver-san").unwrap().into(),
     proxy_target_host: parse_socketaddr(args.value_of("target").unwrap())?,

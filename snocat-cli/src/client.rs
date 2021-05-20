@@ -25,7 +25,7 @@ use triggered::trigger;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ClientArgs {
-  pub authority_cert: PathBuf,
+  pub authority_cert: Option<PathBuf>,
   pub driver_host: std::net::SocketAddr,
   pub driver_san: String,
   pub proxy_target_host: std::net::SocketAddr,
@@ -81,19 +81,28 @@ impl Router for SnocatClientRouter {
 
 pub async fn client_main(config: ClientArgs) -> Result<()> {
   let config = Arc::new(config);
-  let cert_pem = std::fs::read(&config.authority_cert).context("Failed reading cert file")?;
-  let authority = quinn::CertificateChain::from_pem(&cert_pem)?;
-  let authority = quinn::Certificate::from(
-    authority
-      .iter()
-      .nth(0)
-      .cloned()
-      .ok_or_else(|| AnyErr::msg("No root authority"))?,
-  );
+  let authority = match &config.authority_cert {
+    Some(authority_cert_path) => {
+      let cert_pem =
+        std::fs::read(authority_cert_path).context("Failed reading authority cert file")?;
+      let authority = quinn::CertificateChain::from_pem(&cert_pem)?;
+      let authority = quinn::Certificate::from(
+        authority
+          .iter()
+          .nth(0)
+          .cloned()
+          .ok_or_else(|| AnyErr::msg("No root authority"))?,
+      );
+      Some(authority)
+    }
+    None => None,
+  };
   let quinn_config = {
     let mut qc = quinn::ClientConfigBuilder::default();
     qc.enable_keylog();
-    qc.add_certificate_authority(authority)?;
+    if let Some(authority) = authority {
+      qc.add_certificate_authority(authority)?;
+    }
     qc.protocols(util::ALPN_QUIC_HTTP);
     qc.build()
   };
