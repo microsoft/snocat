@@ -132,7 +132,10 @@ mod tests {
   use super::SimpleAckAuthenticationHandler;
   use crate::common::{
     authentication::{perform_authentication, AuthenticationHandler, TunnelInfo},
-    protocol::tunnel::{duplex, EntangledTunnels, TunnelName},
+    protocol::tunnel::{
+      duplex::{channel as duplex, EntangledTunnels},
+      TunnelName,
+    },
   };
   use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
