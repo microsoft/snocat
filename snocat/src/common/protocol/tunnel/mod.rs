@@ -18,8 +18,9 @@ use serde::{Deserializer, Serializer};
 use tokio::{
   io::{AsyncRead, AsyncWrite},
   sync::{
+    broadcast,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
-    OwnedMutexGuard,
+    oneshot, OwnedMutexGuard,
   },
 };
 
@@ -213,6 +214,116 @@ impl std::string::ToString for TunnelAddressInfo {
       Self::Port(port) => port.to_string(),
     }
   }
+}
+
+pub trait TunnelMonitoring {
+  fn is_closed() -> bool; // May need to be async for implementation practicality and to avoid blocking
+
+  /// Notifies when the tunnel is closed by the remote
+  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<TunnelId, TunnelError>>;
+}
+
+pub trait TunnelActivityMonitoring {
+  /// Allows monitoring for incoming stream creation and completion.
+  ///
+  /// Upon creation of an incoming stream, provides the current tunnel ID and a
+  /// oneshot which fulfills upon closure of that stream, or fails to fulfill
+  /// due to remote closure if the tunnel is dropped prior to completion.
+  fn on_new_incoming_stream<'a>(&'a self) -> BoxStream<'a, BoxFuture<'static, Result<(), ()>>>;
+
+  /// Allows monitoring for incoming stream creation and completion.
+  ///
+  /// Upon push of an outgoing stream, provides the current tunnel ID and a
+  /// oneshot which fulfills upon closure of that stream, or fails to fulfill
+  /// due to remote closure if the tunnel is dropped prior to completion.
+  fn on_new_outgoing_stream<'a>(&'a self) -> BoxStream<'a, BoxFuture<'static, Result<(), ()>>>;
+
+  /// Gets the current number of active streams
+  ///
+  /// Implementation is allowed to block creation of new streams while reading.
+  fn active_stream_count(&self) -> usize;
+
+  ///
+  fn on_active_stream_count_changed<'a>(&'a self) -> BoxStream<'a, usize> {
+    use tokio::sync::watch;
+    // Yes- this looks redundant- but it keeps the math simple with baseline of 1
+    let counter_holder = Arc::new(Arc::new(()));
+    let baseline_count = 1; // strong_count is the number of counters present when true count is zero
+    let update_current_count = move |notifier: &watch::Sender<usize>, counter: &Arc<()>| {
+      let current_count = Arc::strong_count(&counter) - baseline_count;
+      let _ = notifier.send(current_count);
+    };
+    let (send, recv) = watch::channel(0);
+    let send = Arc::new(send);
+
+    // Future which produces updates when subscribed to incoming stream notifications
+    let counter_incoming = {
+      let send = Arc::clone(&send);
+      let counter_holder = Arc::clone(&counter_holder);
+      let mut source_filtered_empty = self
+        .on_new_incoming_stream()
+        .map(move |on_close| {
+          (
+            Arc::clone(&counter_holder),
+            Arc::clone(counter_holder.as_ref()),
+            on_close,
+          )
+        })
+        .then(move |(activity_counter_ref, counter_handle, on_close)| {
+          let send = Arc::clone(&send);
+          update_current_count(send.as_ref(), &*activity_counter_ref);
+          async move {
+            let _close_result = on_close.await;
+            drop(counter_handle);
+            update_current_count(send.as_ref(), &*activity_counter_ref);
+            ()
+          }
+        })
+        .filter(|_| futures::future::ready(false))
+        .boxed();
+
+      async move { source_filtered_empty.next().await }.boxed()
+    };
+
+    // Future which produces updates when subscribed to incoming stream notifications
+    let counter_outgoing = {
+      let send = Arc::clone(&send);
+      let counter_holder = Arc::clone(&counter_holder);
+      let mut source_filtered_empty = self
+        .on_new_outgoing_stream()
+        .map(move |on_close| {
+          (
+            Arc::clone(&counter_holder),
+            Arc::clone(counter_holder.as_ref()),
+            on_close,
+          )
+        })
+        .then(move |(activity_counter_ref, counter_handle, on_close)| {
+          let send = Arc::clone(&send);
+          update_current_count(send.as_ref(), &*activity_counter_ref);
+          async move {
+            let _close_result = on_close.await;
+            drop(counter_handle);
+            update_current_count(send.as_ref(), &*activity_counter_ref);
+            ()
+          }
+        })
+        .filter(|_| futures::future::ready(false))
+        .boxed();
+
+      async move { source_filtered_empty.next().await }.boxed()
+    };
+
+    drop(counter_holder);
+
+    tokio_stream::wrappers::WatchStream::new(recv)
+      .take_until(futures::future::join(counter_incoming, counter_outgoing))
+      .boxed()
+  }
+}
+
+pub trait TunnelControl {
+  fn close<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
 }
 
 pub trait Sided {

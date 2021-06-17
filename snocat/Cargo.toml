@@ -26,7 +26,7 @@ tracing = "~0.1.22"
 tracing-futures = "~0.2.4"
 tracing-subscriber = "~0.2.15"
 tokio = { version = "^1.7", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
-tokio-stream = { version = "^0.1.6", features=["net", "io-util"] }
+tokio-stream = { version = "^0.1.6", features=["net", "io-util", "sync"] }
 tokio-util = { version = "^0.6.7", features=["codec", "default", "io", "time"] }
 triggered = "~0.1.1"
 
