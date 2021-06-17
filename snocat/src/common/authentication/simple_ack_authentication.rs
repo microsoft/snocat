@@ -139,22 +139,16 @@ mod tests {
   #[tokio::test]
   async fn run_auth() {
     let EntangledTunnels {
-      mut listener,
-      mut connector,
+      listener,
+      connector,
     } = duplex();
 
     let never_shutdown = triggered::trigger().1; // "never" listener due to dropped sender
     let auth_server = SimpleAckAuthenticationHandler::new();
     let auth_client = SimpleAckAuthenticationHandler::new();
 
-    let client_auth_task = perform_authentication(
-      &auth_client,
-      &connector.0,
-      &mut connector.1,
-      &never_shutdown,
-    );
-    let server_auth_task =
-      perform_authentication(&auth_server, &listener.0, &mut listener.1, &never_shutdown);
+    let client_auth_task = perform_authentication(&auth_client, &connector, &never_shutdown);
+    let server_auth_task = perform_authentication(&auth_server, &listener, &never_shutdown);
 
     let (client_res, server_res) = futures::future::join(client_auth_task, server_auth_task).await;
     assert_eq!(client_res.unwrap(), TunnelName::new("Unidentified"));

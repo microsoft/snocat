@@ -11,22 +11,23 @@ use crate::util::tunnel_stream::WrappedStream;
 use futures::{
   future::{BoxFuture, Either},
   stream::{BoxStream, LocalBoxStream, Stream, StreamFuture, TryStreamExt},
-  FutureExt, StreamExt,
+  Future, FutureExt, StreamExt,
 };
 use quinn::{crypto::Session, generic::RecvStream, ApplicationClose, SendStream};
 use serde::{Deserializer, Serializer};
 use tokio::{
   io::{AsyncRead, AsyncWrite},
-  sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+  sync::{
+    mpsc::{self, UnboundedReceiver, UnboundedSender},
+    OwnedMutexGuard,
+  },
 };
 
 pub mod id;
 
 pub use self::id::TunnelId;
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
-pub type BoxedTunnelPair<'a> = (BoxedTunnel<'a>, TunnelIncoming);
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
-pub type ArcTunnelPair<'a> = (ArcTunnel<'a>, TunnelIncoming);
 
 /// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
@@ -76,15 +77,30 @@ impl std::fmt::Debug for TunnelName {
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
   side: TunnelSide,
+  incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
 }
 
 impl<S: quinn::crypto::Session> QuinnTunnel<S> {
-  pub fn into_inner(self) -> (quinn::generic::Connection<S>, TunnelSide) {
-    (self.connection, self.side)
+  pub fn into_inner(
+    self,
+  ) -> (
+    quinn::generic::Connection<S>,
+    TunnelSide,
+    Arc<tokio::sync::Mutex<TunnelIncoming>>,
+  ) {
+    (self.connection, self.side, self.incoming)
+  }
+}
+impl<S> Sided for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn side(&self) -> TunnelSide {
+    self.side
   }
 }
 
-impl<S> Tunnel for QuinnTunnel<S>
+impl<S> TunnelUplink for QuinnTunnel<S>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -100,19 +116,29 @@ where
       .boxed()
   }
 
-  fn side(&self) -> TunnelSide {
-    self.side
-  }
-
   fn addr(&self) -> TunnelAddressInfo {
     TunnelAddressInfo::Socket(self.connection.remote_address())
+  }
+}
+
+impl<S> Tunnel for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
+    self
+      .incoming
+      .clone()
+      .lock_owned()
+      .map(|x| Some(Box::new(x) as Box<_>))
+      .boxed()
   }
 }
 
 pub fn from_quinn_endpoint<S>(
   new_connection: quinn::generic::NewConnection<S>,
   side: TunnelSide,
-) -> (QuinnTunnel<S>, TunnelIncoming)
+) -> QuinnTunnel<S>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -127,21 +153,29 @@ where
     })
     .map_err(Into::into)
     .boxed();
-  (
-    QuinnTunnel { connection, side },
-    TunnelIncoming {
+  QuinnTunnel {
+    connection,
+    side,
+    incoming: Arc::new(tokio::sync::Mutex::new(TunnelIncoming {
       inner: stream_tunnels,
       side,
-    },
-  )
+    })),
+  }
 }
 
 pub struct DuplexTunnel {
   channel_to_remote: UnboundedSender<WrappedStream>,
   side: TunnelSide,
+  incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
 }
 
-impl Tunnel for DuplexTunnel {
+impl Sided for DuplexTunnel {
+  fn side(&self) -> TunnelSide {
+    self.side
+  }
+}
+
+impl TunnelUplink for DuplexTunnel {
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
     let (local, remote) = tokio::io::duplex(8192);
     futures::future::ready(
@@ -153,31 +187,28 @@ impl Tunnel for DuplexTunnel {
     )
     .boxed()
   }
+}
 
-  fn side(&self) -> TunnelSide {
-    self.side
+impl Tunnel for DuplexTunnel {
+  fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
+    self
+      .incoming
+      .clone()
+      .lock_owned()
+      .map(|x| Some(Box::new(x) as Box<_>))
+      .boxed()
   }
 }
 
 /// Two entangled ([Tunnel], [TunnelIncoming]) pairs
 /// Each pair maps its [Tunnel] to the opposite member's entangled [TunnelIncoming]
 pub struct EntangledTunnels {
-  pub listener: (DuplexTunnel, TunnelIncoming),
-  pub connector: (DuplexTunnel, TunnelIncoming),
+  pub listener: DuplexTunnel,
+  pub connector: DuplexTunnel,
 }
 
-impl
-  Into<(
-    (DuplexTunnel, TunnelIncoming),
-    (DuplexTunnel, TunnelIncoming),
-  )> for EntangledTunnels
-{
-  fn into(
-    self,
-  ) -> (
-    (DuplexTunnel, TunnelIncoming),
-    (DuplexTunnel, TunnelIncoming),
-  ) {
+impl Into<(DuplexTunnel, DuplexTunnel)> for EntangledTunnels {
+  fn into(self) -> (DuplexTunnel, DuplexTunnel) {
     (self.listener, self.connector)
   }
 }
@@ -189,19 +220,19 @@ pub fn duplex() -> EntangledTunnels {
     up: UnboundedSender<WrappedStream>,
     down: UnboundedReceiver<WrappedStream>,
     side: TunnelSide,
-  ) -> (DuplexTunnel, TunnelIncoming) {
+  ) -> DuplexTunnel {
     use tokio_stream::wrappers::UnboundedReceiverStream;
     let down = UnboundedReceiverStream::new(down);
-    let tunnel = DuplexTunnel {
-      channel_to_remote: up,
-      side,
-    };
     let incoming_inner = down.map(TunnelIncomingType::BiStream).map(Ok).boxed();
     let incoming = TunnelIncoming {
       inner: incoming_inner,
       side,
     };
-    (tunnel, incoming)
+    DuplexTunnel {
+      channel_to_remote: up,
+      side,
+      incoming: Arc::new(tokio::sync::Mutex::new(incoming)),
+    }
   }
   let (left_up, right_down) = mpsc::unbounded_channel::<WrappedStream>();
   let (right_up, left_down) = mpsc::unbounded_channel::<WrappedStream>();
@@ -266,14 +297,42 @@ impl std::string::ToString for TunnelAddressInfo {
   }
 }
 
-pub trait Tunnel: Send + Sync + Unpin {
+pub trait Sided {
   fn side(&self) -> TunnelSide;
+}
 
+pub trait TunnelUplink: Sided {
   fn addr(&self) -> TunnelAddressInfo {
     TunnelAddressInfo::Unidentified
   }
 
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>>;
+}
+
+pub trait TunnelDownlink: Sided {
+  fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
+}
+
+impl<TDownlink: std::ops::Deref> Sided for TDownlink
+where
+  TDownlink::Target: TunnelDownlink,
+{
+  fn side(&self) -> TunnelSide {
+    self.deref().side()
+  }
+}
+
+impl<TDownlink: std::ops::Deref + std::ops::DerefMut> TunnelDownlink for TDownlink
+where
+  TDownlink::Target: TunnelDownlink,
+{
+  fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {
+    self.deref_mut().as_stream()
+  }
+}
+
+pub trait Tunnel: TunnelUplink + Send + Sync + Unpin {
+  fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>>;
 }
 
 pub enum TunnelIncomingType {
@@ -299,30 +358,46 @@ impl TunnelIncoming {
   }
 }
 
+impl Sided for TunnelIncoming {
+  fn side(&self) -> TunnelSide {
+    self.side
+  }
+}
+
+impl TunnelDownlink for TunnelIncoming {
+  fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {
+    self.inner.borrow_mut().boxed()
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
-
   use super::EntangledTunnels;
+  use crate::common::protocol::tunnel::TunnelUplink;
   use futures::{AsyncReadExt, AsyncWriteExt, TryStreamExt};
+  use std::sync::Arc;
   use tokio::io::AsyncWrite;
 
   #[tokio::test]
   async fn duplex_tunnel() {
     use super::Tunnel;
     use futures::StreamExt;
-    let ((a_tun, a_inc), (b_tun, b_inc)) = super::duplex().into();
+    let (a_tun, b_tun) = super::duplex().into();
 
     let fut = async move {
       a_tun.open_link().await.unwrap();
+      let (a_inc, b_inc) = futures::future::join(a_tun.downlink(), b_tun.downlink()).await;
+      let (mut a_inc, mut b_inc) = (a_inc.unwrap(), b_inc.unwrap());
       drop(a_tun); // Dropping the A tunnel ends the incoming streams for B
-      let count_of_b: u32 = super::TunnelIncoming::streams(b_inc)
+      let count_of_b: u32 = b_inc
+        .as_stream()
         .fold(0, async move |memo, _stream| memo + 1)
         .await;
       assert_eq!(count_of_b, 1);
       b_tun.open_link().await.unwrap();
       drop(b_tun); // Dropping the B tunnel ends the incoming streams for A
-      let count_of_a: u32 = super::TunnelIncoming::streams(a_inc)
+      let count_of_a: u32 = a_inc
+        .as_stream()
         .fold(0, async move |memo, _stream| memo + 1)
         .await;
       assert_eq!(count_of_a, 1);
@@ -351,10 +426,12 @@ mod tests {
     // provides bistreams in the order they are opened by the tunnels,
     // not the order in which they have their first data sent on them.
     let fut_server = async move {
-      let (tun, inc) = server; // Explicit move
-      let tun_ref = &tun;
-      inc
-        .streams()
+      let server_ref = &server;
+      server
+        .downlink()
+        .await
+        .unwrap()
+        .as_stream()
         .take(2)
         .try_filter_map(|x| {
           future::ready(match x {
@@ -364,7 +441,7 @@ mod tests {
         .try_for_each_concurrent(None, async move |stream: WrappedStream| {
           let (mut incoming_downlink, _incoming_uplink) = tokio::io::split(stream);
           let (_outgoing_downlink, mut outgoing_uplink) =
-            tokio::io::split(tun_ref.open_link().await.unwrap());
+            tokio::io::split(server_ref.open_link().await.unwrap());
           crate::util::proxy_tokio_stream(&mut incoming_downlink, &mut outgoing_uplink)
             .await
             .unwrap();
@@ -375,8 +452,9 @@ mod tests {
     };
     // The client will attempt to make 3 streams, and will expect that the third will produce no result
     let fut_client = async move {
-      let (tun, inc) = client; // Explicit move
-      let inc_streams = Arc::new(Mutex::new(inc.streams().boxed()));
+      let client_ref = &client; // Explicit move
+      let mut downlink = client.downlink().await.unwrap();
+      let inc_streams = Arc::new(Mutex::new(downlink.as_stream()));
       const CLIENT_TASK_DURATION: Duration = Duration::from_secs(5);
 
       // Async Barriers are used to ensure that we are making new
@@ -388,7 +466,7 @@ mod tests {
       let step_4 = Barrier::new(3);
 
       let client_a = {
-        let (tun, inc_streams) = (&tun, Arc::clone(&inc_streams));
+        let (tun, inc_streams) = (client_ref, Arc::clone(&inc_streams));
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_a = vec![1, 2, 3, 4];
@@ -425,7 +503,7 @@ mod tests {
       };
 
       let client_b = {
-        let (tun, inc_streams) = (&tun, Arc::clone(&inc_streams));
+        let (tun, inc_streams) = (client_ref, Arc::clone(&inc_streams));
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_b = vec![4, 3, 2];

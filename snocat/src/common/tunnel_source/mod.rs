@@ -5,7 +5,7 @@
 use futures::stream::{BoxStream, Stream, StreamExt};
 use std::{net::SocketAddr, pin::Pin, task::Poll};
 
-use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnelPair, TunnelSide};
+use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnel, QuinnTunnel, TunnelSide};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, TryLockError};
@@ -44,7 +44,7 @@ where
   Session: quinn::crypto::Session + Send + 'static,
   Self: Send + Unpin,
 {
-  type Item = BoxedTunnelPair<'static>;
+  type Item = QuinnTunnel<Session>;
 
   fn poll_next(
     mut self: std::pin::Pin<&mut Self>,
@@ -54,8 +54,8 @@ where
     match res {
       None => Poll::Ready(None),
       Some(new_connection) => {
-        let (tunnel, incoming) = from_quinn_endpoint(new_connection, TunnelSide::Listen);
-        Poll::Ready(Some((Box::new(tunnel), incoming)))
+        let tunnel = from_quinn_endpoint(new_connection, TunnelSide::Listen);
+        Poll::Ready(Some(tunnel))
       }
     }
   }
@@ -110,7 +110,7 @@ where
 
 /// A set of connections / endpoints that can be updated dynamically, to allow runtime addition and
 /// removal of connections / "Tunnel sources" to those being handled by a tunnel server.
-pub type DynamicConnectionSet<Id> = DynamicStreamSet<Id, BoxedTunnelPair<'static>>;
+pub type DynamicConnectionSet<Id> = DynamicStreamSet<Id, BoxedTunnel<'static>>;
 
 /// A strict wrapper for StreamMap that requires boxing of the items and handles locking for updates
 /// Can be used to merges outputs from a runtime-editable set of endpoint ports
@@ -238,7 +238,7 @@ where
 #[cfg(test)]
 mod tests {
   use super::{DynamicStreamSet, NamedBoxedStream};
-  use crate::common::protocol::tunnel::BoxedTunnelPair;
+  use crate::common::protocol::tunnel::BoxedTunnel;
   use futures::task::Context;
   use futures::{future, stream, FutureExt, Stream, StreamExt};
   use std::collections::HashSet;

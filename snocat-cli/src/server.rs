@@ -145,7 +145,10 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   }
 
   modular
-    .run(endpoint, shutdown_listener)
+    .run(
+      futures::stream::StreamExt::map(endpoint, |tunnel| Box::new(tunnel) as Box<_>),
+      shutdown_listener,
+    )
     .map_err(|_| anyhow::Error::msg("Modular runtime panicked and lost context"))
     .await?;
 

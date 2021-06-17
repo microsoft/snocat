@@ -3,8 +3,7 @@
 #[warn(unused_imports)]
 use crate::{
   common::protocol::tunnel::{
-    Tunnel, TunnelAddressInfo, TunnelError, TunnelIncoming, TunnelIncomingType, TunnelName,
-    TunnelSide,
+    Tunnel, TunnelAddressInfo, TunnelError, TunnelIncomingType, TunnelName, TunnelSide,
   },
   util::tunnel_stream::TunnelStream,
 };
@@ -113,7 +112,6 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
 pub fn perform_authentication<'a>(
   handler: &'a (impl AuthenticationHandler + ?Sized),
   tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
-  incoming: &'a mut TunnelIncoming,
   shutdown_notifier: &'a Listener,
 ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
   use tracing::{debug, span, warn, Instrument, Level};
@@ -141,8 +139,11 @@ pub fn perform_authentication<'a>(
           }.into())
         },
         TunnelSide::Connect => {
-          let next: Result<Option<_>, TunnelError> = incoming
-            .streams_ref()
+          let next: Result<Option<_>, TunnelError> = tunnel
+            .downlink()
+            .await
+            .ok_or(RemoteAuthenticationError::IncomingStreamsClosed)?
+            .as_stream()
             .try_next()
             .instrument(span!(Level::DEBUG, "accept_link"))
             .await;

@@ -5,15 +5,16 @@ use crate::services::PresetServiceRegistry;
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use futures::{future::*, *};
 use snocat::common::protocol::proxy_tcp::TcpStreamService;
+use snocat::common::protocol::tunnel::BoxedTunnel;
+use snocat::common::protocol::tunnel::TunnelUplink;
 use snocat::{
   common::protocol::traits::{InMemoryTunnelRegistry, TunnelRegistry},
   common::protocol::tunnel::id::MonotonicAtomicGenerator,
-  common::protocol::tunnel::BoxedTunnelPair,
   common::protocol::{Request, RouteAddress, Router, RoutingError},
   common::tunnel_source::DynamicConnectionSet,
   common::{
     authentication::SimpleAckAuthenticationHandler,
-    protocol::tunnel::{from_quinn_endpoint, Tunnel, TunnelSide},
+    protocol::tunnel::{from_quinn_endpoint, TunnelSide},
   },
   server::modular::ModularDaemon,
   util,
@@ -157,7 +158,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     let mut current_connection_id = 0u32;
     let connections = DynamicConnectionSet::<u32>::new();
     let connections_handle = connections.handle();
-    let add_new_connection = move |pair: BoxedTunnelPair<'static>| -> u32 {
+    let add_new_connection = move |pair: BoxedTunnel<'static>| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
       assert!(
@@ -177,9 +178,9 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .context("Connecting to server")?
       .await;
     let connection = connecting.context("Finalizing connection to server...")?;
-    let (tunnel, incoming) = from_quinn_endpoint(connection, TunnelSide::Connect);
+    let tunnel = from_quinn_endpoint(connection, TunnelSide::Connect);
     let addr = tunnel.addr();
-    let conn_id = add_new_connection((Box::new(tunnel), incoming));
+    let conn_id = add_new_connection(Box::new(tunnel));
     tracing::info!(remote = ?addr, connection_id = conn_id, "connected");
   }
 

@@ -1,41 +1,54 @@
-use authentication::perform_authentication;
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
+
+use authentication::perform_authentication;
 use futures::{
   future::{self, TryFutureExt},
   Future, Stream, StreamExt, TryStreamExt,
 };
 use std::sync::Arc;
+use tokio::sync::broadcast::{channel as event_channel, Sender as Broadcaster};
 use tracing::Instrument;
-use triggered::Listener;
-use tunnel::{TunnelError, TunnelName};
+use triggered::Listener; // TODO: Replace usages with `tokio_util::sync::CancellationToken`
 
-use crate::common::{
-  authentication::{self, AuthenticationHandler},
-  protocol::{
-    negotiation::{self, NegotiationError, NegotiationService},
-    request_handler::RequestClientHandler,
-    traits::{ServiceRegistry, TunnelNamingError, TunnelRegistrationError, TunnelRegistry},
-    tunnel::{
-      self, id::TunnelIDGenerator, ArcTunnel, ArcTunnelPair, BoxedTunnelPair, TunnelId,
-      TunnelIncomingType,
+use crate::{
+  common::{
+    authentication::{
+      self, AuthenticationError, AuthenticationHandler, AuthenticationHandlingError,
     },
-    RouteAddress, Router,
+    protocol::{
+      negotiation::{self, NegotiationError, NegotiationService},
+      request_handler::RequestClientHandler,
+      traits::{
+        SerializedTunnelRegistry, ServiceRegistry, TunnelNamingError, TunnelRegistrationError,
+        TunnelRegistry,
+      },
+      tunnel::{
+        self, id::TunnelIDGenerator, ArcTunnel, BoxedTunnel, TunnelDownlink, TunnelError, TunnelId,
+        TunnelIncomingType, TunnelName,
+      },
+      RouteAddress, Router,
+    },
   },
+  util::tunnel_stream::WrappedStream,
 };
-use crate::common::{
-  authentication::{AuthenticationError, AuthenticationHandlingError},
-  protocol::traits::SerializedTunnelRegistry,
-};
-use crate::util::tunnel_stream::WrappedStream;
 
-pub struct ModularDaemon {
+pub struct ModularDaemon<Connection = i32>
+where
+  Connection: Clone,
+{
   service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
   tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   router: Arc<dyn Router + Send + Sync + 'static>,
   request_handler: Arc<RequestClientHandler>,
   authentication_handler: Arc<dyn AuthenticationHandler + Send + Sync + 'static>,
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
+
+  // event hooks
+  pub tunnel_connected: Broadcaster<(TunnelId, Connection)>,
+  pub tunnel_authenticated: Broadcaster<(TunnelId, TunnelName, Connection)>,
+  pub tunnel_disconnected:
+    Broadcaster<(TunnelId, Option<TunnelName> /*, DisconnectReason? */)>,
 }
 
 impl ModularDaemon {
@@ -45,22 +58,16 @@ impl ModularDaemon {
 
   fn authenticate_tunnel<'a>(
     self: &Arc<Self>,
-    (tunnel, mut incoming): tunnel::ArcTunnelPair<'a>,
+    tunnel: tunnel::ArcTunnel<'a>,
     shutdown: &Listener,
-  ) -> impl Future<
-    Output = Result<Option<(tunnel::TunnelName, tunnel::ArcTunnelPair<'a>)>, anyhow::Error>,
-  > + 'a {
+  ) -> impl Future<Output = Result<Option<(tunnel::TunnelName, tunnel::ArcTunnel<'a>)>, anyhow::Error>>
+       + 'a {
     let shutdown = shutdown.clone();
     let authentication_handler = Arc::clone(&self.authentication_handler);
 
     async move {
-      let result = perform_authentication(
-        authentication_handler.as_ref(),
-        tunnel.as_ref(),
-        &mut incoming,
-        &shutdown,
-      )
-      .await;
+      let result =
+        perform_authentication(authentication_handler.as_ref(), tunnel.as_ref(), &shutdown).await;
       match result {
         Err(AuthenticationError::Handling(AuthenticationHandlingError::FatalApplicationError(
           fatal_error,
@@ -86,7 +93,7 @@ impl ModularDaemon {
           );
           Ok(None)
         }
-        Ok(tunnel_name) => Ok(Some((tunnel_name, (tunnel, incoming)))),
+        Ok(tunnel_name) => Ok(Some((tunnel_name, tunnel))),
       }
     }
   }
@@ -114,6 +121,12 @@ where
       router,
       authentication_handler,
       tunnel_id_generator,
+
+      // For event handlers, we simply drop the receive sides,
+      // as new ones can be made with Sender::subscribe(&self)
+      tunnel_connected: event_channel(32).0,
+      tunnel_authenticated: event_channel(32).0,
+      tunnel_disconnected: event_channel(32).0,
     }
   }
 
@@ -127,7 +140,7 @@ where
     shutdown_request_listener: Listener,
   ) -> tokio::task::JoinHandle<()>
   where
-    TunnelSource: Stream<Item = BoxedTunnelPair<'static>> + Send + 'static,
+    TunnelSource: Stream<Item = BoxedTunnel<'static>> + Send + 'static,
   {
     let this = Arc::clone(&self);
     // Pipeline phases:
@@ -138,11 +151,11 @@ where
       .take_until(shutdown_request_listener.clone())
       .scan(
         (this, shutdown_request_listener),
-        |(this, shutdown_request_listener), tunnel_pair| {
+        |(this, shutdown_request_listener), tunnel| {
           let id = this.tunnel_id_generator.next();
-          let tunnel_pair: ArcTunnelPair = (tunnel_pair.0.into(), tunnel_pair.1);
+          let tunnel: ArcTunnel = tunnel.into();
           future::ready(Some((
-            tunnel_pair,
+            tunnel,
             id,
             this.clone(),
             shutdown_request_listener.clone(),
@@ -211,7 +224,7 @@ where
 {
   fn tunnel_lifecycle(
     id: TunnelId,
-    (tunnel, incoming): ArcTunnelPair<'static>,
+    tunnel: ArcTunnel<'static>,
     server: Arc<ModularDaemon>,
     shutdown: Listener,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError>> + 'static {
@@ -233,7 +246,7 @@ where
       // in a deregistration call.
       // Phases resume in registered_tunnel_lifecycle.
       let tunnel_registry = Arc::clone(&serialized_registry);
-      match Self::registered_tunnel_lifecycle(id, (tunnel, incoming), server, shutdown, tunnel_registry).await {
+      match Self::registered_tunnel_lifecycle(id, tunnel, server, shutdown, tunnel_registry).await {
         Ok(lifecycle_result) => Ok(lifecycle_result),
         Err(e) => {
           let deregistered = serialized_registry.deregister_tunnel(id).await.ok();
@@ -249,7 +262,7 @@ where
 
   async fn registered_tunnel_lifecycle(
     id: TunnelId,
-    (tunnel, incoming): ArcTunnelPair<'static>,
+    tunnel: ArcTunnel<'static>,
     server: Arc<ModularDaemon>,
     shutdown: Listener,
     serialized_tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
@@ -259,13 +272,13 @@ where
     let tunnel_authentication = {
       let server = Arc::clone(&server);
       server
-        .authenticate_tunnel((tunnel, incoming), &shutdown)
+        .authenticate_tunnel(tunnel, &shutdown)
         .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", ?id))
         .map_err(TunnelLifecycleError::FatalError)
     };
 
-    let (tunnel_name, tunnel, incoming) = match tunnel_authentication.await? {
-      Some((tunnel_name, (tunnel, incoming))) => (tunnel_name, tunnel, incoming),
+    let (tunnel_name, tunnel) = match tunnel_authentication.await? {
+      Some((tunnel_name, tunnel)) => (tunnel_name, tunnel),
       None => {
         let _ = serialized_tunnel_registry.deregister_tunnel(id).await;
         return Ok(());
@@ -286,9 +299,22 @@ where
     // Process incoming requests until the incoming channel is closed.
     {
       let service_registry = Arc::clone(&server.service_registry);
-      Self::handle_incoming_requests(id, (tunnel, incoming), service_registry, shutdown).instrument(
-        tracing::span!(tracing::Level::DEBUG, "request_handling", ?id),
+      Self::handle_incoming_requests(
+        id,
+        tunnel
+          .downlink()
+          .await
+          .ok_or(TunnelLifecycleError::RequestProcessingError(
+            RequestProcessingError::TunnelError(TunnelError::ConnectionClosed),
+          ))?,
+        service_registry,
+        shutdown,
       )
+      .instrument(tracing::span!(
+        tracing::Level::DEBUG,
+        "request_handling",
+        ?id
+      ))
     }
     .await?;
 
@@ -306,16 +332,16 @@ where
   // The request handler for this side should be configured to send a close request for
   // the tunnel with the given ID when it sees a request fail due to tunnel closure.
   // TODO: configure request handler (?) to do that using a std::sync::Weak<ModularDaemon>.
-  async fn handle_incoming_requests(
+  async fn handle_incoming_requests<TDownlink: TunnelDownlink>(
     id: TunnelId,
-    (_tunnel, incoming): ArcTunnelPair<'static>,
+    mut incoming: TDownlink,
     service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
     shutdown: Listener,
   ) -> Result<(), RequestProcessingError> {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
 
     incoming
-      .streams()
+      .as_stream()
       // Stop accepting new requests after a graceful shutdown is requested
       .take_until(shutdown.clone())
       .map_err(|e: TunnelError| RequestProcessingError::TunnelError(e))
