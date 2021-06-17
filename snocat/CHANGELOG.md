@@ -6,8 +6,21 @@ following the release of version 1.0.0.
 <!-- next-header -->
 
 ## [Unreleased] - ReleaseDate
+### Tunnel unification refactoring
+Tunnel is now a hybrid trait of uplink and downlink.
+`TunnelUplink` and `TunnelDownlink` are traits, and sidedness is split
+off into its own trait. The hybrid tunnel allows any number of accesses
+to the incoming stream, but they are exclusive, and will await an async
+Mutex- possibly until the tunnel in question has been closed.
+
+Future revisions may include an API to split tunnels, and will
+include control operations and event monitoring to allow connections
+to be closed on command, or observed for current and future state.
+
+### Daemon System
 Revamped networking system to use a `ModularDaemon` for both client and server management.
-Protocol is now P2P-capable and uses connection sidedness rather than server or client identity.
+
+The Protocol is now P2P-capable and uses connection sidedness rather than server or client identity.
 
 ## [0.1.2] - 2021-03-01
 Add release and changelog management mechanisms
