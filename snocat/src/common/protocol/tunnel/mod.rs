@@ -26,8 +26,10 @@ use tokio::{
 
 pub mod duplex;
 pub mod id;
+pub mod quinn_tunnel;
 
 pub use self::id::TunnelId;
+pub use self::quinn_tunnel::{from_quinn_endpoint, QuinnTunnel};
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 
@@ -76,95 +78,6 @@ impl std::fmt::Debug for TunnelName {
   }
 }
 
-pub struct QuinnTunnel<S: quinn::crypto::Session> {
-  connection: quinn::generic::Connection<S>,
-  side: TunnelSide,
-  incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
-}
-
-impl<S: quinn::crypto::Session> QuinnTunnel<S> {
-  pub fn into_inner(
-    self,
-  ) -> (
-    quinn::generic::Connection<S>,
-    TunnelSide,
-    Arc<tokio::sync::Mutex<TunnelIncoming>>,
-  ) {
-    (self.connection, self.side, self.incoming)
-  }
-}
-impl<S> Sided for QuinnTunnel<S>
-where
-  S: quinn::crypto::Session + 'static,
-{
-  fn side(&self) -> TunnelSide {
-    self.side
-  }
-}
-
-impl<S> TunnelUplink for QuinnTunnel<S>
-where
-  S: quinn::crypto::Session + 'static,
-{
-  fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
-    use futures::future::FutureExt;
-    self
-      .connection
-      .open_bi()
-      .map(|result| match result {
-        Ok((send, recv)) => Ok(WrappedStream::Boxed(Box::new(recv), Box::new(send))),
-        Err(e) => Err(e.into()),
-      })
-      .boxed()
-  }
-
-  fn addr(&self) -> TunnelAddressInfo {
-    TunnelAddressInfo::Socket(self.connection.remote_address())
-  }
-}
-
-impl<S> Tunnel for QuinnTunnel<S>
-where
-  S: quinn::crypto::Session + 'static,
-{
-  fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
-    self
-      .incoming
-      .clone()
-      .lock_owned()
-      .map(|x| Some(Box::new(x) as Box<_>))
-      .boxed()
-  }
-}
-
-pub fn from_quinn_endpoint<S>(
-  new_connection: quinn::generic::NewConnection<S>,
-  side: TunnelSide,
-) -> QuinnTunnel<S>
-where
-  S: quinn::crypto::Session + 'static,
-{
-  let quinn::generic::NewConnection {
-    connection,
-    bi_streams,
-    ..
-  } = new_connection;
-  let stream_tunnels = bi_streams
-    .map_ok(|(send, recv)| {
-      TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
-    })
-    .map_err(Into::into)
-    .boxed();
-  QuinnTunnel {
-    connection,
-    side,
-    incoming: Arc::new(tokio::sync::Mutex::new(TunnelIncoming {
-      inner: stream_tunnels,
-      side,
-    })),
-  }
-}
-
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum TunnelError {
   #[error("Connection closed")]
@@ -177,20 +90,6 @@ pub enum TunnelError {
   TransportError,
   #[error("Connection closed locally")]
   LocallyClosed,
-}
-
-impl From<quinn::ConnectionError> for TunnelError {
-  fn from(connection_error: quinn::ConnectionError) -> Self {
-    match connection_error {
-      quinn::ConnectionError::VersionMismatch => Self::TransportError,
-      quinn::ConnectionError::TransportError(_) => Self::TransportError,
-      quinn::ConnectionError::ConnectionClosed(_) => Self::ConnectionClosed,
-      quinn::ConnectionError::ApplicationClosed(_) => Self::ApplicationClosed,
-      quinn::ConnectionError::Reset => Self::TransportError,
-      quinn::ConnectionError::TimedOut => Self::TimedOut,
-      quinn::ConnectionError::LocallyClosed => Self::LocallyClosed,
-    }
-  }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -217,10 +116,11 @@ impl std::string::ToString for TunnelAddressInfo {
 }
 
 pub trait TunnelMonitoring {
-  fn is_closed() -> bool; // May need to be async for implementation practicality and to avoid blocking
+  /// If the tunnel is currently closed on uplink and downlink
+  fn is_closed(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
 
-  /// Notifies when the tunnel is closed by the remote
-  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<TunnelId, TunnelError>>;
+  /// Notifies when the tunnel is closed both in uplink and downlink, and if it was due to an error
+  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
 }
 
 pub trait TunnelActivityMonitoring {
@@ -243,7 +143,7 @@ pub trait TunnelActivityMonitoring {
   /// Implementation is allowed to block creation of new streams while reading.
   fn active_stream_count(&self) -> usize;
 
-  ///
+  /// Track the number of activee streams in the session, on uplink and downlink
   fn on_active_stream_count_changed<'a>(&'a self) -> BoxStream<'a, usize> {
     use tokio::sync::watch;
     // Yes- this looks redundant- but it keeps the math simple with baseline of 1
@@ -256,7 +156,7 @@ pub trait TunnelActivityMonitoring {
     let (send, recv) = watch::channel(0);
     let send = Arc::new(send);
 
-    // Future which produces updates when subscribed to incoming stream notifications
+    // Future which produces updates when subscribed to incoming stream notifications; resolves when stream ends
     let counter_incoming = {
       let send = Arc::clone(&send);
       let counter_holder = Arc::clone(&counter_holder);
@@ -285,7 +185,7 @@ pub trait TunnelActivityMonitoring {
       async move { source_filtered_empty.next().await }.boxed()
     };
 
-    // Future which produces updates when subscribed to incoming stream notifications
+    // Future which produces updates when subscribed to outgoing stream notifications; resolves when stream ends
     let counter_outgoing = {
       let send = Arc::clone(&send);
       let counter_holder = Arc::clone(&counter_holder);

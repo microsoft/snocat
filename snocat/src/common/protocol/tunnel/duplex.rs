@@ -1,12 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#[forbid(unused_imports, dead_code)]
+#![forbid(unused_imports, dead_code)]
 use std::sync::Arc;
 
-use futures::{
-  future::{BoxFuture, Either},
-  Future, FutureExt, StreamExt,
-};
+use futures::{future::BoxFuture, FutureExt, StreamExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::{
@@ -106,7 +103,6 @@ mod tests {
   use crate::common::protocol::tunnel::TunnelUplink;
   use futures::{AsyncReadExt, AsyncWriteExt, TryStreamExt};
   use std::sync::Arc;
-  use tokio::io::AsyncWrite;
 
   #[tokio::test]
   async fn duplex_tunnel() {
@@ -141,7 +137,7 @@ mod tests {
   async fn duplex_tunnel_concurrency() {
     use super::{Tunnel, TunnelIncomingType};
     use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
-    use futures::{future, FutureExt, StreamExt};
+    use futures::{future, StreamExt};
     use std::time::Duration;
     use tokio::{sync::Mutex, time::timeout};
     let EntangledTunnels {
@@ -200,7 +196,6 @@ mod tests {
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_a = vec![1, 2, 3, 4];
-          use std::io::BufWriter;
           let mut s: Box<dyn TunnelStream> = Box::new(tun.open_link().await.unwrap());
           s.write_all(test_data_a.as_slice()).await.unwrap();
           AsyncWriteExt::flush(&mut s).await.unwrap();
@@ -237,7 +232,6 @@ mod tests {
         let (step_1, step_2, step_3, step_4) = (&step_1, &step_2, &step_3, &step_4);
         let task = async move {
           let test_data_b = vec![4, 3, 2];
-          use std::io::BufWriter;
           // Wait until A has started a stream to ensure ordering
           println!("b1");
           step_1.wait().await;
