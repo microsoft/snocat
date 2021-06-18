@@ -17,7 +17,7 @@ use crate::{
   util::tunnel_stream::WrappedStream,
 };
 
-use super::{TunnelControl, TunnelMonitoring};
+use super::{TunnelControl, TunnelControlPerChannel, TunnelMonitoring, TunnelMonitoringPerChannel};
 
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
@@ -51,6 +51,21 @@ where
   }
 }
 
+impl<S> TunnelControlPerChannel for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn close_uplink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
+    self.outgoing_closed.cancel();
+    future::ready(Ok(())).boxed()
+  }
+
+  fn close_downlink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
+    self.incoming_closed.cancel();
+    future::ready(Ok(())).boxed()
+  }
+}
+
 impl<S> TunnelMonitoring for QuinnTunnel<S>
 where
   S: quinn::crypto::Session + 'static,
@@ -68,6 +83,29 @@ where
         .await
     }
     .boxed()
+  }
+}
+
+impl<S> TunnelMonitoringPerChannel for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn is_closed_uplink(&self) -> bool {
+    self.outgoing_closed.is_cancelled()
+  }
+
+  fn on_closed_uplink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
+    let out_close = self.outgoing_closed.clone();
+    async move { out_close.cancelled().map(|_| Ok(())).await }.boxed()
+  }
+
+  fn is_closed_downlink(&self) -> bool {
+    self.incoming_closed.is_cancelled()
+  }
+
+  fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
+    let in_close = self.incoming_closed.clone();
+    async move { in_close.cancelled().map(|_| Ok(())).await }.boxed()
   }
 }
 

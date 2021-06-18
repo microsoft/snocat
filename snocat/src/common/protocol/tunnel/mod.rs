@@ -123,6 +123,20 @@ pub trait TunnelMonitoring {
   fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
 }
 
+pub trait TunnelMonitoringPerChannel: TunnelMonitoring {
+  /// If the tunnel is currently closed on its uplink
+  fn is_closed_uplink(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
+
+  /// Notifies when the uplink is closed, and if it was due to an error
+  fn on_closed_uplink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
+
+  /// If the tunnel is currently closed on its downlink
+  fn is_closed_downlink(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
+
+  /// Notifies when the downlink is closed, and if it was due to an error
+  fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
+}
+
 pub trait TunnelActivityMonitoring {
   /// Allows monitoring for incoming stream creation and completion.
   ///
@@ -224,6 +238,11 @@ pub trait TunnelActivityMonitoring {
 
 pub trait TunnelControl {
   fn close<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
+}
+
+pub trait TunnelControlPerChannel: TunnelControl {
+  fn close_uplink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
+  fn close_downlink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
 }
 
 pub trait Sided {
