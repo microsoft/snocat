@@ -3,7 +3,11 @@
 #![forbid(unused_imports, dead_code)]
 use std::sync::Arc;
 
-use futures::{future::BoxFuture, FutureExt, StreamExt, TryStreamExt};
+use futures::{
+  future::{self, BoxFuture},
+  FutureExt, StreamExt, TryStreamExt,
+};
+use tokio::sync::watch;
 
 use crate::{
   common::protocol::tunnel::{
@@ -13,10 +17,14 @@ use crate::{
   util::tunnel_stream::WrappedStream,
 };
 
+use super::{TunnelControl, TunnelMonitoring};
+
 pub struct QuinnTunnel<S: quinn::crypto::Session> {
   connection: quinn::generic::Connection<S>,
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
+
+  closed: (watch::Sender<bool>, watch::Receiver<bool>),
 }
 
 impl<S: quinn::crypto::Session> QuinnTunnel<S> {
@@ -28,6 +36,43 @@ impl<S: quinn::crypto::Session> QuinnTunnel<S> {
     Arc<tokio::sync::Mutex<TunnelIncoming>>,
   ) {
     (self.connection, self.side, self.incoming)
+  }
+}
+
+impl<S> TunnelControl for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn close<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
+    let closed = *self.closed.0.borrow();
+    future::ready(if !closed {
+      self
+        .closed
+        .0
+        .send(true)
+        .map_err(|_| TunnelError::ConnectionClosed)
+    } else {
+      Ok(())
+    })
+    .boxed()
+  }
+}
+
+impl<S> TunnelMonitoring for QuinnTunnel<S>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn is_closed(&self) -> bool {
+    *self.closed.0.borrow()
+  }
+
+  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
+    let mut closed = self.closed.1.clone();
+    async move {
+      let _ = closed.changed().await;
+      Ok(())
+    }
+    .boxed()
   }
 }
 
@@ -113,5 +158,6 @@ where
       inner: stream_tunnels,
       side,
     })),
+    closed: watch::channel(false),
   }
 }
