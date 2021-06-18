@@ -120,7 +120,7 @@ pub trait TunnelMonitoring {
   fn is_closed(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
 
   /// Notifies when the tunnel is closed both in uplink and downlink, and if it was due to an error
-  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
+  fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
 }
 
 pub trait TunnelActivityMonitoring {

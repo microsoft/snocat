@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use futures::{
   future::{self, BoxFuture},
-  FutureExt, StreamExt, TryStreamExt,
+  stream, FutureExt, StreamExt, TryStreamExt,
 };
 use tokio::sync::watch;
 
@@ -66,10 +66,13 @@ where
     *self.closed.0.borrow()
   }
 
-  fn on_closed<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
+  fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
     let mut closed = self.closed.1.clone();
     async move {
-      let _ = closed.changed().await;
+      let is_closed = *closed.borrow();
+      if !is_closed {
+        drop(closed.changed().await);
+      }
       Ok(())
     }
     .boxed()
@@ -90,6 +93,10 @@ where
   S: quinn::crypto::Session + 'static,
 {
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
+    if self.is_closed() {
+      return future::ready(Err(TunnelError::ConnectionClosed)).boxed();
+    }
+    // TODO: make streams exit when close() is called
     self
       .connection
       .open_bi()
@@ -145,13 +152,14 @@ where
     bi_streams,
     ..
   } = new_connection;
+  // TODO: make incoming streams exit when close() is called
   let stream_tunnels = bi_streams
     .map_ok(|(send, recv)| {
       TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
     })
     .map_err(Into::into)
     .boxed();
-  QuinnTunnel {
+  let mut tunnel = QuinnTunnel {
     connection,
     side,
     incoming: Arc::new(tokio::sync::Mutex::new(TunnelIncoming {
@@ -159,5 +167,18 @@ where
       side,
     })),
     closed: watch::channel(false),
+  };
+  // Close stream of incoming streams when we close locally
+  // Getting the closed event before creating the object is hard.
+  // Swap it while we still own it exclusively, using a placeholder pending() stream temporarily
+  {
+    let closed_future = tunnel.on_closed();
+    let incoming = Arc::get_mut(&mut tunnel.incoming)
+      .expect("Must have sole ownership still")
+      .get_mut();
+    let box_of_nothing = stream::pending().boxed();
+    let incoming_streams = std::mem::replace(&mut incoming.inner, box_of_nothing);
+    incoming.inner = incoming_streams.take_until(closed_future).boxed();
   }
+  tunnel
 }
