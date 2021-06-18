@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use futures::{
   future::{self, BoxFuture},
-  stream, FutureExt, StreamExt, TryStreamExt,
+  FutureExt, StreamExt, TryStreamExt,
 };
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
   common::protocol::tunnel::{
@@ -24,7 +24,8 @@ pub struct QuinnTunnel<S: quinn::crypto::Session> {
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
 
-  closed: (watch::Sender<bool>, watch::Receiver<bool>),
+  incoming_closed: CancellationToken,
+  outgoing_closed: CancellationToken,
 }
 
 impl<S: quinn::crypto::Session> QuinnTunnel<S> {
@@ -44,17 +45,9 @@ where
   S: quinn::crypto::Session + 'static,
 {
   fn close<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>> {
-    let closed = *self.closed.0.borrow();
-    future::ready(if !closed {
-      self
-        .closed
-        .0
-        .send(true)
-        .map_err(|_| TunnelError::ConnectionClosed)
-    } else {
-      Ok(())
-    })
-    .boxed()
+    self.incoming_closed.cancel();
+    self.outgoing_closed.cancel();
+    future::ready(Ok(())).boxed()
   }
 }
 
@@ -63,17 +56,16 @@ where
   S: quinn::crypto::Session + 'static,
 {
   fn is_closed(&self) -> bool {
-    *self.closed.0.borrow()
+    self.outgoing_closed.is_cancelled() && self.incoming_closed.is_cancelled()
   }
 
   fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
-    let mut closed = self.closed.1.clone();
+    let in_close = self.incoming_closed.clone();
+    let out_close = self.outgoing_closed.clone();
     async move {
-      let is_closed = *closed.borrow();
-      if !is_closed {
-        drop(closed.changed().await);
-      }
-      Ok(())
+      future::join(in_close.cancelled(), out_close.cancelled())
+        .map(|_| Ok(()))
+        .await
     }
     .boxed()
   }
@@ -152,33 +144,27 @@ where
     bi_streams,
     ..
   } = new_connection;
+  let incoming_cancellation = CancellationToken::new();
+  let outgoing_cancellation = CancellationToken::new();
   // TODO: make incoming streams exit when close() is called
   let stream_tunnels = bi_streams
     .map_ok(|(send, recv)| {
       TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
     })
     .map_err(Into::into)
+    .take_until({
+      let incoming_cancellation = incoming_cancellation.clone();
+      async move { incoming_cancellation.cancelled().await }
+    })
     .boxed();
-  let mut tunnel = QuinnTunnel {
+  QuinnTunnel {
     connection,
     side,
     incoming: Arc::new(tokio::sync::Mutex::new(TunnelIncoming {
       inner: stream_tunnels,
       side,
     })),
-    closed: watch::channel(false),
-  };
-  // Close stream of incoming streams when we close locally
-  // Getting the closed event before creating the object is hard.
-  // Swap it while we still own it exclusively, using a placeholder pending() stream temporarily
-  {
-    let closed_future = tunnel.on_closed();
-    let incoming = Arc::get_mut(&mut tunnel.incoming)
-      .expect("Must have sole ownership still")
-      .get_mut();
-    let box_of_nothing = stream::pending().boxed();
-    let incoming_streams = std::mem::replace(&mut incoming.inner, box_of_nothing);
-    incoming.inner = incoming_streams.take_until(closed_future).boxed();
+    incoming_closed: incoming_cancellation,
+    outgoing_closed: outgoing_cancellation,
   }
-  tunnel
 }
