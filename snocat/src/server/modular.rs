@@ -451,7 +451,7 @@ where
     tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   ) -> Result<(), TunnelRegistrationError> {
     tunnel_registry
-      .register_tunnel(id, None, tunnel)
+      .register_tunnel(id, tunnel)
       .map_err(|e| match e {
         TunnelRegistrationError::IdOccupied(id) => {
           tracing::error!(?id, "ID occupied; dropping tunnel");

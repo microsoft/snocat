@@ -104,7 +104,6 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   fn register_tunnel(
     &self,
     tunnel_id: TunnelId,
-    name: Option<TunnelName>,
     tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
   ) -> BoxFuture<Result<(), TunnelRegistrationError>>;
 
@@ -139,10 +138,9 @@ where
   fn register_tunnel(
     &self,
     tunnel_id: TunnelId,
-    name: Option<TunnelName>,
     tunnel: Arc<dyn Tunnel + Send + Sync + Unpin>,
   ) -> BoxFuture<'_, Result<(), TunnelRegistrationError>> {
-    self.as_ref().register_tunnel(tunnel_id, name, tunnel)
+    self.as_ref().register_tunnel(tunnel_id, tunnel)
   }
 
   fn name_tunnel(
@@ -208,7 +206,6 @@ impl TunnelRegistry for InMemoryTunnelRegistry {
   fn register_tunnel(
     &self,
     tunnel_id: TunnelId,
-    name: Option<TunnelName>,
     tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
   ) -> BoxFuture<Result<(), TunnelRegistrationError>> {
     let tunnels = Arc::clone(&self.tunnels);
@@ -217,17 +214,13 @@ impl TunnelRegistry for InMemoryTunnelRegistry {
       if tunnels.contains_key(&tunnel_id) {
         return Err(TunnelRegistrationError::IdOccupied(tunnel_id));
       }
-      // Note: Inefficient total enumeration, replace with hash lookup
-      if name.is_some() && tunnels.iter().any(|(_id, record)| record.name == name) {
-        return Err(TunnelRegistrationError::NameOccupied(name.unwrap()));
-      }
       assert!(
         tunnels
           .insert(
             tunnel_id,
             TunnelRecord {
               id: tunnel_id,
-              name: name,
+              name: None,
               tunnel,
             },
           )
@@ -335,13 +328,12 @@ where
   fn register_tunnel(
     &self,
     tunnel_id: TunnelId,
-    name: Option<TunnelName>,
     tunnel: Arc<dyn Tunnel + Send + Sync + Unpin + 'static>,
   ) -> BoxFuture<Result<(), TunnelRegistrationError>> {
     let inner = Arc::clone(&self.inner);
     async move {
       let lock = inner.write().await;
-      lock.register_tunnel(tunnel_id, name, tunnel).await
+      lock.register_tunnel(tunnel_id, tunnel).await
     }
     .boxed()
   }
