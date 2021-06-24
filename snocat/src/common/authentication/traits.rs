@@ -10,7 +10,7 @@ use crate::{
 use futures::{future::BoxFuture, FutureExt, TryStreamExt};
 use std::marker::Unpin;
 use thiserror::Error;
-use triggered::Listener;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct TunnelInfo {
@@ -92,7 +92,7 @@ pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a Listener,
+    shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>>;
 }
 
@@ -101,7 +101,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a Listener,
+    shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     self
       .as_ref()
@@ -112,7 +112,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
 pub fn perform_authentication<'a>(
   handler: &'a (impl AuthenticationHandler + ?Sized),
   tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
-  shutdown_notifier: &'a Listener,
+  shutdown_notifier: &'a CancellationToken,
 ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
   use tracing::{debug, span, warn, Instrument, Level};
   let tunnel_info = TunnelInfo {

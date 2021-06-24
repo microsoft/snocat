@@ -24,7 +24,7 @@ use std::{
   path::PathBuf,
   sync::{Arc, Weak},
 };
-use triggered::trigger;
+use tokio_util::sync::CancellationToken;
 
 /// Parameters used to run an Snocat server binding TCP connections
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -98,14 +98,15 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   let quinn_config = build_quinn_config(&config)?;
   let endpoint = QuinnListenEndpoint::bind(config.quinn_bind_addr, quinn_config)?;
 
-  let (shutdown_listener, sigint_handler_task) = {
-    let (shutdown_trigger, shutdown_listener) = trigger();
+  let (shutdown, sigint_handler_task) = {
+    let shutdown = CancellationToken::new();
+    let shutdown_trigger = shutdown.clone();
     let sigint_handler_task = tokio::task::spawn(async move {
       let _ = tokio::signal::ctrl_c().await;
       tracing::trace!("SIGINT detected, initiating graceful shutdown");
-      shutdown_trigger.trigger();
+      shutdown_trigger.cancel();
     });
-    (shutdown_listener, sigint_handler_task)
+    (shutdown, sigint_handler_task)
   };
 
   let tunnel_registry = Arc::new(InMemoryTunnelRegistry::new());
@@ -149,7 +150,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   }
 
   modular
-    .run(endpoint, shutdown_listener)
+    .run(endpoint, shutdown)
     .map_err(|_| anyhow::Error::msg("Modular runtime panicked and lost context"))
     .await?;
 

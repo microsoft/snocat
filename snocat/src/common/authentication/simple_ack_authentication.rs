@@ -10,6 +10,7 @@ use anyhow::{Context, Error as AnyErr, Result};
 use futures::{future::BoxFuture, TryFutureExt};
 use futures::{AsyncWriteExt, FutureExt, StreamExt};
 use std::marker::Unpin;
+use tokio_util::sync::CancellationToken;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -22,7 +23,7 @@ impl SimpleAckAuthenticationHandler {
     &'a self,
     mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a triggered::Listener,
+    _shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       tracing::info!("Sending HELO...");
@@ -66,7 +67,7 @@ impl SimpleAckAuthenticationHandler {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a triggered::Listener,
+    _shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let (mut recv, mut send) = tokio::io::split(channel);
@@ -114,7 +115,7 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a triggered::Listener,
+    shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     match tunnel_info.side {
       TunnelSide::Listen => self
@@ -129,6 +130,8 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
 
 #[cfg(test)]
 mod tests {
+  use tokio_util::sync::CancellationToken;
+
   use super::SimpleAckAuthenticationHandler;
   use crate::common::{
     authentication::{perform_authentication, AuthenticationHandler, TunnelInfo},
@@ -146,7 +149,7 @@ mod tests {
       connector,
     } = duplex();
 
-    let never_shutdown = triggered::trigger().1; // "never" listener due to dropped sender
+    let never_shutdown = CancellationToken::new(); // "never" listener due to dropped sender
     let auth_server = SimpleAckAuthenticationHandler::new();
     let auth_client = SimpleAckAuthenticationHandler::new();
 

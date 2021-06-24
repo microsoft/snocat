@@ -7,6 +7,7 @@ use crate::util::tunnel_stream::TunnelStream;
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
 use futures::{AsyncWriteExt, FutureExt, StreamExt};
+use tokio_util::sync::CancellationToken;
 
 pub struct NoOpAuthenticationHandler {}
 
@@ -31,7 +32,7 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
     &'a self,
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a triggered::Listener,
+    _shutdown_notifier: &'a CancellationToken,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let peer_addr = tunnel_info.addr;

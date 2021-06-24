@@ -15,6 +15,7 @@ use std::{
   net::IpAddr,
   sync::{Arc, Weak},
 };
+use tokio_util::sync::CancellationToken;
 
 use futures::future::{BoxFuture, FutureExt};
 use std::net::SocketAddr;
@@ -124,13 +125,17 @@ impl DemandProxyService {
     tcp_listener: TcpListener,
     weak_tunnel: Weak<dyn Tunnel + Send + Sync + Unpin>,
     request_client_handler: Weak<RequestClientHandler>,
-    stop_accepting: triggered::Listener,
+    stop_accepting: CancellationToken,
   ) -> Result<(), ServiceError> {
     use futures::stream::{StreamExt, TryStreamExt};
     let tcp_listener = tokio_stream::wrappers::TcpListenerStream::new(tcp_listener);
     tcp_listener
       .map_err(|_io_error| ServiceError::UnexpectedEnd)
-      .take_until(stop_accepting)
+      .take_until({
+        let stop_accepting = stop_accepting.clone();
+        Box::new(stop_accepting).cancelled()
+        // async move { stop_accepting.cancelled().await }
+      })
       .map_ok(|stream| {
         (
           stream,
@@ -209,7 +214,7 @@ impl DemandProxyService {
     target_addr: (Option<String>, u16),
     weak_tunnel: Weak<dyn Tunnel + Send + Sync + Unpin>,
     request_client_handler: Weak<RequestClientHandler>,
-    no_new_requests_listener: triggered::Listener,
+    no_new_requests_listener: CancellationToken,
   ) -> Result<(), ServiceError> {
     let span =
       tracing::span!(tracing::Level::DEBUG, "demand_proxy_forwarding", target = ?target_addr);
@@ -353,18 +358,21 @@ impl Service for DemandProxyService {
         }
       };
 
-      let (no_new_requests, no_new_requests_listener) = triggered::trigger();
+      let no_new_requests = CancellationToken::new();
 
-      let wait_for_client_close = async move {
-        tracing::trace!("Awaiting client closure");
-        // By waiting for a read that never arrives, we can see when the stream closes
-        let mut buf = [0u8; 8];
-        stream.read_exact(&mut buf).map(|_| ()).await;
-        tracing::trace!(content=?&buf, "Client closure requested, triggering...");
-        // Then we trigger the "no new requests" event, to signify that the client is done
-        no_new_requests.trigger();
-        // After this, we could theoretically give a grace period to shut down remaining connections
-        stream
+      let wait_for_client_close = {
+        let no_new_requests = no_new_requests.clone();
+        async move {
+          tracing::trace!("Awaiting client closure");
+          // By waiting for a read that never arrives, we can see when the stream closes
+          let mut buf = [0u8; 8];
+          stream.read_exact(&mut buf).map(|_| ()).await;
+          tracing::trace!(content=?&buf, "Client closure requested, triggering...");
+          // Then we trigger the "no new requests" event, to signify that the client is done
+          no_new_requests.cancel();
+          // After this, we could theoretically give a grace period to shut down remaining connections
+          stream
+        }
       }
       .instrument(tracing::trace_span!("close_waiter"))
       .boxed();
@@ -375,7 +383,7 @@ impl Service for DemandProxyService {
         parsed_addr,
         weak_tunnel,
         self.request_client_handler.clone(),
-        no_new_requests_listener,
+        no_new_requests,
       );
 
       let (mut stream, listener_result) =

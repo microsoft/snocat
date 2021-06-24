@@ -8,8 +8,8 @@ use futures::{
 };
 use std::sync::Arc;
 use tokio::sync::broadcast::{channel as event_channel, Sender as Broadcaster};
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
-use triggered::Listener; // TODO: Replace usages with `tokio_util::sync::CancellationToken`
 
 use crate::{
   common::{
@@ -56,7 +56,7 @@ impl<TTunnel> ModularDaemon<TTunnel> {
   fn authenticate_tunnel<'a>(
     self: &Arc<Self>,
     tunnel: tunnel::ArcTunnel<'a>,
-    shutdown: &Listener,
+    shutdown: &CancellationToken,
   ) -> impl Future<Output = Result<Option<(tunnel::TunnelName, tunnel::ArcTunnel<'a>)>, anyhow::Error>>
        + 'a {
     let shutdown = shutdown.clone();
@@ -134,7 +134,7 @@ where
   pub fn run<TunnelSource, TIntoTunnel>(
     self: Arc<Self>,
     tunnel_source: TunnelSource,
-    shutdown_request_listener: Listener,
+    shutdown_request_listener: CancellationToken,
   ) -> tokio::task::JoinHandle<()>
   where
     TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
@@ -147,7 +147,10 @@ where
     // The baggage attachment phase takes the initial Arc items clones them per-stream
     // This also generates a u64 as an ID for this tunnel, using a naive interlocked/atomic counter
     let pipeline = tunnel_source
-      .take_until(shutdown_request_listener.clone())
+      .take_until({
+        let shutdown_request_listener = shutdown_request_listener.clone();
+        async move { shutdown_request_listener.cancelled().await }
+      })
       .scan(
         (this, shutdown_request_listener),
         |(this, shutdown_request_listener), tunnel| {
@@ -227,7 +230,7 @@ where
     self: Arc<Self>,
     id: TunnelId,
     tunnel: Arc<TTunnel>,
-    shutdown: Listener,
+    shutdown: CancellationToken,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError>> + 'static {
     async move {
       // A registry mutex that prevents us from racing when calling the registry for
@@ -264,7 +267,7 @@ where
     self: Arc<Self>,
     id: TunnelId,
     tunnel: Arc<TTunnel>,
-    shutdown: Listener,
+    shutdown: CancellationToken,
     serialized_tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   ) -> Result<(), TunnelLifecycleError> {
     // Authenticate connections - Each connection will be piped into the authenticator,
@@ -335,14 +338,14 @@ where
     id: TunnelId,
     mut incoming: TDownlink,
     service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
-    shutdown: Listener,
+    shutdown: CancellationToken,
   ) -> Result<(), RequestProcessingError> {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
 
     incoming
       .as_stream()
       // Stop accepting new requests after a graceful shutdown is requested
-      .take_until(shutdown.clone())
+      .take_until(shutdown.clone().cancelled())
       .map_err(|e: TunnelError| RequestProcessingError::TunnelError(e))
       .scan((negotiator, shutdown), |(negotiator, shutdown), link| {
         let res = link.map(|content| (Arc::clone(&*negotiator), shutdown.clone(), content));
@@ -360,7 +363,7 @@ where
     id: TunnelId,
     link: TunnelIncomingType,
     negotiator: Arc<NegotiationService<Services>>,
-    shutdown: Listener,
+    shutdown: CancellationToken,
   ) -> Result<(), RequestProcessingError>
   where
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
@@ -376,7 +379,7 @@ where
     tunnel_id: TunnelId,
     link: WrappedStream,
     negotiator: Arc<NegotiationService<Services>>,
-    shutdown: Listener, // TODO: Respond to shutdown listener requests
+    shutdown: CancellationToken, // TODO: Respond to shutdown listener requests
   ) -> Result<(), RequestProcessingError>
   where
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
@@ -412,7 +415,7 @@ where
         ))
       }
       Ok((link, route_addr, service)) => {
-        if shutdown.is_triggered() {
+        if shutdown.is_cancelled() {
           // Drop services post-negotiation if the connection is awaiting
           // shutdown, instead of handing them to the service to be performed.
           return Ok(());

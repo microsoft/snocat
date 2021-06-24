@@ -23,7 +23,7 @@ use std::{
   path::PathBuf,
   sync::{Arc, Weak},
 };
-use triggered::trigger;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ClientArgs {
@@ -109,13 +109,14 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     qc.build()
   };
 
-  let (shutdown_listener, sigint_handler_task) = {
-    let (shutdown_trigger, shutdown_listener) = trigger();
+  let (shutdown, sigint_handler_task) = {
+    let shutdown = CancellationToken::new();
+    let shutdown_trigger = shutdown.clone();
     let sigint_handler_task = tokio::task::spawn(async move {
       let _ = tokio::signal::ctrl_c().await;
-      shutdown_trigger.trigger();
+      shutdown_trigger.cancel();
     });
-    (shutdown_listener, sigint_handler_task)
+    (shutdown, sigint_handler_task)
   };
 
   let proxy_target = config.proxy_target_host.clone();
@@ -189,15 +190,12 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   let request_handler = Arc::clone(modular.requests());
 
   let daemon = modular
-    .run(
-      connections_handle.map(|(_k, v)| v),
-      shutdown_listener.clone(),
-    )
+    .run(connections_handle.map(|(_k, v)| v), shutdown.clone())
     .map_err(|_| anyhow::Error::msg("Daemon panicked and lost context"))
     .boxed();
 
   let tcp_watcher = {
-    let shutdown_listener = shutdown_listener;
+    let shutdown = shutdown;
     tokio::task::spawn(async move {
       // TODO: Wait until a connection is completed before requesting a proxy
       // TODO: While shutdown is not requested, attempt to reconnect every second
@@ -215,7 +213,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
           demand_proxy,
         )
         .await?;
-      let res = futures::future::select(wait_close, shutdown_listener).await;
+      let res = futures::future::select(wait_close, Box::pin(shutdown.cancelled())).await;
       match res {
         Either::Left((Err(res), _listener)) => Err(res)?,
         Either::Left((Ok(()), _listener)) => (),

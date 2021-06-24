@@ -65,6 +65,7 @@ pub fn merge_streams<'a, T: 'a>(
 mod tests {
   use crate::util::merge_streams::merge_streams;
   use futures::{AsyncReadExt, StreamExt};
+  use tokio_util::sync::CancellationToken;
 
   #[tokio::test]
   async fn test_stream_merging() {
@@ -100,8 +101,8 @@ mod tests {
     })
     .boxed();
 
-    let (trigger_z_end, listener_z_end) = triggered::trigger();
-    let (trigger_x_3, listener_x_3) = triggered::trigger();
+    let z_end = CancellationToken::new();
+    let x_3 = CancellationToken::new();
     let first = stream::iter(vec![
       async {
         println!("x started");
@@ -111,8 +112,8 @@ mod tests {
       .boxed(),
       x.map(|x| Some(x))
         .inspect(|v| {
-          if *v == Some(3i32) && !trigger_x_3.is_triggered() {
-            trigger_x_3.trigger()
+          if *v == Some(3i32) && !x_3.is_cancelled() {
+            x_3.cancel()
           }
         })
         .boxed(),
@@ -122,10 +123,13 @@ mod tests {
       }
       .into_stream()
       .boxed(),
-      async {
-        listener_z_end.await;
-        println!("y started");
-        None
+      {
+        let z_end = z_end.clone();
+        async move {
+          z_end.cancelled().await;
+          println!("y started");
+          None
+        }
       }
       .into_stream()
       .boxed(),
@@ -141,17 +145,20 @@ mod tests {
     .filter_map(async move |x| x)
     .boxed();
     let second = stream::iter(vec![
-      async {
-        listener_x_3.await;
-        println!("z started");
-        None
+      {
+        let x_3 = x_3.clone();
+        async move {
+          x_3.cancelled().await;
+          println!("z started");
+          None
+        }
       }
       .into_stream()
       .boxed(),
       z.map(|x| Some(x)).boxed(),
       async {
         println!("z exhausted");
-        trigger_z_end.trigger();
+        z_end.cancel();
         None
       }
       .into_stream()
