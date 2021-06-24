@@ -4,7 +4,7 @@ use super::traits::*;
 #[warn(unused_imports)]
 use crate::{
   common::protocol::tunnel::{TunnelName, TunnelSide},
-  util::tunnel_stream::TunnelStream,
+  util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
 };
 use anyhow::{Context, Error as AnyErr, Result};
 use futures::{future::BoxFuture, TryFutureExt};
@@ -23,7 +23,7 @@ impl SimpleAckAuthenticationHandler {
     &'a self,
     mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a CancellationToken,
+    _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       tracing::info!("Sending HELO...");
@@ -67,7 +67,7 @@ impl SimpleAckAuthenticationHandler {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a CancellationToken,
+    _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let (mut recv, mut send) = tokio::io::split(channel);
@@ -115,7 +115,7 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    shutdown_notifier: &'a CancellationToken,
+    shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     match tunnel_info.side {
       TunnelSide::Listen => self
@@ -133,12 +133,15 @@ mod tests {
   use tokio_util::sync::CancellationToken;
 
   use super::SimpleAckAuthenticationHandler;
-  use crate::common::{
-    authentication::{perform_authentication, AuthenticationHandler, TunnelInfo},
-    protocol::tunnel::{
-      duplex::{channel as duplex, EntangledTunnels},
-      TunnelName,
+  use crate::{
+    common::{
+      authentication::{perform_authentication, AuthenticationHandler, TunnelInfo},
+      protocol::tunnel::{
+        duplex::{channel as duplex, EntangledTunnels},
+        TunnelName,
+      },
     },
+    util::cancellation::CancellationListener,
   };
   use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
@@ -149,7 +152,7 @@ mod tests {
       connector,
     } = duplex();
 
-    let never_shutdown = CancellationToken::new(); // "never" listener due to dropped sender
+    let never_shutdown = CancellationListener::default();
     let auth_server = SimpleAckAuthenticationHandler::new();
     let auth_client = SimpleAckAuthenticationHandler::new();
 

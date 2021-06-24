@@ -2,6 +2,7 @@
 // Licensed under the MIT license OR Apache 2.0
 use super::traits::*;
 use crate::common::protocol::tunnel::TunnelName;
+use crate::util::cancellation::CancellationListener;
 #[warn(unused_imports)]
 use crate::util::tunnel_stream::TunnelStream;
 use anyhow::{Context, Error as AnyErr, Result};
@@ -32,7 +33,7 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
     &'a self,
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
-    _shutdown_notifier: &'a CancellationToken,
+    _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
     async move {
       let peer_addr = tunnel_info.addr;

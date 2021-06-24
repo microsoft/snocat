@@ -63,8 +63,12 @@ impl<TTunnel> ModularDaemon<TTunnel> {
     let authentication_handler = Arc::clone(&self.authentication_handler);
 
     async move {
-      let result =
-        perform_authentication(authentication_handler.as_ref(), tunnel.as_ref(), &shutdown).await;
+      let result = perform_authentication(
+        authentication_handler.as_ref(),
+        tunnel.as_ref(),
+        &shutdown.into(),
+      )
+      .await;
       match result {
         Err(AuthenticationError::Handling(AuthenticationHandlingError::FatalApplicationError(
           fatal_error,
