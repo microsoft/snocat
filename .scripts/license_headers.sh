@@ -29,5 +29,5 @@ function update_licenses () (
   done
 )
 
-update_licenses "$PROJECT_ROOT/snocat/src" "$TMPFILE"
-update_licenses "$PROJECT_ROOT/snocat-cli/src" "$TMPFILE"
+update_licenses "$PROJECT_ROOT/snocat/" "$TMPFILE"
+update_licenses "$PROJECT_ROOT/snocat-cli/" "$TMPFILE"
