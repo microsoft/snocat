@@ -100,7 +100,6 @@ their own copyright notices and license terms:
 * [tracing-serde v0.1.2](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-subscriber v0.2.18](https://github.com/tokio-rs/tracing) - MIT
 * [tracing v0.1.26](https://github.com/tokio-rs/tracing) - MIT
-* [triggered v0.1.1](https://github.com/faern/triggered) - MIT OR Apache-2.0
 * [unicode-width v0.1.8](https://github.com/unicode-rs/unicode-width) - MIT/Apache-2.0
 * [unicode-xid v0.2.2](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
