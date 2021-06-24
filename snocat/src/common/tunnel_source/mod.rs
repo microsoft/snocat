@@ -110,7 +110,8 @@ where
 
 /// A set of connections / endpoints that can be updated dynamically, to allow runtime addition and
 /// removal of connections / "Tunnel sources" to those being handled by a tunnel server.
-pub type DynamicConnectionSet<Id> = DynamicStreamSet<Id, BoxedTunnel<'static>>;
+pub type DynamicConnectionSet<Id, TunnelType = BoxedTunnel<'static>> =
+  DynamicStreamSet<Id, TunnelType>;
 
 /// A strict wrapper for StreamMap that requires boxing of the items and handles locking for updates
 /// Can be used to merges outputs from a runtime-editable set of endpoint ports

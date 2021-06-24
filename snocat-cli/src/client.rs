@@ -1,27 +1,28 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use crate::services::demand_proxy::DemandProxyClient;
-use crate::services::PresetServiceRegistry;
+use crate::services::{demand_proxy::DemandProxyClient, PresetServiceRegistry};
 use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
 use futures::{future::*, *};
-use snocat::common::protocol::proxy_tcp::TcpStreamService;
-use snocat::common::protocol::tunnel::BoxedTunnel;
-use snocat::common::protocol::tunnel::TunnelUplink;
 use snocat::{
-  common::protocol::traits::{InMemoryTunnelRegistry, TunnelRegistry},
-  common::protocol::tunnel::id::MonotonicAtomicGenerator,
-  common::protocol::{Request, RouteAddress, Router, RoutingError},
-  common::tunnel_source::DynamicConnectionSet,
   common::{
     authentication::SimpleAckAuthenticationHandler,
-    protocol::tunnel::{from_quinn_endpoint, TunnelSide},
+    protocol::{
+      proxy_tcp::TcpStreamService,
+      traits::{InMemoryTunnelRegistry, TunnelRegistry},
+      tunnel::{
+        from_quinn_endpoint, id::MonotonicAtomicGenerator, QuinnTunnel, TunnelSide, TunnelUplink,
+      },
+      Request, RouteAddress, Router, RoutingError,
+    },
+    tunnel_source::DynamicConnectionSet,
   },
   server::modular::ModularDaemon,
-  util,
-  util::tunnel_stream::TunnelStream,
+  util::{self, tunnel_stream::TunnelStream},
 };
-use std::sync::Weak;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+  path::PathBuf,
+  sync::{Arc, Weak},
+};
 use triggered::trigger;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -140,7 +141,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let modular = Arc::new(ModularDaemon::new(
+  let modular = Arc::new(ModularDaemon::<QuinnTunnel<_>>::new(
     service_registry,
     tunnel_registry,
     router,
@@ -156,14 +157,14 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
 
   let (mut add_new_connection, connections_handle) = {
     let mut current_connection_id = 0u32;
-    let connections = DynamicConnectionSet::<u32>::new();
+    let connections = DynamicConnectionSet::<u32, _>::new();
     let connections_handle = connections.handle();
-    let add_new_connection = move |pair: BoxedTunnel<'static>| -> u32 {
+    let add_new_connection = move |tunnel: QuinnTunnel<_>| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
       assert!(
         connections
-          .attach_stream(connection_id, stream::once(future::ready(pair)).boxed())
+          .attach_stream(connection_id, stream::once(future::ready(tunnel)).boxed())
           .is_none(),
         "Connection IDs must be unique"
       );
@@ -180,7 +181,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     let connection = connecting.context("Finalizing connection to server...")?;
     let tunnel = from_quinn_endpoint(connection, TunnelSide::Connect);
     let addr = tunnel.addr();
-    let conn_id = add_new_connection(Box::new(tunnel));
+    let conn_id = add_new_connection(tunnel);
     tracing::info!(remote = ?addr, connection_id = conn_id, "connected");
   }
 

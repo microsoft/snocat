@@ -3,6 +3,7 @@
 use std::{
   borrow::{Borrow, BorrowMut},
   net::SocketAddr,
+  ops::Deref,
   pin::Pin,
   sync::Arc,
 };
@@ -249,6 +250,15 @@ pub trait Sided {
   fn side(&self) -> TunnelSide;
 }
 
+impl<T: std::ops::Deref> Sided for T
+where
+  T::Target: Sided,
+{
+  fn side(&self) -> TunnelSide {
+    self.deref().side()
+  }
+}
+
 pub trait TunnelUplink: Sided {
   fn addr(&self) -> TunnelAddressInfo {
     TunnelAddressInfo::Unidentified
@@ -257,17 +267,18 @@ pub trait TunnelUplink: Sided {
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>>;
 }
 
-pub trait TunnelDownlink: Sided {
-  fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
+impl<T> TunnelUplink for T
+where
+  T: Deref + Send + Sync + Unpin,
+  <T as Deref>::Target: TunnelUplink + Sided,
+{
+  fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
+    self.deref().open_link()
+  }
 }
 
-impl<TDownlink: std::ops::Deref> Sided for TDownlink
-where
-  TDownlink::Target: TunnelDownlink,
-{
-  fn side(&self) -> TunnelSide {
-    self.deref().side()
-  }
+pub trait TunnelDownlink: Sided {
+  fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
 }
 
 impl<TDownlink: std::ops::Deref + std::ops::DerefMut> TunnelDownlink for TDownlink
@@ -281,6 +292,16 @@ where
 
 pub trait Tunnel: TunnelUplink + Send + Sync + Unpin {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>>;
+}
+
+impl<T> Tunnel for T
+where
+  T: Deref + Send + Sync + Unpin,
+  <T as Deref>::Target: Tunnel + TunnelUplink + Sided,
+{
+  fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
+    self.deref().downlink()
+  }
 }
 
 pub enum TunnelIncomingType {

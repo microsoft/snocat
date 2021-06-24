@@ -24,7 +24,7 @@ use crate::{
         TunnelRegistry,
       },
       tunnel::{
-        self, id::TunnelIDGenerator, ArcTunnel, BoxedTunnel, TunnelDownlink, TunnelError, TunnelId,
+        self, id::TunnelIDGenerator, Tunnel, TunnelDownlink, TunnelError, TunnelId,
         TunnelIncomingType, TunnelName,
       },
       RouteAddress, Router,
@@ -33,10 +33,7 @@ use crate::{
   util::tunnel_stream::WrappedStream,
 };
 
-pub struct ModularDaemon<Connection = i32>
-where
-  Connection: Clone,
-{
+pub struct ModularDaemon<TTunnel> {
   service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
   tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   router: Arc<dyn Router + Send + Sync + 'static>,
@@ -45,13 +42,13 @@ where
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 
   // event hooks
-  pub tunnel_connected: Broadcaster<(TunnelId, Connection)>,
-  pub tunnel_authenticated: Broadcaster<(TunnelId, TunnelName, Connection)>,
+  pub tunnel_connected: Broadcaster<(TunnelId, Arc<TTunnel>)>,
+  pub tunnel_authenticated: Broadcaster<(TunnelId, TunnelName, Arc<TTunnel>)>,
   pub tunnel_disconnected:
     Broadcaster<(TunnelId, Option<TunnelName> /*, DisconnectReason? */)>,
 }
 
-impl ModularDaemon {
+impl<TTunnel> ModularDaemon<TTunnel> {
   pub fn requests<'a>(&'a self) -> &Arc<RequestClientHandler> {
     &self.request_handler
   }
@@ -99,7 +96,7 @@ impl ModularDaemon {
   }
 }
 
-impl ModularDaemon
+impl<TTunnel> ModularDaemon<TTunnel>
 where
   Self: 'static,
 {
@@ -134,13 +131,15 @@ where
   ///
   /// This can be performed concurrently against multiple sources, with a shared server instance.
   /// The implementation assumes that shutdown_request_listener will also halt the tunnel_source.
-  pub fn run<TunnelSource>(
+  pub fn run<TunnelSource, TIntoTunnel>(
     self: Arc<Self>,
     tunnel_source: TunnelSource,
     shutdown_request_listener: Listener,
   ) -> tokio::task::JoinHandle<()>
   where
-    TunnelSource: Stream<Item = BoxedTunnel<'static>> + Send + 'static,
+    TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
+    TIntoTunnel: Into<TTunnel>,
+    TTunnel: Tunnel + 'static,
   {
     let this = Arc::clone(&self);
     // Pipeline phases:
@@ -153,7 +152,7 @@ where
         (this, shutdown_request_listener),
         |(this, shutdown_request_listener), tunnel| {
           let id = this.tunnel_id_generator.next();
-          let tunnel: ArcTunnel = tunnel.into();
+          let tunnel: TTunnel = tunnel.into();
           future::ready(Some((
             tunnel,
             id,
@@ -168,9 +167,11 @@ where
     // to understand stream associated types at this level.
     let pipeline = pipeline.for_each_concurrent(
       None,
-      |(tunnel_pair, id, server, shutdown_request_listener)| async move {
-        if let Err(e) =
-          Self::tunnel_lifecycle(id, tunnel_pair, server, shutdown_request_listener).await
+      |(tunnel, id, this, shutdown_request_listener)| async move {
+        let tunnel = Arc::new(tunnel);
+        if let Err(e) = this
+          .tunnel_lifecycle(id, tunnel, shutdown_request_listener)
+          .await
         {
           tracing::debug!(error=?e, "tunnel lifetime exited with error");
         }
@@ -218,26 +219,25 @@ impl From<RequestProcessingError> for TunnelLifecycleError {
   }
 }
 
-impl ModularDaemon
+impl<TTunnel> ModularDaemon<TTunnel>
 where
-  Self: 'static,
+  TTunnel: Tunnel + 'static,
 {
   fn tunnel_lifecycle(
+    self: Arc<Self>,
     id: TunnelId,
-    tunnel: ArcTunnel<'static>,
-    server: Arc<ModularDaemon>,
+    tunnel: Arc<TTunnel>,
     shutdown: Listener,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError>> + 'static {
     async move {
       // A registry mutex that prevents us from racing when calling the registry for
       // this particular tunnel entry. This should also be enforced at the registry level.
-      let serialized_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static> = Arc::new(SerializedTunnelRegistry::new(Arc::clone(&server.tunnel_registry)));
+      let serialized_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static> = Arc::new(SerializedTunnelRegistry::new(Arc::clone(&self.tunnel_registry)));
 
       // Tunnel registration - The tunnel registry is called to imbue the tunnel with an ID
       {
-        let tunnel = Arc::clone(&tunnel);
         let tunnel_registry = Arc::clone(&serialized_registry);
-        Self::register_tunnel(id, tunnel, tunnel_registry)
+        Self::register_tunnel(id, Arc::clone(&tunnel), tunnel_registry)
           .instrument(tracing::span!(tracing::Level::DEBUG, "registration", ?id))
       }.await?;
 
@@ -246,7 +246,7 @@ where
       // in a deregistration call.
       // Phases resume in registered_tunnel_lifecycle.
       let tunnel_registry = Arc::clone(&serialized_registry);
-      match Self::registered_tunnel_lifecycle(id, tunnel, server, shutdown, tunnel_registry).await {
+      match self.registered_tunnel_lifecycle(id, tunnel, shutdown, tunnel_registry).await {
         Ok(lifecycle_result) => Ok(lifecycle_result),
         Err(e) => {
           let deregistered = serialized_registry.deregister_tunnel(id).await.ok();
@@ -261,17 +261,16 @@ where
   }
 
   async fn registered_tunnel_lifecycle(
+    self: Arc<Self>,
     id: TunnelId,
-    tunnel: ArcTunnel<'static>,
-    server: Arc<ModularDaemon>,
+    tunnel: Arc<TTunnel>,
     shutdown: Listener,
     serialized_tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
   ) -> Result<(), TunnelLifecycleError> {
     // Authenticate connections - Each connection will be piped into the authenticator,
     // which has the option of declining the connection, and may save additional metadata.
     let tunnel_authentication = {
-      let server = Arc::clone(&server);
-      server
+      self
         .authenticate_tunnel(tunnel, &shutdown)
         .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", ?id))
         .map_err(TunnelLifecycleError::FatalError)
@@ -298,7 +297,7 @@ where
 
     // Process incoming requests until the incoming channel is closed.
     {
-      let service_registry = Arc::clone(&server.service_registry);
+      let service_registry = Arc::clone(&self.service_registry);
       Self::handle_incoming_requests(
         id,
         tunnel
@@ -445,61 +444,88 @@ where
     }
   }
 
-  async fn register_tunnel(
+  async fn register_tunnel<TTunnelRegistry>(
     id: TunnelId,
-    tunnel: ArcTunnel<'static>,
-    tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
-  ) -> Result<(), TunnelRegistrationError> {
-    tunnel_registry
-      .register_tunnel(id, tunnel)
-      .map_err(|e| match e {
-        TunnelRegistrationError::IdOccupied(id) => {
-          tracing::error!(?id, "ID occupied; dropping tunnel");
-          TunnelRegistrationError::IdOccupied(id)
-        }
-        TunnelRegistrationError::NameOccupied(name) => {
-          // This error indicates that the tunnel registry is reporting names incorrectly, or
-          // holding entries from prior launches beyond the lifetime of the server that created them
-          tracing::error!(
-            "Name reported as occupied, but we haven't named this tunnel yet; dropping tunnel"
-          );
-          TunnelRegistrationError::NameOccupied(name)
-        }
-        TunnelRegistrationError::ApplicationError(e) => {
-          tracing::error!(err=?e, "ApplicationError in tunnel registration");
-          TunnelRegistrationError::ApplicationError(e)
-        }
-      })
-      .await
+    tunnel: Arc<TTunnel>,
+    tunnel_registry: TTunnelRegistry,
+  ) -> Result<(), TunnelRegistrationError>
+  where
+    TTunnelRegistry: std::ops::Deref + Send + 'static,
+    <TTunnelRegistry as std::ops::Deref>::Target: TunnelRegistry + Send + Sync,
+  {
+    let registration = async move {
+      tunnel_registry
+        .register_tunnel(id, tunnel)
+        .map_err(|e| match e {
+          TunnelRegistrationError::IdOccupied(id) => {
+            tracing::error!(?id, "ID occupied; dropping tunnel");
+            TunnelRegistrationError::IdOccupied(id)
+          }
+          TunnelRegistrationError::NameOccupied(name) => {
+            // This error indicates that the tunnel registry is reporting names incorrectly, or
+            // holding entries from prior launches beyond the lifetime of the server that created them
+            tracing::error!(
+              "Name reported as occupied, but we haven't named this tunnel yet; dropping tunnel"
+            );
+            TunnelRegistrationError::NameOccupied(name)
+          }
+          TunnelRegistrationError::ApplicationError(e) => {
+            tracing::error!(err=?e, "ApplicationError in tunnel registration");
+            TunnelRegistrationError::ApplicationError(e)
+          }
+        })
+        .await
+    };
+    tokio::spawn(registration).await.map_err(|e| {
+      if e.is_panic() {
+        std::panic::resume_unwind(e.into_panic());
+      } else {
+        TunnelRegistrationError::ApplicationError(anyhow::Error::msg("Registration task cancelled"))
+      }
+    })?
   }
 
-  async fn name_tunnel(
+  async fn name_tunnel<TTunnelRegistry>(
     id: TunnelId,
     tunnel_name: TunnelName,
-    tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
-  ) -> Result<(), TunnelNamingError> {
-    tunnel_registry
-      .name_tunnel(id, tunnel_name)
-      .map_err(|e| match e {
-        // If a tunnel registry wishes to keep a tunnel alive past a naming clash, it
-        // must rename the existing tunnel then name the new one, and report Ok here.
-        TunnelNamingError::NameOccupied(name) => {
-          tracing::error!(?id, "Name reports as occupied; dropping tunnel");
-          TunnelNamingError::NameOccupied(name)
-        }
-        TunnelNamingError::TunnelNotRegistered(id) => {
-          // This indicates out-of-order processing on per-tunnel events in the registry
-          // To solve this, the tunnel registry task complete event processing in-order
-          // for events produced by a given tunnel's lifetime. The simplest way is to
-          // serialize all registry changes using a tokio::task with an ordered channel.
-          tracing::error!("Tunnel reported as not registered from naming task");
-          TunnelNamingError::TunnelNotRegistered(id)
-        }
-        TunnelNamingError::ApplicationError(e) => {
-          tracing::error!(err=?e, "ApplicationError in tunnel naming");
-          TunnelNamingError::ApplicationError(e)
-        }
-      })
-      .await
+    tunnel_registry: TTunnelRegistry,
+  ) -> Result<(), TunnelNamingError>
+  where
+    TTunnelRegistry: std::ops::Deref + Send + Sync + 'static,
+    <TTunnelRegistry as std::ops::Deref>::Target: TunnelRegistry + Send + Sync,
+  {
+    let naming = async move {
+      tunnel_registry
+        .deref()
+        .name_tunnel(id, tunnel_name)
+        .map_err(|e| match e {
+          // If a tunnel registry wishes to keep a tunnel alive past a naming clash, it
+          // must rename the existing tunnel then name the new one, and report Ok here.
+          TunnelNamingError::NameOccupied(name) => {
+            tracing::error!(?id, "Name reports as occupied; dropping tunnel");
+            TunnelNamingError::NameOccupied(name)
+          }
+          TunnelNamingError::TunnelNotRegistered(id) => {
+            // This indicates out-of-order processing on per-tunnel events in the registry
+            // To solve this, the tunnel registry task complete event processing in-order
+            // for events produced by a given tunnel's lifetime. The simplest way is to
+            // serialize all registry changes using a tokio::task with an ordered channel.
+            tracing::error!("Tunnel reported as not registered from naming task");
+            TunnelNamingError::TunnelNotRegistered(id)
+          }
+          TunnelNamingError::ApplicationError(e) => {
+            tracing::error!(err=?e, "ApplicationError in tunnel naming");
+            TunnelNamingError::ApplicationError(e)
+          }
+        })
+        .await
+    };
+    tokio::spawn(naming).await.map_err(|e| {
+      if e.is_panic() {
+        std::panic::resume_unwind(e.into_panic());
+      } else {
+        TunnelNamingError::ApplicationError(anyhow::Error::msg("Naming task cancelled"))
+      }
+    })?
   }
 }

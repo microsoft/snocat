@@ -1,24 +1,28 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT license OR Apache 2.0
-use crate::services::{demand_proxy::DemandProxyService, PresetServiceRegistry};
-use crate::util;
+use crate::{
+  services::{demand_proxy::DemandProxyService, PresetServiceRegistry},
+  util,
+};
 use anyhow::{Context as AnyhowContext, Result};
-use futures::future::BoxFuture;
-use futures::future::{FutureExt, TryFutureExt};
+use futures::future::{BoxFuture, FutureExt, TryFutureExt};
 use quinn::TransportConfig;
 use snocat::{
-  common::authentication::SimpleAckAuthenticationHandler,
-  common::protocol::traits::{InMemoryTunnelRegistry, TunnelRegistry},
-  common::protocol::tunnel::id::MonotonicAtomicGenerator,
-  common::protocol::{Request, RouteAddress, Router, RoutingError},
-  server::modular::ModularDaemon,
+  common::{
+    authentication::SimpleAckAuthenticationHandler,
+    protocol::{
+      traits::{InMemoryTunnelRegistry, TunnelRegistry},
+      tunnel::{id::MonotonicAtomicGenerator, QuinnTunnel},
+      Request, RouteAddress, Router, RoutingError,
+    },
+    tunnel_source::QuinnListenEndpoint,
+  },
+  server::{modular::ModularDaemon, PortRangeAllocator},
   util::tunnel_stream::TunnelStream,
 };
-use snocat::{common::tunnel_source::QuinnListenEndpoint, server::PortRangeAllocator};
-use std::{boxed::Box, path::PathBuf, sync::Arc};
 use std::{
+  boxed::Box,
   net::{IpAddr, Ipv4Addr, Ipv6Addr},
-  sync::Weak,
+  path::PathBuf,
+  sync::{Arc, Weak},
 };
 use triggered::trigger;
 
@@ -122,7 +126,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let modular = Arc::new(ModularDaemon::new(
+  let modular = Arc::new(ModularDaemon::<QuinnTunnel<_>>::new(
     service_registry.clone(),
     tunnel_registry.clone(),
     router,
@@ -145,10 +149,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   }
 
   modular
-    .run(
-      futures::stream::StreamExt::map(endpoint, |tunnel| Box::new(tunnel) as Box<_>),
-      shutdown_listener,
-    )
+    .run(endpoint, shutdown_listener)
     .map_err(|_| anyhow::Error::msg("Modular runtime panicked and lost context"))
     .await?;
 
