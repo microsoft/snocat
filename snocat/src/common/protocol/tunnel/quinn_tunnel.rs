@@ -123,7 +123,7 @@ where
   S: quinn::crypto::Session + 'static,
 {
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
-    if self.is_closed() {
+    if self.is_closed_uplink() {
       return future::ready(Err(TunnelError::ConnectionClosed)).boxed();
     }
     // TODO: make streams exit when close() is called
@@ -147,6 +147,11 @@ where
   S: quinn::crypto::Session + 'static,
 {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
+    if self.is_closed_downlink() {
+      return future::ready(None).boxed();
+    }
+    // [TunnelIncoming] is constructed upon opening the tunnel
+    // Logic to cut it upon and after downlink closure is handled at time of construction
     self
       .incoming
       .clone()
@@ -182,15 +187,20 @@ where
     bi_streams,
     ..
   } = new_connection;
+  // Incoming Cancellation is used for is_closed_downlink later
+  // We need to use it earlier to prep the incoming stream.
   let incoming_cancellation = CancellationToken::new();
   let outgoing_cancellation = CancellationToken::new();
-  // TODO: make incoming streams exit when close() is called
   let stream_tunnels = bi_streams
     .map_ok(|(send, recv)| {
+      // TODO: make incoming streams exit when close() is called
       TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
     })
     .map_err(Into::into)
+    // Only take new streams until incoming is cancelled
     .take_until({
+      // Copy a cancellation token instance which is used to cut the incoming channel
+      // We only need one clone of it because downlinks are exclusively held via lock
       let incoming_cancellation = incoming_cancellation.clone();
       async move { incoming_cancellation.cancelled().await }
     })
