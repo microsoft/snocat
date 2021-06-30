@@ -248,6 +248,10 @@ where
           .instrument(tracing::span!(tracing::Level::DEBUG, "registration", ?id))
       }.await?;
 
+      // Send tunnel_connected event once the tunnel is successfully registered to its ID
+      // Ignore error as it occurs only when no receivers exist to read the event
+      let _ = self.tunnel_connected.send((id, tunnel.clone()));
+
       // From here on, any failure must trigger attempted deregistration of the tunnel,
       // So further phases return their result to check for failures, which then result
       // in a deregistration call.
@@ -278,13 +282,13 @@ where
     // which has the option of declining the connection, and may save additional metadata.
     let tunnel_authentication = {
       self
-        .authenticate_tunnel(tunnel, &shutdown)
+        .authenticate_tunnel(tunnel.clone(), &shutdown)
         .instrument(tracing::span!(tracing::Level::DEBUG, "authentication", ?id))
         .map_err(TunnelLifecycleError::FatalError)
     };
 
-    let (tunnel_name, tunnel) = match tunnel_authentication.await? {
-      Some((tunnel_name, tunnel)) => (tunnel_name, tunnel),
+    let tunnel_name = match tunnel_authentication.await? {
+      Some((tunnel_name, _tunnel_dyn)) => tunnel_name,
       None => {
         let _ = serialized_tunnel_registry.deregister_tunnel(id).await;
         return Ok(());
@@ -294,13 +298,19 @@ where
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
     {
       let tunnel_registry = Arc::clone(&serialized_tunnel_registry);
-      Self::name_tunnel(id, tunnel_name, tunnel_registry).instrument(tracing::span!(
+      Self::name_tunnel(id, tunnel_name.clone(), tunnel_registry).instrument(tracing::span!(
         tracing::Level::DEBUG,
         "naming",
         ?id
       ))
     }
     .await?;
+
+    // Send tunnel_authenticated event for the newly-named tunnel, once the registry is aware of it
+    // Ignore error as it occurs only when no receivers exist to read the event
+    let _ = self
+      .tunnel_authenticated
+      .send((id, tunnel_name.clone(), tunnel.clone()));
 
     // Process incoming requests until the incoming channel is closed.
     {
@@ -326,6 +336,10 @@ where
 
     // Deregister closed tunnels after graceful exit
     let _record = serialized_tunnel_registry.deregister_tunnel(id).await;
+
+    // TODO: Find a way to call self.tunnel_disconnected automatically, and simplify deregistration code path
+    //       Otherwise, these deregister calls are an absurd amount of complexity.
+    //       Maybe use drop semantics paired with a cancellation token and a task?
 
     Ok(())
   }
