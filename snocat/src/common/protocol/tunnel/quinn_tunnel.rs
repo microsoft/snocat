@@ -204,6 +204,14 @@ where
       let incoming_cancellation = incoming_cancellation.clone();
       async move { incoming_cancellation.cancelled().await }
     })
+    .inspect_err({
+      let incoming_cancellation = incoming_cancellation.clone();
+      move |_tunnel_error| {
+        // TODO: set closed reason, once a place exists to set such a thing
+        incoming_cancellation.cancel();
+      }
+    })
+    .fuse()
     .boxed();
   QuinnTunnel {
     connection,
