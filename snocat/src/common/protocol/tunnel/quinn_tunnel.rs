@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use futures::{
   future::{self, BoxFuture},
-  FutureExt, StreamExt, TryStreamExt,
+  FutureExt, StreamExt, TryFutureExt, TryStreamExt,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -133,6 +133,13 @@ where
       .map(|result| match result {
         Ok((send, recv)) => Ok(WrappedStream::Boxed(Box::new(recv), Box::new(send))),
         Err(e) => Err(e.into()),
+      })
+      .inspect_err({
+        let canceller: CancellationToken = self.outgoing_closed.clone();
+        move |_tunnel_error| {
+          // TODO: set closed reason, once a place exists to set such a thing
+          canceller.cancel();
+        }
       })
       .boxed()
   }
