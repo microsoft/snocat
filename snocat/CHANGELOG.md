@@ -6,6 +6,9 @@ following the release of version 1.0.0.
 <!-- next-header -->
 
 ## [Unreleased] - ReleaseDate
+
+`Dropkick` utility added for drop notifications.
+
 ### Tunnel unification refactoring
 Tunnel is now a hybrid trait of uplink and downlink.
 `TunnelUplink` and `TunnelDownlink` are traits, and sidedness is split
