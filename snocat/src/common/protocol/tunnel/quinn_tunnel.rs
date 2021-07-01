@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #![forbid(unused_imports, dead_code)]
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use futures::{
   future::{self, BoxFuture},
@@ -14,7 +14,7 @@ use crate::{
     Sided, Tunnel, TunnelAddressInfo, TunnelDownlink, TunnelError, TunnelIncoming,
     TunnelIncomingType, TunnelSide, TunnelUplink,
   },
-  util::tunnel_stream::WrappedStream,
+  util::{dropkick::Dropkick, tunnel_stream::WrappedStream},
 };
 
 use super::{TunnelControl, TunnelControlPerChannel, TunnelMonitoring, TunnelMonitoringPerChannel};
@@ -24,8 +24,8 @@ pub struct QuinnTunnel<S: quinn::crypto::Session> {
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
 
-  incoming_closed: CancellationToken,
-  outgoing_closed: CancellationToken,
+  incoming_closed: Arc<Dropkick<CancellationToken>>,
+  outgoing_closed: Arc<Dropkick<CancellationToken>>,
 }
 
 impl<S: quinn::crypto::Session> QuinnTunnel<S> {
@@ -75,8 +75,8 @@ where
   }
 
   fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
-    let in_close = self.incoming_closed.clone();
-    let out_close = self.outgoing_closed.clone();
+    let in_close = self.incoming_closed.deref().deref().clone();
+    let out_close = self.outgoing_closed.deref().deref().clone();
     async move {
       future::join(in_close.cancelled(), out_close.cancelled())
         .map(|_| Ok(()))
@@ -104,7 +104,7 @@ where
   }
 
   fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
-    let in_close = self.incoming_closed.clone();
+    let in_close = self.incoming_closed.deref().deref().clone();
     async move { in_close.cancelled().map(|_| Ok(())).await }.boxed()
   }
 }
@@ -135,7 +135,9 @@ where
         Err(e) => Err(e.into()),
       })
       .inspect_err({
-        let canceller: CancellationToken = self.outgoing_closed.clone();
+        // Clone the dropkick arc to ensure that it is not marked closed
+        // until the [Tunnel], its downlink, and all its uplinks are dropped.
+        let canceller = self.outgoing_closed.clone();
         move |_tunnel_error| {
           // TODO: set closed reason, once a place exists to set such a thing
           canceller.cancel();
@@ -196,8 +198,8 @@ where
   } = new_connection;
   // Incoming Cancellation is used for is_closed_downlink later
   // We need to use it earlier to prep the incoming stream.
-  let incoming_cancellation = CancellationToken::new();
-  let outgoing_cancellation = CancellationToken::new();
+  let incoming_cancellation: Arc<Dropkick<CancellationToken>> =
+    Arc::new(CancellationToken::new().into());
   let stream_tunnels = bi_streams
     .map_ok(|(send, recv)| {
       // TODO: make incoming streams exit when close() is called
@@ -208,11 +210,20 @@ where
     .take_until({
       // Copy a cancellation token instance which is used to cut the incoming channel
       // We only need one clone of it because downlinks are exclusively held via lock
+      // We clone the dropkick arc to ensure that it is not marked closed
+      // until the [Tunnel], its downlink, and all its uplinks are dropped.
       let incoming_cancellation = incoming_cancellation.clone();
-      async move { incoming_cancellation.cancelled().await }
+      // Run in a separate task to ensure that we drop the arc on cancellation even if
+      // nobody awaits the downlink's cancellation event.
+      tokio::task::spawn({
+        async move {
+          incoming_cancellation.cancelled().await;
+          drop(incoming_cancellation);
+        }
+      })
     })
     .inspect_err({
-      let incoming_cancellation = incoming_cancellation.clone();
+      let incoming_cancellation = incoming_cancellation.deref().deref().clone();
       move |_tunnel_error| {
         // TODO: set closed reason, once a place exists to set such a thing
         incoming_cancellation.cancel();
@@ -228,6 +239,6 @@ where
       side,
     })),
     incoming_closed: incoming_cancellation,
-    outgoing_closed: outgoing_cancellation,
+    outgoing_closed: Arc::new(CancellationToken::new().into()),
   }
 }
