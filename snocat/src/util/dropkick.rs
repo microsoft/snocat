@@ -58,6 +58,32 @@ where
   }
 }
 
+impl<T> ::std::ops::Deref for Dropkick<T>
+where
+  T: DropkickSync,
+{
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target {
+    self
+      .inner
+      .as_ref()
+      .expect("Dropkick dropped before countered?")
+  }
+}
+
+impl<T> ::std::ops::DerefMut for Dropkick<T>
+where
+  T: DropkickSync,
+{
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    self
+      .inner
+      .as_mut()
+      .expect("Dropkick dropped before countered?")
+  }
+}
+
 impl<T> Drop for Dropkick<T>
 where
   T: DropkickSync,
@@ -153,6 +179,15 @@ where
 {
   fn dropkick(self) {
     (self)();
+  }
+}
+
+impl<T> From<T> for Dropkick<T>
+where
+  T: DropkickSync,
+{
+  fn from(target: T) -> Self {
+    Dropkick::new(target)
   }
 }
 
