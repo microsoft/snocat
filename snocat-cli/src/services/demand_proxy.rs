@@ -4,9 +4,9 @@
 use snocat::{
   common::protocol::{
     request_handler::RequestClientHandler,
-    traits::TunnelRegistry,
-    tunnel::{Tunnel, TunnelId},
-    Client, ClientError, RouteAddress, Service, ServiceError,
+    traits::ServiceRegistry,
+    tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
+    Client, ClientError, RouteAddress, Router, Service, ServiceError,
   },
   server::PortRangeAllocator,
 };
@@ -77,14 +77,18 @@ impl Client for DemandProxyClient {
   }
 }
 
-pub struct DemandProxyService {
-  tunnel_registry: Weak<dyn TunnelRegistry + Send + Sync + 'static>,
-  request_client_handler: Weak<RequestClientHandler>,
+pub struct DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> {
+  tunnel_registry: Weak<TTunnelRegistry>,
+  request_client_handler:
+    Weak<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
   port_range_allocator: PortRangeAllocator,
   bind_addrs: Arc<Vec<IpAddr>>,
+  tunnel_phantom: std::marker::PhantomData<TTunnel>,
 }
 
-impl std::fmt::Debug for DemandProxyService {
+impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> std::fmt::Debug
+  for DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+{
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("DemandProxy server").finish_non_exhaustive()
   }
@@ -92,10 +96,20 @@ impl std::fmt::Debug for DemandProxyService {
 
 const DEMAND_PROXY_ADDRESS_BASE: &'static str = "/proxyme/0.0.1/";
 
-impl DemandProxyService {
+impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+  DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+where
+  TTunnel: Tunnel + Send + Sync + 'static,
+  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
+  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
+  TServiceRegistry::Error: Send + 'static,
+  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+{
   pub fn new(
-    tunnel_registry: Weak<dyn TunnelRegistry + Send + Sync + 'static>,
-    request_client_handler: Weak<RequestClientHandler>,
+    tunnel_registry: Weak<TTunnelRegistry>,
+    request_client_handler: Weak<
+      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
+    >,
     port_range_allocator: PortRangeAllocator,
     mut bind_addrs: Vec<IpAddr>,
   ) -> Self {
@@ -105,28 +119,19 @@ impl DemandProxyService {
       request_client_handler,
       port_range_allocator,
       bind_addrs: Arc::new(bind_addrs),
-    }
-  }
-
-  /// Removes incidents where one "unspecified" / dual-stack-mode IP will steal from others on the host
-  fn handle_dual_stack_addrs(bind_addrs: &mut Vec<IpAddr>) {
-    match bind_addrs.iter().find(|addr| addr.is_unspecified()) {
-      Some(unspec) => {
-        let unspec = unspec.clone();
-        bind_addrs.clear();
-        bind_addrs.push(unspec);
-      }
-      None => (),
+      tunnel_phantom: std::marker::PhantomData,
     }
   }
 
   async fn run_tcp_listener(
     target_addr: Arc<(Option<String>, u16)>,
     tcp_listener: TcpListener,
-    weak_tunnel: Weak<dyn Tunnel + Send + Sync + Unpin>,
-    request_client_handler: Weak<RequestClientHandler>,
+    weak_tunnel: Weak<TTunnel>,
+    request_client_handler: Weak<
+      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
+    >,
     stop_accepting: CancellationToken,
-  ) -> Result<(), ServiceError> {
+  ) -> Result<(), ServiceError<TServiceRegistry::Error>> {
     use futures::stream::{StreamExt, TryStreamExt};
     let tcp_listener = tokio_stream::wrappers::TcpListenerStream::new(tcp_listener);
     tcp_listener
@@ -194,28 +199,16 @@ impl DemandProxyService {
     Ok(())
   }
 
-  fn parse_address(addr: &str) -> Result<(Option<&str>, u16), ()> {
-    addr
-      .strip_prefix(DEMAND_PROXY_ADDRESS_BASE)
-      .ok_or(())
-      .and_then(|suffix: &str| {
-        let (host, port) = match suffix.split_once("/") {
-          Some((host_section, port_section)) => ((Some(host_section), port_section)),
-          None => (None, suffix),
-        };
-        let port = port.parse::<u16>().map_err(|_| ())?;
-        Ok((host, port))
-      })
-  }
-
   /// Handle forwarding concurrently across all streams requested by the TCP ports bound for each listener
   async fn run_tcp_listeners(
     bindings: Vec<TcpListener>,
     target_addr: (Option<String>, u16),
-    weak_tunnel: Weak<dyn Tunnel + Send + Sync + Unpin>,
-    request_client_handler: Weak<RequestClientHandler>,
+    weak_tunnel: Weak<TTunnel>,
+    request_client_handler: Weak<
+      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
+    >,
     no_new_requests_listener: CancellationToken,
-  ) -> Result<(), ServiceError> {
+  ) -> Result<(), ServiceError<TServiceRegistry::Error>> {
     let span =
       tracing::span!(tracing::Level::DEBUG, "demand_proxy_forwarding", target = ?target_addr);
     use futures::stream::TryStreamExt;
@@ -232,7 +225,7 @@ impl DemandProxyService {
             Arc::clone(&parsed_addr),
           )
         })
-        .map(Result::<_, ServiceError>::Ok),
+        .map(Result::<_, ServiceError<_>>::Ok),
     )
     .try_for_each_concurrent(
       None,
@@ -258,7 +251,47 @@ impl DemandProxyService {
   }
 }
 
-impl Service for DemandProxyService {
+impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+  DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+{
+  /// Removes incidents where one "unspecified" / dual-stack-mode IP will steal from others on the host
+  fn handle_dual_stack_addrs(bind_addrs: &mut Vec<IpAddr>) {
+    match bind_addrs.iter().find(|addr| addr.is_unspecified()) {
+      Some(unspec) => {
+        let unspec = unspec.clone();
+        bind_addrs.clear();
+        bind_addrs.push(unspec);
+      }
+      None => (),
+    }
+  }
+
+  fn parse_address(addr: &str) -> Result<(Option<&str>, u16), ()> {
+    addr
+      .strip_prefix(DEMAND_PROXY_ADDRESS_BASE)
+      .ok_or(())
+      .and_then(|suffix: &str| {
+        let (host, port) = match suffix.split_once("/") {
+          Some((host_section, port_section)) => ((Some(host_section), port_section)),
+          None => (None, suffix),
+        };
+        let port = port.parse::<u16>().map_err(|_| ())?;
+        Ok((host, port))
+      })
+  }
+}
+
+impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> Service
+  for DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+where
+  TTunnel: Tunnel + Send + Sync + 'static,
+  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
+  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
+  TServiceRegistry::Error: Send + 'static,
+  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+{
+  type Error = TServiceRegistry::Error;
+
   fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
     Self::parse_address(addr).is_ok()
   }
@@ -268,7 +301,7 @@ impl Service for DemandProxyService {
     addr: RouteAddress,
     mut stream: Box<dyn TunnelStream + Send + 'static>,
     tunnel_id: TunnelId,
-  ) -> BoxFuture<'_, Result<(), ServiceError>> {
+  ) -> BoxFuture<'_, Result<(), ServiceError<TServiceRegistry::Error>>> {
     tracing::debug!(
       "Demand proxy proxy connection request received with addr {}; building span...",
       addr
@@ -298,7 +331,8 @@ impl Service for DemandProxyService {
         let tunnel = tunnel_registry
           .lookup_by_id(tunnel_id)
           .await
-          .ok_or(ServiceError::DependencyFailure)?;
+          .map_err(|_registry_error| ServiceError::AddressError)
+          .and_then(|x| x.ok_or(ServiceError::DependencyFailure))?;
         Arc::downgrade(&tunnel.tunnel)
       };
       let port = match port_range_allocator.allocate().await {
