@@ -148,6 +148,9 @@ where
           Err(RoutingError::LinkOpenFailure(_e)) => {
             return Err(RequestHandlingError::RouteUnavailable(request))
           }
+          Err(RoutingError::TunnelRegistryError(_e)) => {
+            return Err(RequestHandlingError::RouteUnavailable(request))
+          }
           Ok(x) => x,
         };
 

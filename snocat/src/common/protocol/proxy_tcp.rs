@@ -17,7 +17,7 @@ use tokio::{
 use tracing_futures::Instrument;
 
 use super::{
-  tunnel::{Tunnel, TunnelId},
+  tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
   Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
   RoutingError, Service, ServiceError,
 };
@@ -297,6 +297,8 @@ impl TcpStreamService {
 }
 
 impl Service for TcpStreamService {
+  type Error = anyhow::Error;
+
   fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
     addr.parse::<TcpStreamTarget>().is_ok()
   }
@@ -306,7 +308,7 @@ impl Service for TcpStreamService {
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
     _tunnel_id: TunnelId,
-  ) -> BoxFuture<'a, Result<(), ServiceError>> {
+  ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>> {
     use futures::future::Either;
     tracing::debug!(
       "TCP proxy connection received for {}; building span...",

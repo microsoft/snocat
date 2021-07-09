@@ -404,7 +404,9 @@ where
   async fn handle_incoming_requests<TDownlink: TunnelDownlink>(
     id: TunnelId,
     mut incoming: TDownlink,
-    service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
+    service_registry: Arc<
+      dyn ServiceRegistry<Error = TServiceRegistry::Error> + Send + Sync + 'static,
+    >,
     shutdown: CancellationToken,
   ) -> Result<(), RequestProcessingError<anyhow::Error>> {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
@@ -488,7 +490,7 @@ where
           return Ok(());
         }
         let route_addr: RouteAddress = route_addr;
-        let service: negotiation::ArcService = service;
+        let service: negotiation::ArcService<_> = service;
         match service
           .handle(route_addr.clone(), Box::new(link), tunnel_id)
           .await

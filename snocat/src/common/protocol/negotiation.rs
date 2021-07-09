@@ -162,7 +162,8 @@ pub struct NegotiationService<ServiceRegistry: ?Sized> {
   service_registry: Arc<ServiceRegistry>,
 }
 
-pub type ArcService = Arc<dyn Service + Send + Sync + 'static>;
+pub type ArcService<TServiceError> =
+  Arc<dyn Service<Error = TServiceError> + Send + Sync + 'static>;
 
 impl<R: ?Sized> NegotiationService<R> {
   pub fn new(service_registry: Arc<R>) -> Self {
@@ -184,7 +185,10 @@ where
     &self,
     mut link: S,
     tunnel_id: TunnelId,
-  ) -> BoxFuture<'a, Result<(S, RouteAddress, ArcService), NegotiationError>> {
+  ) -> BoxFuture<
+    'a,
+    Result<(S, RouteAddress, ArcService<<R as ServiceRegistry>::Error>), NegotiationError>,
+  > {
     const CURRENT_PROTOCOL_VERSION: u8 = 0u8;
     let service_registry = Arc::clone(&self.service_registry);
     async move {
@@ -255,15 +259,17 @@ mod tests {
   use crate::util::tunnel_stream::TunnelStream;
 
   struct TestServiceRegistry {
-    services: Vec<ArcService>,
+    services: Vec<ArcService<<Self as ServiceRegistry>::Error>>,
   }
 
   impl ServiceRegistry for TestServiceRegistry {
+    type Error = anyhow::Error;
+
     fn find_service(
       self: std::sync::Arc<Self>,
       addr: &crate::common::protocol::RouteAddress,
       tunnel_id: &TunnelId,
-    ) -> Option<std::sync::Arc<dyn crate::common::protocol::Service + Send + Sync + 'static>> {
+    ) -> Option<std::sync::Arc<dyn Service<Error = Self::Error> + Send + Sync + 'static>> {
       self
         .services
         .iter()
@@ -275,6 +281,8 @@ mod tests {
   struct NoOpServiceAcceptAll;
 
   impl Service for NoOpServiceAcceptAll {
+    type Error = anyhow::Error;
+
     fn accepts(
       &self,
       _addr: &crate::common::protocol::RouteAddress,
@@ -288,7 +296,10 @@ mod tests {
       _addr: crate::common::protocol::RouteAddress,
       _stream: Box<dyn crate::util::tunnel_stream::TunnelStream + Send + 'static>,
       _tunnel_id: TunnelId,
-    ) -> futures::future::BoxFuture<'_, Result<(), crate::common::protocol::ServiceError>> {
+    ) -> futures::future::BoxFuture<
+      '_,
+      Result<(), crate::common::protocol::ServiceError<Self::Error>>,
+    > {
       use futures::FutureExt;
       futures::future::ready(Ok(())).boxed()
     }

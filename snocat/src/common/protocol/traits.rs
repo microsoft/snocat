@@ -58,11 +58,21 @@ impl Request {
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum RoutingError {
+pub enum RoutingError<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> {
   #[error("No matching tunnel could be found")]
   NoMatchingTunnel,
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(TunnelError),
+  #[error("Tunnel registry handling failed")]
+  TunnelRegistryError(TunnelRegistryError),
+}
+
+impl<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> From<TunnelRegistryError>
+  for RoutingError<TunnelRegistryError>
+{
+  fn from(e: TunnelRegistryError) -> Self {
+    Self::TunnelRegistryError(e)
+  }
 }
 
 /// Routers are responsible for taking an address and forwarding it to
@@ -78,7 +88,12 @@ where
     //TODO: Consider taking only a [RouteAddress] here, except if other request metadata is desired
     request: &Request,
     tunnel_registry: Arc<TTunnelRegistry>,
-  ) -> BoxFuture<Result<(RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>), RoutingError>>;
+  ) -> BoxFuture<
+    Result<
+      (RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>),
+      RoutingError<TTunnelRegistry::Error>,
+    >,
+  >;
 }
 impl_downcast!(sync Router<TTunnel, TTunnelRegistry> where TTunnel: Tunnel + Send + Sync, TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync);
 
@@ -130,7 +145,7 @@ where
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ServiceError {
+pub enum ServiceError<InternalError: std::fmt::Debug + std::fmt::Display> {
   #[error("Address refused by client")]
   Refused,
   #[error("Unexpected end of stream with remote")]
@@ -143,11 +158,23 @@ pub enum ServiceError {
   DependencyFailure,
   #[error("An internal dependency failed with a backtrace")]
   BacktraceDependencyFailure(Backtrace),
+  #[error("Internal service error")]
+  InternalError(InternalError),
   #[error(transparent)]
-  InternalFailure(#[from] anyhow::Error),
+  InternalFailure(anyhow::Error),
+}
+
+impl<InternalError: std::fmt::Debug + std::fmt::Display> From<InternalError>
+  for ServiceError<InternalError>
+{
+  fn from(e: InternalError) -> Self {
+    Self::InternalError(e)
+  }
 }
 
 pub trait Service {
+  type Error: std::fmt::Debug + std::fmt::Display;
+
   fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool;
   // fn protocol_id() -> String where Self: Sized;
 
@@ -156,13 +183,15 @@ pub trait Service {
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
     tunnel_id: TunnelId,
-  ) -> BoxFuture<'a, Result<(), ServiceError>>;
+  ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>>;
 }
 
 pub trait ServiceRegistry {
+  type Error: std::fmt::Debug + std::fmt::Display;
+
   fn find_service(
     self: Arc<Self>,
     addr: &RouteAddress,
     tunnel_id: &TunnelId,
-  ) -> Option<Arc<dyn Service + Send + Sync + 'static>>;
+  ) -> Option<Arc<dyn Service<Error = Self::Error> + Send + Sync + 'static>>;
 }
