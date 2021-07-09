@@ -5,18 +5,20 @@ use futures::future::{BoxFuture, FutureExt, TryFutureExt};
 use std::{backtrace::Backtrace, sync::Arc};
 
 use crate::common::protocol::{
-  traits::{ServiceRegistry, TunnelRegistry},
-  Client, Request, Response, RouteAddress, Router, RoutingError,
+  traits::ServiceRegistry, Client, Request, Response, RouteAddress, Router, RoutingError,
 };
 use crate::{
   common::protocol::ClientError,
   util::tunnel_stream::{TunnelStream, WrappedStream},
 };
 
-pub struct RequestClientHandler {
-  tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
-  service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
-  router: Arc<dyn Router + Send + Sync + 'static>,
+use super::tunnel::registry::TunnelRegistry;
+
+pub struct RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> {
+  tunnel_registry: Arc<TTunnelRegistry>,
+  service_registry: Arc<TServiceRegistry>,
+  router: Arc<TRouter>,
+  tunnel_phantom: std::marker::PhantomData<TTunnel>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -31,16 +33,24 @@ pub enum RequestHandlingError {
   NegotiationError(#[from] NegotiationError, Backtrace),
 }
 
-impl RequestClientHandler {
+impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+  RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+where
+  TTunnel: Send + Sync + 'static,
+  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
+  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
+  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync,
+{
   pub fn new(
-    tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static>,
-    service_registry: Arc<dyn ServiceRegistry + Send + Sync + 'static>,
-    router: Arc<dyn Router + Send + Sync + 'static>,
+    tunnel_registry: Arc<TTunnelRegistry>,
+    service_registry: Arc<TServiceRegistry>,
+    router: Arc<TRouter>,
   ) -> Self {
     Self {
       tunnel_registry,
       service_registry,
       router,
+      tunnel_phantom: std::marker::PhantomData,
     }
   }
 
@@ -128,19 +138,17 @@ impl RequestClientHandler {
     request: Request,
   ) -> BoxFuture<'static, Result<Response, RequestHandlingError>> {
     let router = Arc::clone(&self.router);
-    let tunnel_registry: Arc<dyn TunnelRegistry + Send + Sync + 'static> =
-      Arc::clone(&self.tunnel_registry);
+    let tunnel_registry: Arc<TTunnelRegistry> = Arc::clone(&self.tunnel_registry);
     async move {
-      // Note: Type-annotated because rust-analyzer fails to resolve typings here on its own
-      let (resolved_address, link): (RouteAddress, Box<dyn TunnelStream + Send + 'static>) =
+      let (resolved_address, link): (RouteAddress, Box<_>) =
         match router.route(&request, tunnel_registry).await {
           Err(RoutingError::NoMatchingTunnel) => {
-            return Err(RequestHandlingError::RouteNotFound(request));
+            return Err(RequestHandlingError::RouteNotFound(request))
           }
           Err(RoutingError::LinkOpenFailure(_e)) => {
-            return Err(RequestHandlingError::RouteUnavailable(request));
+            return Err(RequestHandlingError::RouteUnavailable(request))
           }
-          Ok((resolved_address, tunnel)) => (resolved_address, tunnel),
+          Ok(x) => x,
         };
 
       self

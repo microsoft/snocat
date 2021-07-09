@@ -28,6 +28,7 @@ use tokio::{
 pub mod duplex;
 pub mod id;
 pub mod quinn_tunnel;
+pub mod registry;
 
 pub use self::id::TunnelId;
 pub use self::quinn_tunnel::{from_quinn_endpoint, QuinnTunnel};
