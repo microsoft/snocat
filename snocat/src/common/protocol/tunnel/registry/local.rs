@@ -110,7 +110,7 @@ where
             TunnelRecord {
               id: tunnel_id,
               name: None,
-              tunnel,
+              tunnel: Some(tunnel),
               metadata: self.metadata.clone(),
             },
           )

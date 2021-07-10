@@ -22,7 +22,7 @@ pub mod serialized;
 pub struct TunnelRecord<TTunnel: ?Sized, TMetadata> {
   pub id: TunnelId,
   pub name: Option<TunnelName>,
-  pub tunnel: Arc<TTunnel>,
+  pub tunnel: Option<Arc<TTunnel>>,
   pub metadata: TMetadata,
 }
 
@@ -34,7 +34,7 @@ where
     Self {
       id: self.id,
       name: self.name.clone(),
-      tunnel: Arc::clone(&self.tunnel),
+      tunnel: self.tunnel.clone(),
       metadata: self.metadata.clone(),
     }
   }
@@ -145,7 +145,7 @@ pub trait TunnelRegistry<TTunnel: ?Sized>: Downcast + DowncastSync {
   ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>>;
 
   /// Called after authentication, when a tunnel is given an official designation
-  /// May also be called later to allow a reconnecting tunnel to replaace its old
+  /// May also be called later to allow a reconnecting tunnel to replace its old
   /// record until that record is removed.
   ///
   /// Returns Some if a tunnel by that ID existed and was renamed.

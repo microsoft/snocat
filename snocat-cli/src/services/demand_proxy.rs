@@ -333,7 +333,12 @@ where
           .await
           .map_err(|_registry_error| ServiceError::AddressError)
           .and_then(|x| x.ok_or(ServiceError::DependencyFailure))?;
-        Arc::downgrade(&tunnel.tunnel)
+        if let Some(hatch) = tunnel.tunnel {
+          Ok(Arc::downgrade(&hatch))
+        } else {
+          tracing::warn!(tunnel_id = ?tunnel.id, "Attempted to route to tunnel not available in the local registry");
+          Err(ServiceError::AddressError)
+        }?
       };
       let port = match port_range_allocator.allocate().await {
         Ok(port) => {

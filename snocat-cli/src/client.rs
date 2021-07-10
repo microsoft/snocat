@@ -75,8 +75,16 @@ where
         .await
         .map_err(Into::into)
         .and_then(|t| t.ok_or(RoutingError::NoMatchingTunnel))?;
+      let tunnel_id = tunnel.id;
       let link = tunnel
         .tunnel
+        .ok_or_else(|| {
+          tracing::warn!(
+            ?tunnel_id,
+            "Attempted to route to tunnel not available in the local registry"
+          );
+          RoutingError::NoMatchingTunnel
+        })?
         .open_link()
         .await
         .map_err(RoutingError::LinkOpenFailure)?;
