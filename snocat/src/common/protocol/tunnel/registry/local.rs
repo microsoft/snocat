@@ -15,17 +15,33 @@ use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName}
 
 use super::{TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegistry};
 
-pub struct InMemoryTunnelRegistry<TTunnel> {
-  tunnels: Arc<tokio::sync::Mutex<BTreeMap<TunnelId, TunnelRecord<TTunnel, ()>>>>,
+pub struct InMemoryTunnelRegistry<TTunnel: ?Sized, TMetadata = ()> {
+  tunnels: Arc<tokio::sync::Mutex<BTreeMap<TunnelId, TunnelRecord<TTunnel, TMetadata>>>>,
+  metadata: TMetadata,
 }
 
-impl<TTunnel> InMemoryTunnelRegistry<TTunnel> {
+impl<TTunnel> InMemoryTunnelRegistry<TTunnel, ()> {
   pub fn new() -> Self {
     Self {
       tunnels: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+      metadata: (),
     }
   }
+}
 
+impl<TTunnel: ?Sized, TMetadata> InMemoryTunnelRegistry<TTunnel, TMetadata>
+where
+  TMetadata: Clone + Send + Sync,
+{
+  pub fn new_with_shared_metadata(metadata: TMetadata) -> Self {
+    Self {
+      tunnels: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+      metadata: metadata,
+    }
+  }
+}
+
+impl<TTunnel, TMetadata> InMemoryTunnelRegistry<TTunnel, TMetadata> {
   pub async fn keys(&self) -> Vec<TunnelId> {
     let lock = self.tunnels.lock().await;
     lock.keys().cloned().collect()
@@ -37,11 +53,12 @@ impl<TTunnel> InMemoryTunnelRegistry<TTunnel> {
   }
 }
 
-impl<TTunnel> TunnelRegistry<TTunnel> for InMemoryTunnelRegistry<TTunnel>
+impl<TTunnel, TMetadata> TunnelRegistry<TTunnel> for InMemoryTunnelRegistry<TTunnel, TMetadata>
 where
   TTunnel: Send + Sync + 'static,
+  TMetadata: Clone + Send + Sync + 'static,
 {
-  type Metadata = ();
+  type Metadata = TMetadata;
 
   type Error = anyhow::Error;
 
@@ -79,7 +96,7 @@ where
     &self,
     tunnel_id: TunnelId,
     tunnel: Arc<TTunnel>,
-  ) -> BoxFuture<Result<(), TunnelRegistrationError<Self::Error>>> {
+  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
     let tunnels = Arc::clone(&self.tunnels);
     async move {
       let mut tunnels = tunnels.lock().await;
@@ -94,13 +111,13 @@ where
               id: tunnel_id,
               name: None,
               tunnel,
-              metadata: (),
+              metadata: self.metadata.clone(),
             },
           )
           .is_none(),
         "TunnelId overlap despite locked map where contains_key returned false"
       );
-      Ok(())
+      Ok(self.metadata.clone())
     }
     .boxed()
   }

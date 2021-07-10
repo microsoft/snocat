@@ -56,8 +56,13 @@ pub struct ModularDaemon<
     Broadcaster<(TunnelId, Option<TunnelName> /*, DisconnectReason? */)>,
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-  ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+impl<
+    TTunnel,
+    TTunnelRegistry: ?Sized,
+    TServiceRegistry: ?Sized,
+    TRouter: ?Sized,
+    TAuthenticationHandler: ?Sized,
+  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 {
   pub fn requests<'a>(
     &'a self,
