@@ -47,7 +47,7 @@ impl<TTunnel> SnocatClientRouter<TTunnel> {
 
 impl<TTunnel> Router<TTunnel, InMemoryTunnelRegistry<TTunnel>> for SnocatClientRouter<TTunnel>
 where
-  TTunnel: Tunnel + Clone + Send + Sync + 'static,
+  TTunnel: Tunnel + Send + Sync + 'static,
 {
   fn route(
     &self,

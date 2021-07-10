@@ -2,7 +2,10 @@
 // Licensed under the MIT license OR Apache 2.0
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 use downcast_rs::{impl_downcast, Downcast, DowncastSync};
-use futures::future::{BoxFuture, FutureExt};
+use futures::{
+  future::{BoxFuture, FutureExt},
+  TryFutureExt,
+};
 use std::{
   any::Any,
   backtrace::Backtrace,
@@ -16,12 +19,47 @@ use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName}
 pub mod local;
 pub mod serialized;
 
-#[derive(Clone)]
 pub struct TunnelRecord<TTunnel, TMetadata> {
   pub id: TunnelId,
   pub name: Option<TunnelName>,
   pub tunnel: Arc<TTunnel>,
   pub metadata: TMetadata,
+}
+
+impl<TTunnel, TMetadata> Clone for TunnelRecord<TTunnel, TMetadata>
+where
+  TMetadata: Clone,
+{
+  fn clone(&self) -> Self {
+    Self {
+      id: self.id,
+      name: self.name.clone(),
+      tunnel: Arc::clone(&self.tunnel),
+      metadata: self.metadata.clone(),
+    }
+  }
+}
+
+impl<TTunnel, TMetadata> TunnelRecord<TTunnel, TMetadata> {
+  fn map_metadata<TOutputMetadata, F: FnOnce(TMetadata) -> TOutputMetadata>(
+    self,
+    f: F,
+  ) -> TunnelRecord<TTunnel, TOutputMetadata> {
+    TunnelRecord {
+      id: self.id,
+      name: self.name,
+      tunnel: self.tunnel,
+      metadata: f(self.metadata),
+    }
+  }
+
+  // I'd use Into/From but apparently this clashes because you can't assert that TMetadata != TOutputMetadata
+  fn convert_metadata<TOutputMetadata>(self) -> TunnelRecord<TTunnel, TOutputMetadata>
+  where
+    TOutputMetadata: From<TMetadata>,
+  {
+    self.map_metadata(From::from)
+  }
 }
 
 impl<TTunnel, TMetadata> Debug for TunnelRecord<TTunnel, TMetadata> {
@@ -177,4 +215,113 @@ where
   }
 }
 
-// TODO: Any/Boxed/Opaque tunnel registry wrapper which translates std::any::Any to the appropriate types
+pub trait AnyError: std::any::Any + std::fmt::Display + std::fmt::Debug {}
+
+impl<T> AnyError for T where T: std::any::Any + std::fmt::Display + std::fmt::Debug {}
+
+/// Any/Boxed/Opaque tunnel registry wrapper which translates outputs to std::any::Any
+#[repr(transparent)]
+pub struct BoxedTunnelRegistryInner<TTunnelRegistry>(TTunnelRegistry);
+
+impl<T, TTunnel> TunnelRegistry<TTunnel> for BoxedTunnelRegistryInner<T>
+where
+  T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
+  TTunnel: Send + Sync + 'static,
+{
+  type Metadata = Box<dyn std::any::Any + 'static>;
+  type Error = Box<dyn AnyError + 'static>;
+
+  fn lookup_by_id(
+    &self,
+    tunnel_id: TunnelId,
+  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
+    self
+      .0
+      .lookup_by_id(tunnel_id)
+      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
+      .map_err(|e| Box::new(e) as _)
+      .boxed()
+  }
+
+  fn lookup_by_name(
+    &self,
+    tunnel_name: TunnelName,
+  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
+    self
+      .0
+      .lookup_by_name(tunnel_name)
+      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
+      .map_err(|e| Box::new(e) as _)
+      .boxed()
+  }
+
+  fn register_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    tunnel: Arc<TTunnel>,
+  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
+    self
+      .0
+      .register_tunnel(tunnel_id, tunnel)
+      .map_ok(|metadata| Box::new(metadata) as _)
+      .map_err(|e| match e {
+        TunnelRegistrationError::IdOccupied(id) => TunnelRegistrationError::IdOccupied(id),
+        TunnelRegistrationError::ApplicationError(e) => {
+          TunnelRegistrationError::ApplicationError(Box::new(e) as _)
+        }
+      })
+      .boxed()
+  }
+
+  fn name_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+    name: Option<TunnelName>,
+  ) -> BoxFuture<Result<(), TunnelNamingError<Self::Error>>> {
+    self
+      .0
+      .name_tunnel(tunnel_id, name)
+      .map_err(|e| match e {
+        TunnelNamingError::TunnelNotRegistered(id) => TunnelNamingError::TunnelNotRegistered(id),
+        TunnelNamingError::ApplicationError(e) => {
+          TunnelNamingError::ApplicationError(Box::new(e) as _)
+        }
+      })
+      .boxed()
+  }
+
+  fn deregister_tunnel(
+    &self,
+    tunnel_id: TunnelId,
+  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
+    self
+      .0
+      .deregister_tunnel(tunnel_id)
+      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
+      .map_err(|e| Box::new(e) as _)
+      .boxed()
+  }
+}
+
+#[repr(transparent)]
+pub struct BoxedTunnelRegistry<TTunnel>(
+  Box<
+    dyn TunnelRegistry<
+        TTunnel,
+        Metadata = Box<dyn std::any::Any + 'static>,
+        Error = Box<dyn AnyError + 'static>,
+      > + 'static,
+  >,
+);
+
+impl<TTunnel> BoxedTunnelRegistry<TTunnel> {
+  pub fn into_box<T>(inner: T) -> Self
+  where
+    TTunnel: Send + Sync + 'static,
+    T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
+    T::Error: AnyError,
+    T::Metadata: std::any::Any,
+  {
+    Self(Box::new(BoxedTunnelRegistryInner(inner)) as Box<_>)
+  }
+}

@@ -39,7 +39,7 @@ impl<TTunnel> InMemoryTunnelRegistry<TTunnel> {
 
 impl<TTunnel> TunnelRegistry<TTunnel> for InMemoryTunnelRegistry<TTunnel>
 where
-  TTunnel: Tunnel + Clone + Send + Sync + Unpin + 'static,
+  TTunnel: Send + Sync + 'static,
 {
   type Metadata = ();
 
