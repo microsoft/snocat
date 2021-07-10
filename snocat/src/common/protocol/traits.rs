@@ -79,7 +79,7 @@ impl<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> From<TunnelRegist
 /// the appropriate tunnel. When forwarding, the router can alter the
 /// address to remove any routing-specific information before it is
 /// handed to the Request's protocol::Client.
-pub trait Router<TTunnel, TTunnelRegistry>: Downcast + DowncastSync
+pub trait Router<TTunnel, TTunnelRegistry: ?Sized>: Downcast + DowncastSync
 where
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync,
 {

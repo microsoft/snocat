@@ -14,7 +14,12 @@ use crate::{
 
 use super::tunnel::registry::TunnelRegistry;
 
-pub struct RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> {
+pub struct RequestClientHandler<
+  TTunnel,
+  TTunnelRegistry: ?Sized,
+  TServiceRegistry: ?Sized,
+  TRouter: ?Sized,
+> {
   tunnel_registry: Arc<TTunnelRegistry>,
   service_registry: Arc<TServiceRegistry>,
   router: Arc<TRouter>,
@@ -33,7 +38,7 @@ pub enum RequestHandlingError {
   NegotiationError(#[from] NegotiationError, Backtrace),
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+impl<TTunnel, TTunnelRegistry: ?Sized, TServiceRegistry: ?Sized, TRouter: ?Sized>
   RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
 where
   TTunnel: Send + Sync + 'static,

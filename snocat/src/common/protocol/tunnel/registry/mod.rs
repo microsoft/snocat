@@ -19,14 +19,14 @@ use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName}
 pub mod local;
 pub mod serialized;
 
-pub struct TunnelRecord<TTunnel, TMetadata> {
+pub struct TunnelRecord<TTunnel: ?Sized, TMetadata> {
   pub id: TunnelId,
   pub name: Option<TunnelName>,
   pub tunnel: Arc<TTunnel>,
   pub metadata: TMetadata,
 }
 
-impl<TTunnel, TMetadata> Clone for TunnelRecord<TTunnel, TMetadata>
+impl<TTunnel: ?Sized, TMetadata> Clone for TunnelRecord<TTunnel, TMetadata>
 where
   TMetadata: Clone,
 {
@@ -40,7 +40,7 @@ where
   }
 }
 
-impl<TTunnel, TMetadata> TunnelRecord<TTunnel, TMetadata> {
+impl<TTunnel: ?Sized, TMetadata> TunnelRecord<TTunnel, TMetadata> {
   fn map_metadata<TOutputMetadata, F: FnOnce(TMetadata) -> TOutputMetadata>(
     self,
     f: F,
@@ -62,7 +62,7 @@ impl<TTunnel, TMetadata> TunnelRecord<TTunnel, TMetadata> {
   }
 }
 
-impl<TTunnel, TMetadata> Debug for TunnelRecord<TTunnel, TMetadata> {
+impl<TTunnel: ?Sized, TMetadata> Debug for TunnelRecord<TTunnel, TMetadata> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct(stringify!(TunnelRecord))
       .field("id", &self.id)
@@ -103,7 +103,7 @@ impl<ApplicationError: Debug + Display> From<ApplicationError>
   }
 }
 
-pub trait TunnelRegistry<TTunnel>: Downcast + DowncastSync {
+pub trait TunnelRegistry<TTunnel: ?Sized>: Downcast + DowncastSync {
   /// Metadata attached to each registered tunnel, uniquely per tunnel
   ///
   /// Created at registration time, and readable by all record holders. Not guaranteed to be
@@ -168,7 +168,7 @@ pub trait TunnelRegistry<TTunnel>: Downcast + DowncastSync {
 }
 impl_downcast!(sync TunnelRegistry<TTunnel> assoc Metadata, Error);
 
-impl<T, TTunnel> TunnelRegistry<TTunnel> for Arc<T>
+impl<T, TTunnel: ?Sized> TunnelRegistry<TTunnel> for Arc<T>
 where
   T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TTunnel: Send + Sync + 'static,
@@ -223,7 +223,7 @@ impl<T> AnyError for T where T: std::any::Any + std::fmt::Display + std::fmt::De
 #[repr(transparent)]
 pub struct BoxedTunnelRegistryInner<TTunnelRegistry>(TTunnelRegistry);
 
-impl<T, TTunnel> TunnelRegistry<TTunnel> for BoxedTunnelRegistryInner<T>
+impl<T, TTunnel: ?Sized> TunnelRegistry<TTunnel> for BoxedTunnelRegistryInner<T>
 where
   T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TTunnel: Send + Sync + 'static,
@@ -304,7 +304,7 @@ where
 }
 
 #[repr(transparent)]
-pub struct BoxedTunnelRegistry<TTunnel>(
+pub struct BoxedTunnelRegistry<TTunnel: ?Sized>(
   Box<
     dyn TunnelRegistry<
         TTunnel,
@@ -314,7 +314,7 @@ pub struct BoxedTunnelRegistry<TTunnel>(
   >,
 );
 
-impl<TTunnel> BoxedTunnelRegistry<TTunnel> {
+impl<TTunnel: ?Sized> BoxedTunnelRegistry<TTunnel> {
   pub fn into_box<T>(inner: T) -> Self
   where
     TTunnel: Send + Sync + 'static,

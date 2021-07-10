@@ -37,10 +37,10 @@ use crate::{
 
 pub struct ModularDaemon<
   TTunnel,
-  TTunnelRegistry,
-  TServiceRegistry,
-  TRouter,
-  TAuthenticationHandler,
+  TTunnelRegistry: ?Sized,
+  TServiceRegistry: ?Sized,
+  TRouter: ?Sized,
+  TAuthenticationHandler: ?Sized,
 > {
   service_registry: Arc<TServiceRegistry>,
   tunnel_registry: Arc<TTunnelRegistry>,
@@ -66,8 +66,13 @@ impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-  ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+impl<
+    TTunnel,
+    TTunnelRegistry: ?Sized,
+    TServiceRegistry: ?Sized,
+    TRouter: ?Sized,
+    TAuthenticationHandler: ?Sized,
+  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
   TTunnel: Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
@@ -119,8 +124,13 @@ where
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-  ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+impl<
+    TTunnel,
+    TTunnelRegistry: ?Sized,
+    TServiceRegistry: ?Sized,
+    TRouter: ?Sized,
+    TAuthenticationHandler: ?Sized,
+  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
   Self: 'static,
   TTunnel: Send + Sync + 'static,
@@ -261,8 +271,13 @@ impl<
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-  ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+impl<
+    TTunnel,
+    TTunnelRegistry: ?Sized,
+    TServiceRegistry: ?Sized,
+    TRouter: ?Sized,
+    TAuthenticationHandler: ?Sized,
+  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
   TTunnel: Tunnel + 'static,
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
@@ -404,9 +419,7 @@ where
   async fn handle_incoming_requests<TDownlink: TunnelDownlink>(
     id: TunnelId,
     mut incoming: TDownlink,
-    service_registry: Arc<
-      dyn ServiceRegistry<Error = TServiceRegistry::Error> + Send + Sync + 'static,
-    >,
+    service_registry: Arc<TServiceRegistry>,
     shutdown: CancellationToken,
   ) -> Result<(), RequestProcessingError<anyhow::Error>> {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
