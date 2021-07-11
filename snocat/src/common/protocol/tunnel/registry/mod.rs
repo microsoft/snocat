@@ -19,6 +19,7 @@ use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName}
 pub mod local;
 pub mod serialized;
 
+#[derive(PartialEq, Eq, Hash)]
 pub struct TunnelRecord<TTunnel: ?Sized, TMetadata> {
   pub id: TunnelId,
   pub name: Option<TunnelName>,
