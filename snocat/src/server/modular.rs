@@ -183,7 +183,7 @@ where
   ) -> tokio::task::JoinHandle<()>
   where
     TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
-    TIntoTunnel: Into<TTunnel>,
+    TIntoTunnel: Into<TTunnel> + 'static,
     TTunnel: Tunnel + 'static,
   {
     let this = Arc::clone(&self);
@@ -196,19 +196,11 @@ where
         let shutdown_request_listener = shutdown_request_listener.clone();
         async move { shutdown_request_listener.cancelled().await }
       })
-      .scan(
-        (this, shutdown_request_listener),
-        |(this, shutdown_request_listener), tunnel| {
-          let id = this.tunnel_id_generator.next();
-          let tunnel: TTunnel = tunnel.into();
-          future::ready(Some((
-            tunnel,
-            id,
-            this.clone(),
-            shutdown_request_listener.clone(),
-          )))
-        },
-      );
+      .map(move |tunnel| {
+        let id = this.tunnel_id_generator.next();
+        let tunnel: TTunnel = tunnel.into();
+        (tunnel, id, this.clone(), shutdown_request_listener.clone())
+      });
 
     // Tunnel Lifecycle - Sub-pipeline performed by futures on a per-tunnel basis
     // This could be done at the stream level, but Rust-Analyzer's typesystem struggles
