@@ -7,8 +7,6 @@ use std::collections::HashSet;
 use std::{ops::RangeInclusive, sync::Arc};
 use tokio::sync::Mutex;
 
-pub mod modular;
-
 #[derive(Debug, Clone)]
 pub struct PortRangeAllocator {
   range: std::ops::RangeInclusive<u16>,

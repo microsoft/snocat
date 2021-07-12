@@ -7,6 +7,7 @@ use futures::{future::*, *};
 use snocat::{
   common::{
     authentication::SimpleAckAuthenticationHandler,
+    daemon::ModularDaemon,
     protocol::{
       proxy_tcp::TcpStreamService,
       tunnel::{
@@ -19,7 +20,6 @@ use snocat::{
     },
     tunnel_source::DynamicConnectionSet,
   },
-  server::modular::ModularDaemon,
   util::{self, tunnel_stream::TunnelStream},
 };
 use std::{path::PathBuf, sync::Arc};

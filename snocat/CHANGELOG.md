@@ -63,6 +63,7 @@ The Protocol is now P2P-capable and uses connection sidedness rather than server
 
 - `Dropkick` utility added for drop notifications.
 - Dependency `triggered` dropped in favor of `tokio_util::sync::CancellationToken`.
+- `ModularDaemon` has been moved from `snocat::server::modular` to `snocat::common::daemon`.
 
 
 ## [0.1.2] - 2021-03-01

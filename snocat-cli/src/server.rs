@@ -10,6 +10,7 @@ use quinn::TransportConfig;
 use snocat::{
   common::{
     authentication::SimpleAckAuthenticationHandler,
+    daemon::ModularDaemon,
     protocol::{
       tunnel::{
         id::MonotonicAtomicGenerator,
@@ -20,7 +21,7 @@ use snocat::{
     },
     tunnel_source::QuinnListenEndpoint,
   },
-  server::{modular::ModularDaemon, PortRangeAllocator},
+  server::PortRangeAllocator,
   util::tunnel_stream::TunnelStream,
 };
 use std::{
