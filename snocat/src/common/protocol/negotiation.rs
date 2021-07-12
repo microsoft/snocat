@@ -11,7 +11,11 @@ use tracing_futures::Instrument;
 
 use crate::util::tunnel_stream::TunnelStream;
 
-use super::{traits::ServiceRegistry, tunnel::TunnelId, RouteAddress, Service};
+use super::{
+  traits::{MappedService, ServiceRegistry},
+  tunnel::TunnelId,
+  RouteAddress, Service,
+};
 
 /// Identifies the SNOCAT protocol over a stream
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
@@ -162,8 +166,7 @@ pub struct NegotiationService<ServiceRegistry: ?Sized> {
   service_registry: Arc<ServiceRegistry>,
 }
 
-pub type ArcService<TServiceError> =
-  Arc<dyn Service<Error = TServiceError> + Send + Sync + 'static>;
+pub type ArcService<TServiceError> = Arc<dyn MappedService<TServiceError> + Send + Sync + 'static>;
 
 impl<R: ?Sized> NegotiationService<R> {
   pub fn new(service_registry: Arc<R>) -> Self {
@@ -244,6 +247,7 @@ where
 
 #[cfg(test)]
 mod tests {
+  use futures::FutureExt;
   use std::{
     sync::{Arc, Weak},
     time::Duration,
@@ -252,7 +256,7 @@ mod tests {
 
   use super::{ArcService, NegotiationClient, NegotiationError, NegotiationService};
   use crate::common::protocol::{
-    traits::ServiceRegistry,
+    traits::{MappedService, ServiceRegistry},
     tunnel::{Tunnel, TunnelId},
     Service,
   };
@@ -269,11 +273,11 @@ mod tests {
       self: std::sync::Arc<Self>,
       addr: &crate::common::protocol::RouteAddress,
       tunnel_id: &TunnelId,
-    ) -> Option<std::sync::Arc<dyn Service<Error = Self::Error> + Send + Sync + 'static>> {
+    ) -> Option<std::sync::Arc<dyn MappedService<Self::Error> + Send + Sync + 'static>> {
       self
         .services
         .iter()
-        .find(|s| s.accepts(addr, tunnel_id))
+        .find(|s| s.accepts_mapped(addr, tunnel_id))
         .map(Arc::clone)
     }
   }

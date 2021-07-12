@@ -23,8 +23,8 @@
 
 pub mod traits;
 pub use traits::{
-  Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
-  RoutingError, Service, ServiceError,
+  Client, ClientError, DynamicResponseClient, MappedService, Request, Response, RouteAddress,
+  Router, RoutingError, Service, ServiceError, ServiceRegistry,
 };
 
 pub mod negotiation;

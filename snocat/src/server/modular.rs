@@ -19,7 +19,6 @@ use crate::{
     protocol::{
       negotiation::{self, NegotiationError, NegotiationService},
       request_handler::RequestClientHandler,
-      traits::ServiceRegistry,
       tunnel::{
         self,
         id::TunnelIDGenerator,
@@ -29,7 +28,7 @@ use crate::{
         },
         Tunnel, TunnelDownlink, TunnelError, TunnelId, TunnelIncomingType, TunnelName,
       },
-      RouteAddress, Router,
+      RouteAddress, Router, ServiceRegistry,
     },
   },
   util::tunnel_stream::WrappedStream,
@@ -510,7 +509,7 @@ where
         let route_addr: RouteAddress = route_addr;
         let service: negotiation::ArcService<_> = service;
         match service
-          .handle(route_addr.clone(), Box::new(link), tunnel_id)
+          .handle_mapped(route_addr.clone(), Box::new(link), tunnel_id)
           .await
         {
           // TODO: Figure out which of these should be considered fatal to the tunnel, if any

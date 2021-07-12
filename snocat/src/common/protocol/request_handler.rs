@@ -5,7 +5,7 @@ use futures::future::{BoxFuture, FutureExt, TryFutureExt};
 use std::{backtrace::Backtrace, sync::Arc};
 
 use crate::common::protocol::{
-  traits::ServiceRegistry, Client, Request, Response, RouteAddress, Router, RoutingError,
+  Client, Request, Response, RouteAddress, Router, RoutingError, ServiceRegistry,
 };
 use crate::{
   common::protocol::ClientError,

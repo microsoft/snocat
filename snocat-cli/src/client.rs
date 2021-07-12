@@ -135,7 +135,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
 
   let proxy_target = config.proxy_target_host.clone();
 
-  let service_registry = Arc::new(PresetServiceRegistry::new());
+  let service_registry = Arc::new(PresetServiceRegistry::<anyhow::Error>::new());
 
   let tcp_proxy_service = TcpStreamService::new(false);
   service_registry.add_service_blocking(Arc::new(tcp_proxy_service));

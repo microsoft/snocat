@@ -4,9 +4,8 @@
 use snocat::{
   common::protocol::{
     request_handler::RequestClientHandler,
-    traits::ServiceRegistry,
     tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
-    Client, ClientError, RouteAddress, Router, Service, ServiceError,
+    Client, ClientError, RouteAddress, Router, Service, ServiceError, ServiceRegistry,
   },
   server::PortRangeAllocator,
 };
