@@ -10,23 +10,23 @@ categories = ["network-programming"]
 include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
-anyhow = "~1.0.41"
+anyhow = "~1.0.42"
 downcast-rs = "^1.2.0"
 ffi-support = "0.4.2"
-futures = "^0.3.12"
-futures-io = "^0.3.12"
+futures = "^0.3.15"
+futures-io = "^0.3.15"
 gen-z = "~0.1.0"
 lazy_static = "1.4.0"
 log = "~0.4.13"
-quinn = "~0.7.1"
-serde = { version = "~1.0.123", features=["derive"] }
-serde_json = "~1.0.59"
-thiserror = "^1.0.25"
+quinn = "~0.7.2"
+serde = { version = "~1.0.126", features=["derive"] }
+serde_json = "~1.0.64"
+thiserror = "^1.0.26"
 tracing = "~0.1.22"
 tracing-futures = "~0.2.4"
-tracing-subscriber = "~0.2.15"
-tokio = { version = "^1.7.1", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
-tokio-stream = { version = "^0.1.6", features=["net", "io-util", "sync"] }
+tracing-subscriber = "~0.2.19"
+tokio = { version = "^1.8.1", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tokio-stream = { version = "^0.1.7", features=["net", "io-util", "sync"] }
 tokio-util = { version = "^0.6.7", features=["default", "io", "time"] }
 
 [lib]
