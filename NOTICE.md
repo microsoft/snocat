@@ -23,7 +23,6 @@ their own copyright notices and license terms:
 * [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
 * [ct-logs v0.8.0](https://github.com/ctz/ct-logs) - Apache-2.0/ISC/MIT
 * [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
-* [ffi-support v0.4.3](https://github.com/mozilla/application-services) - Apache-2.0 / MIT
 * [futures-channel v0.3.15](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-core v0.3.15](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-executor v0.3.15](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
