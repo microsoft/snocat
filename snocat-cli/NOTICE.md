@@ -16,7 +16,7 @@ their own copyright notices and license terms:
 * [base64 v0.13.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
 * [bitflags v1.2.1](https://github.com/bitflags/bitflags) - MIT/Apache-2.0
 * [bytes v1.0.1](https://github.com/tokio-rs/bytes) - MIT
-* [cc v1.0.68](https://github.com/alexcrichton/cc-rs) - MIT/Apache-2.0
+* [cc v1.0.69](https://github.com/alexcrichton/cc-rs) - MIT/Apache-2.0
 * [cfg-if v1.0.0](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
 * [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
