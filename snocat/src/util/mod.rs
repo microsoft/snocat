@@ -20,12 +20,10 @@ use tokio::net::TcpStream;
 pub mod cancellation;
 pub mod dropkick;
 pub mod framed;
-mod mapped_owned_async_mutex;
 pub(crate) mod merge_streams;
 pub mod tunnel_stream;
 pub mod validators;
 pub(crate) mod vtdroppable;
-pub use mapped_owned_async_mutex::MappedOwnedMutexGuard;
 
 // HTTP protocol constant from quinn/examples/common
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
