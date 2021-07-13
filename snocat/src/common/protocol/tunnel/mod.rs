@@ -247,6 +247,15 @@ pub trait TunnelControlPerChannel: TunnelControl {
   fn close_downlink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
 }
 
+/// Provides access to a shared data structure bound to the object
+///
+/// Lifetimes of the baggage and its children are bound to that of the parent
+pub trait Baggage {
+  type Bag<'a>;
+
+  fn bag<'a>(&'a self) -> Self::Bag<'a>;
+}
+
 pub trait Sided {
   fn side(&self) -> TunnelSide;
 }

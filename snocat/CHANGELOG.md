@@ -54,6 +54,12 @@ Tunnel traits now exist which specify behaviour for monitoring link
 closure events, and a means of forcing closure of a tunnel on command.
 This behaviour is currently only implemented for `QuinnTunnel`.
 
+Tunnels implement a new "Baggage" trait which allows attachment of arbitrary
+data to tunnel types, shared between all handles to that tunnel instance.
+This data is not networked, and is dropped with the last tunnel handle.
+
+_It is strictly illegal to store a tunnel handle in any tunnel's baggage_.
+
 ### Daemon System
 Revamped networking system to use a `ModularDaemon` for both client and server management.
 

@@ -17,18 +17,22 @@ use crate::{
   util::{dropkick::Dropkick, tunnel_stream::WrappedStream},
 };
 
-use super::{TunnelControl, TunnelControlPerChannel, TunnelMonitoring, TunnelMonitoringPerChannel};
+use super::{
+  Baggage, TunnelControl, TunnelControlPerChannel, TunnelMonitoring, TunnelMonitoringPerChannel,
+};
 
-pub struct QuinnTunnel<S: quinn::crypto::Session> {
+pub struct QuinnTunnel<S: quinn::crypto::Session, B = ()> {
   connection: quinn::generic::Connection<S>,
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
 
   incoming_closed: Arc<Dropkick<CancellationToken>>,
   outgoing_closed: Arc<Dropkick<CancellationToken>>,
+
+  baggage: Arc<B>,
 }
 
-impl<S: quinn::crypto::Session> QuinnTunnel<S> {
+impl<S: quinn::crypto::Session, B> QuinnTunnel<S, B> {
   pub fn into_inner(
     self,
   ) -> (
@@ -40,7 +44,7 @@ impl<S: quinn::crypto::Session> QuinnTunnel<S> {
   }
 }
 
-impl<S> TunnelControl for QuinnTunnel<S>
+impl<S, B> TunnelControl for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -51,7 +55,7 @@ where
   }
 }
 
-impl<S> TunnelControlPerChannel for QuinnTunnel<S>
+impl<S, B> TunnelControlPerChannel for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -66,7 +70,7 @@ where
   }
 }
 
-impl<S> TunnelMonitoring for QuinnTunnel<S>
+impl<S, B> TunnelMonitoring for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -86,7 +90,7 @@ where
   }
 }
 
-impl<S> TunnelMonitoringPerChannel for QuinnTunnel<S>
+impl<S, B> TunnelMonitoringPerChannel for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -109,7 +113,7 @@ where
   }
 }
 
-impl<S> Sided for QuinnTunnel<S>
+impl<S, B> Sided for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -118,7 +122,7 @@ where
   }
 }
 
-impl<S> TunnelUplink for QuinnTunnel<S>
+impl<S, B> TunnelUplink for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -151,9 +155,10 @@ where
   }
 }
 
-impl<S> Tunnel for QuinnTunnel<S>
+impl<S, B> Tunnel for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
+  B: Send + Sync + 'static,
 {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
     if self.is_closed_downlink() {
@@ -184,10 +189,41 @@ impl From<quinn::ConnectionError> for TunnelError {
   }
 }
 
+/// Allows attachment of arbitrary data to the lifetime of the tunnel object
+///
+/// If a value is only required until disconnection, perform cleanup with an
+/// `on_closed` handle, and use a Mutex<Option<T>> to represent removed bags
+///
+/// It is strictly illegal to store a reference to a tunnel in a bag. Memory
+/// leaks cannot be reasoned about if any tunnel can extend the lifetimes of
+/// any tunnel (including itself) beyond the scope of a live Request. Module
+/// handles (`TunnelRegistry`, `ServiceRegistry`, etc) must all be WeakRefs.
+impl<S, B> Baggage for QuinnTunnel<S, B>
+where
+  S: quinn::crypto::Session,
+{
+  type Bag<'a> = Arc<B>;
+
+  fn bag<'a>(&'a self) -> Self::Bag<'a> {
+    self.baggage.clone()
+  }
+}
+
 pub fn from_quinn_endpoint<S>(
   new_connection: quinn::generic::NewConnection<S>,
   side: TunnelSide,
-) -> QuinnTunnel<S>
+) -> QuinnTunnel<S, ()>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  from_quinn_endpoint_with_baggage(new_connection, side, ())
+}
+
+pub fn from_quinn_endpoint_with_baggage<S, B>(
+  new_connection: quinn::generic::NewConnection<S>,
+  side: TunnelSide,
+  baggage: B,
+) -> QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session + 'static,
 {
@@ -240,5 +276,6 @@ where
     })),
     incoming_closed: incoming_cancellation,
     outgoing_closed: Arc::new(CancellationToken::new().into()),
+    baggage: Arc::new(baggage),
   }
 }
