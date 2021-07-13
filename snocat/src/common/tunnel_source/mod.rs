@@ -5,6 +5,8 @@
 use futures::stream::{BoxStream, Stream, StreamExt};
 use std::{net::SocketAddr, pin::Pin, task::Poll};
 
+use crate::common::protocol::tunnel::quinn_tunnel::from_quinn_endpoint_with_baggage;
+
 use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnel, QuinnTunnel, TunnelSide};
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -12,18 +14,33 @@ use std::sync::{Arc, TryLockError};
 use std::task::Context;
 use tokio_stream::StreamMap;
 
-pub struct QuinnListenEndpoint<Session: quinn::crypto::Session> {
+pub struct QuinnListenEndpoint<Session: quinn::crypto::Session, Baggage> {
   bind_addr: SocketAddr,
   quinn_config: quinn::generic::ServerConfig<Session>,
   endpoint: quinn::generic::Endpoint<Session>,
   incoming: BoxStream<'static, quinn::generic::NewConnection<Session>>,
+  baggage_constructor:
+    Box<dyn (Fn(&quinn::generic::NewConnection<Session>) -> Baggage) + Send + Sync>,
 }
 
-impl<Session: quinn::crypto::Session + 'static> QuinnListenEndpoint<Session> {
+impl<Session: quinn::crypto::Session + 'static> QuinnListenEndpoint<Session, ()> {
   pub fn bind(
     bind_addr: SocketAddr,
     quinn_config: quinn::generic::ServerConfig<Session>,
   ) -> Result<Self, quinn::EndpointError> {
+    Self::bind_with_baggage(bind_addr, quinn_config, |_| ())
+  }
+}
+
+impl<Session: quinn::crypto::Session + 'static, Baggage> QuinnListenEndpoint<Session, Baggage> {
+  pub fn bind_with_baggage<F>(
+    bind_addr: SocketAddr,
+    quinn_config: quinn::generic::ServerConfig<Session>,
+    create_baggage: F,
+  ) -> Result<Self, quinn::EndpointError>
+  where
+    F: (Fn(&quinn::generic::NewConnection<Session>) -> Baggage) + Send + Sync + 'static,
+  {
     let mut builder = quinn::generic::Endpoint::builder();
     builder.listen(quinn_config.clone());
     let (endpoint, incoming) = builder.bind(&bind_addr)?;
@@ -35,16 +52,17 @@ impl<Session: quinn::crypto::Session + 'static> QuinnListenEndpoint<Session> {
       quinn_config,
       endpoint,
       incoming,
+      baggage_constructor: Box::new(create_baggage),
     })
   }
 }
 
-impl<Session> Stream for QuinnListenEndpoint<Session>
+impl<Session, Baggage> Stream for QuinnListenEndpoint<Session, Baggage>
 where
   Session: quinn::crypto::Session + Send + 'static,
   Self: Send + Unpin,
 {
-  type Item = QuinnTunnel<Session>;
+  type Item = QuinnTunnel<Session, Baggage>;
 
   fn poll_next(
     mut self: std::pin::Pin<&mut Self>,
@@ -54,7 +72,8 @@ where
     match res {
       None => Poll::Ready(None),
       Some(new_connection) => {
-        let tunnel = from_quinn_endpoint(new_connection, TunnelSide::Listen);
+        let baggage = (self.baggage_constructor)(&new_connection);
+        let tunnel = from_quinn_endpoint_with_baggage(new_connection, TunnelSide::Listen, baggage);
         Poll::Ready(Some(tunnel))
       }
     }
