@@ -18,7 +18,6 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 pub mod cancellation;
-pub mod delegation;
 pub mod dropkick;
 pub mod framed;
 mod mapped_owned_async_mutex;
