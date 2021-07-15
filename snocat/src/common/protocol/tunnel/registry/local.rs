@@ -17,14 +17,15 @@ use super::{TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegi
 
 pub struct InMemoryTunnelRegistry<TTunnel: ?Sized, TMetadata = ()> {
   tunnels: Arc<tokio::sync::Mutex<BTreeMap<TunnelId, TunnelRecord<TTunnel, TMetadata>>>>,
-  metadata: TMetadata,
+  metadata_constructor:
+    Box<dyn (Fn(TunnelId, Option<&Arc<TTunnel>>) -> TMetadata) + Send + Sync + 'static>,
 }
 
 impl<TTunnel> InMemoryTunnelRegistry<TTunnel, ()> {
   pub fn new() -> Self {
     Self {
       tunnels: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-      metadata: (),
+      metadata_constructor: Box::new(|_, _| ()),
     }
   }
 }
@@ -33,10 +34,20 @@ impl<TTunnel: ?Sized, TMetadata> InMemoryTunnelRegistry<TTunnel, TMetadata>
 where
   TMetadata: Clone + Send + Sync,
 {
-  pub fn new_with_shared_metadata(metadata: TMetadata) -> Self {
+  pub fn new_with_shared_metadata(metadata: TMetadata) -> Self
+  where
+    TMetadata: 'static,
+  {
+    Self::new_with_metadata_constructor(move |_, _| metadata.clone())
+  }
+
+  pub fn new_with_metadata_constructor<F>(metadata_constructor: F) -> Self
+  where
+    F: (Fn(TunnelId, Option<&Arc<TTunnel>>) -> TMetadata) + Send + Sync + 'static,
+  {
     Self {
       tunnels: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-      metadata: metadata,
+      metadata_constructor: Box::new(metadata_constructor),
     }
   }
 }
@@ -103,6 +114,7 @@ where
       if tunnels.contains_key(&tunnel_id) {
         return Err(TunnelRegistrationError::IdOccupied(tunnel_id));
       }
+      let metadata = (self.metadata_constructor)(tunnel_id, Some(&tunnel));
       assert!(
         tunnels
           .insert(
@@ -111,13 +123,13 @@ where
               id: tunnel_id,
               name: None,
               tunnel: Some(tunnel),
-              metadata: self.metadata.clone(),
+              metadata: metadata.clone(),
             },
           )
           .is_none(),
         "TunnelId overlap despite locked map where contains_key returned false"
       );
-      Ok(self.metadata.clone())
+      Ok(metadata)
     }
     .boxed()
   }
