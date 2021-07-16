@@ -147,6 +147,9 @@ where
     async move {
       let (resolved_address, link): (RouteAddress, Box<_>) =
         match router.route(&request, tunnel_registry).await {
+          Err(RoutingError::InvalidAddress) => {
+            return Err(RequestHandlingError::RouteUnavailable(request))
+          }
           Err(RoutingError::NoMatchingTunnel) => {
             return Err(RequestHandlingError::RouteNotFound(request))
           }

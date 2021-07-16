@@ -62,6 +62,8 @@ impl Request {
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum RoutingError<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> {
+  #[error("Invalid tunnel address format")]
+  InvalidAddress,
   #[error("No matching tunnel could be found")]
   NoMatchingTunnel,
   #[error("The tunnel failed to provide a link")]
