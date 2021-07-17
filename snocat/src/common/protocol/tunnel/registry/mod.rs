@@ -42,7 +42,7 @@ where
 }
 
 impl<TTunnel: ?Sized, TMetadata> TunnelRecord<TTunnel, TMetadata> {
-  fn map_metadata<TOutputMetadata, F: FnOnce(TMetadata) -> TOutputMetadata>(
+  pub fn map_metadata<TOutputMetadata, F: FnOnce(TMetadata) -> TOutputMetadata>(
     self,
     f: F,
   ) -> TunnelRecord<TTunnel, TOutputMetadata> {
@@ -55,7 +55,7 @@ impl<TTunnel: ?Sized, TMetadata> TunnelRecord<TTunnel, TMetadata> {
   }
 
   // I'd use Into/From but apparently this clashes because you can't assert that TMetadata != TOutputMetadata
-  fn convert_metadata<TOutputMetadata>(self) -> TunnelRecord<TTunnel, TOutputMetadata>
+  pub fn convert_metadata<TOutputMetadata>(self) -> TunnelRecord<TTunnel, TOutputMetadata>
   where
     TOutputMetadata: From<TMetadata>,
   {
