@@ -23,7 +23,6 @@ pub mod framed;
 pub(crate) mod merge_streams;
 pub mod tunnel_stream;
 pub mod validators;
-pub(crate) mod vtdroppable;
 
 // HTTP protocol constant from quinn/examples/common
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
