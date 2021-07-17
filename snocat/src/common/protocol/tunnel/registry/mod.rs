@@ -169,6 +169,18 @@ pub trait TunnelRegistry<TTunnel: ?Sized>: Downcast + DowncastSync {
 }
 impl_downcast!(sync TunnelRegistry<TTunnel> assoc Metadata, Error);
 
+/// An extension to the Registry trait which allows registration of unowned tunnels.
+/// Intended to allow mirroring of another registry across processes or hosts.
+pub trait TunnelRegistryMirroring<TTunnel: ?Sized>: TunnelRegistry<TTunnel> {
+  /// A superset of functionality over TunnelRegistry::register_tunnel
+  /// in that this also allows passing unowned tunnels / "None"
+  fn register_tunnel_mirror(
+    &self,
+    tunnel_id: TunnelId,
+    tunnel: Option<Arc<TTunnel>>,
+  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>>;
+}
+
 impl<T, TTunnel: ?Sized> TunnelRegistry<TTunnel> for Arc<T>
 where
   T: TunnelRegistry<TTunnel> + Send + Sync + 'static,

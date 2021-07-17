@@ -13,7 +13,9 @@ use std::{
 
 use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName};
 
-use super::{TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegistry};
+use super::{
+  TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegistry, TunnelRegistryMirroring,
+};
 
 pub struct InMemoryTunnelRegistry<TTunnel: ?Sized, TMetadata = ()> {
   tunnels: Arc<tokio::sync::Mutex<BTreeMap<TunnelId, TunnelRecord<TTunnel, TMetadata>>>>,
@@ -108,30 +110,7 @@ where
     tunnel_id: TunnelId,
     tunnel: Arc<TTunnel>,
   ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
-    let tunnels = Arc::clone(&self.tunnels);
-    async move {
-      let mut tunnels = tunnels.lock().await;
-      if tunnels.contains_key(&tunnel_id) {
-        return Err(TunnelRegistrationError::IdOccupied(tunnel_id));
-      }
-      let metadata = (self.metadata_constructor)(tunnel_id, Some(&tunnel));
-      assert!(
-        tunnels
-          .insert(
-            tunnel_id,
-            TunnelRecord {
-              id: tunnel_id,
-              name: None,
-              tunnel: Some(tunnel),
-              metadata: metadata.clone(),
-            },
-          )
-          .is_none(),
-        "TunnelId overlap despite locked map where contains_key returned false"
-      );
-      Ok(metadata)
-    }
-    .boxed()
+    self.register_tunnel_mirror(tunnel_id, Some(tunnel))
   }
 
   fn name_tunnel(
@@ -177,6 +156,44 @@ where
     async move {
       let mut tunnels = tunnels.lock().await;
       Ok(tunnels.remove(&tunnel_id))
+    }
+    .boxed()
+  }
+}
+
+impl<TTunnel, TMetadata> TunnelRegistryMirroring<TTunnel>
+  for InMemoryTunnelRegistry<TTunnel, TMetadata>
+where
+  TTunnel: Send + Sync + 'static,
+  TMetadata: Clone + Send + Sync + 'static,
+{
+  fn register_tunnel_mirror(
+    &self,
+    tunnel_id: TunnelId,
+    tunnel: Option<Arc<TTunnel>>,
+  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
+    let tunnels = Arc::clone(&self.tunnels);
+    async move {
+      let mut tunnels = tunnels.lock().await;
+      if tunnels.contains_key(&tunnel_id) {
+        return Err(TunnelRegistrationError::IdOccupied(tunnel_id));
+      }
+      let metadata = (self.metadata_constructor)(tunnel_id, tunnel.as_ref());
+      assert!(
+        tunnels
+          .insert(
+            tunnel_id,
+            TunnelRecord {
+              id: tunnel_id,
+              name: None,
+              tunnel: tunnel,
+              metadata: metadata.clone(),
+            },
+          )
+          .is_none(),
+        "TunnelId overlap despite locked map where contains_key returned false"
+      );
+      Ok(metadata)
     }
     .boxed()
   }
