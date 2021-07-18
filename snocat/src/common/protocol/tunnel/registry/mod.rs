@@ -173,11 +173,13 @@ impl_downcast!(sync TunnelRegistry<TTunnel> assoc Metadata, Error);
 /// Intended to allow mirroring of another registry across processes or hosts.
 pub trait TunnelRegistryMirroring<TTunnel: ?Sized>: TunnelRegistry<TTunnel> {
   /// A superset of functionality over TunnelRegistry::register_tunnel
-  /// in that this also allows passing unowned tunnels / "None"
+  /// in that it also allows passing unowned tunnels / "None", and can
+  /// specify the exact metadata used in the remote tunnel record.
   fn register_tunnel_mirror(
     &self,
     tunnel_id: TunnelId,
     tunnel: Option<Arc<TTunnel>>,
+    metadata: Self::Metadata,
   ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>>;
 }
 

@@ -110,7 +110,8 @@ where
     tunnel_id: TunnelId,
     tunnel: Arc<TTunnel>,
   ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
-    self.register_tunnel_mirror(tunnel_id, Some(tunnel))
+    let metadata = (self.metadata_constructor)(tunnel_id, Some(&tunnel));
+    self.register_tunnel_mirror(tunnel_id, Some(tunnel), metadata)
   }
 
   fn name_tunnel(
@@ -171,6 +172,7 @@ where
     &self,
     tunnel_id: TunnelId,
     tunnel: Option<Arc<TTunnel>>,
+    metadata: TMetadata,
   ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
     let tunnels = Arc::clone(&self.tunnels);
     async move {
@@ -178,7 +180,6 @@ where
       if tunnels.contains_key(&tunnel_id) {
         return Err(TunnelRegistrationError::IdOccupied(tunnel_id));
       }
-      let metadata = (self.metadata_constructor)(tunnel_id, tunnel.as_ref());
       assert!(
         tunnels
           .insert(
