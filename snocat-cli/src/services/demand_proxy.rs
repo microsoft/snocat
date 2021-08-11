@@ -42,7 +42,7 @@ impl Client for DemandProxyClient {
     let span = tracing::span!(tracing::Level::DEBUG, "demand_proxy_client", target=?addr);
     let fut = async move {
       tracing::info!("Sending subject to service");
-      write_framed_json(&mut tunnel, &self.proxied_subject)
+      write_framed_json(&mut tunnel, &self.proxied_subject, None)
         .await
         .map_err(|e| {
           tracing::debug!(error=?e);
@@ -53,7 +53,7 @@ impl Client for DemandProxyClient {
         "Awaiting stream from service"
       );
       let entry: PortGrantedNotificationType =
-        read_framed_json(&mut tunnel).await.map_err(|e| {
+        read_framed_json(&mut tunnel, None).await.map_err(|e| {
           tracing::debug!(error=?e);
           ClientError::IllegalResponse(Some(Backtrace::capture()))
         })?;
@@ -318,10 +318,12 @@ where
     let span = tracing::span!(tracing::Level::DEBUG, "demand_proxy", target = ?addr);
     let fut = async move {
       tracing::debug!("Demand Proxy active");
-      let _subject: String = read_framed_json(&mut stream).await.map_err(|e| {
-        tracing::debug!(error=?e, "Remote failed to provide a subject for the proxy demand");
-        ServiceError::UnexpectedEnd
-      })?;
+      let _subject: String = read_framed_json(&mut stream, Some(256))
+        .await
+        .map_err(|e| {
+          tracing::debug!(error=?e, "Remote failed to provide a subject for the proxy demand");
+          ServiceError::UnexpectedEnd
+        })?;
       tracing::trace!("Discarding proxy demand subject as we do not yet use it");
       let weak_tunnel = {
         let tunnel_registry = tunnel_registry
@@ -350,6 +352,7 @@ where
                 .map(|addr| SocketAddr::new(addr.clone(), port.port()))
                 .collect(),
             ),
+            None,
           )
           .await
           .map_err(|_| ServiceError::IllegalResponse)?;
@@ -357,7 +360,7 @@ where
         }
         Err(_port_allocation_error) => {
           // Notify the client that we couldn't allocate it a port
-          write_framed_json(&mut stream, PortGrantedNotificationType::None)
+          write_framed_json(&mut stream, PortGrantedNotificationType::None, None)
             .await
             .map_err(|_| ServiceError::IllegalResponse)?;
           return Err(ServiceError::DependencyFailure);
@@ -389,7 +392,7 @@ where
             port.port(),
             bind_addrs
           );
-          write_framed_json(&mut stream, PortGrantedNotificationType::None)
+          write_framed_json(&mut stream, PortGrantedNotificationType::None, None)
             .await
             .map_err(|_| ServiceError::IllegalResponse)?;
           return Err(e);

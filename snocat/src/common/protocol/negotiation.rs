@@ -2,10 +2,7 @@
 // Licensed under the MIT license OR Apache 2.0
 use std::sync::Arc;
 
-use futures::{
-  future::{BoxFuture, FutureExt},
-  Future,
-};
+use futures::future::{BoxFuture, FutureExt};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing_futures::Instrument;
 
@@ -14,7 +11,7 @@ use crate::util::tunnel_stream::TunnelStream;
 use super::{
   traits::{MappedService, ServiceRegistry},
   tunnel::TunnelId,
-  RouteAddress, Service,
+  RouteAddress,
 };
 
 /// Identifies the SNOCAT protocol over a stream
@@ -208,7 +205,7 @@ where
         return Err(NegotiationError::UnsupportedProtocolVersion);
       }
 
-      let addr = crate::util::framed::read_frame_vec(&mut link)
+      let addr = crate::util::framed::read_frame(&mut link, Some(2048))
         .await
         .map_err(|_| NegotiationError::ProtocolViolation)?; // Address must be sent as a frame in v0
 
@@ -248,19 +245,15 @@ where
 #[cfg(test)]
 mod tests {
   use futures::FutureExt;
-  use std::{
-    sync::{Arc, Weak},
-    time::Duration,
-  };
+  use std::{sync::Arc, time::Duration};
   use tokio::time::timeout;
 
   use super::{ArcService, NegotiationClient, NegotiationError, NegotiationService};
   use crate::common::protocol::{
     traits::{MappedService, ServiceRegistry},
-    tunnel::{Tunnel, TunnelId},
+    tunnel::TunnelId,
     Service,
   };
-  use crate::util::tunnel_stream::TunnelStream;
 
   struct TestServiceRegistry {
     services: Vec<ArcService<<Self as ServiceRegistry>::Error>>,
@@ -304,7 +297,6 @@ mod tests {
       '_,
       Result<(), crate::common::protocol::ServiceError<Self::Error>>,
     > {
-      use futures::FutureExt;
       futures::future::ready(Ok(())).boxed()
     }
   }
@@ -324,7 +316,7 @@ mod tests {
     };
     let service = NegotiationService::new(Arc::new(service_registry));
     let client = NegotiationClient::new();
-    use crate::common::util::tunnel_stream::WrappedStream;
+    use crate::util::tunnel_stream::WrappedStream;
     let (client_stream, server_stream) = WrappedStream::duplex(8192);
 
     let client_future = async move {
