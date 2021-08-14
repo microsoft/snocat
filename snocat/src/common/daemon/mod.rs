@@ -507,7 +507,7 @@ where
           // TODO: Figure out which of these should be considered fatal to the tunnel, if any
           Err(e) => {
             tracing::debug!(
-              address = route_addr.as_str(),
+              address = ?route_addr,
               error = ?e,
               "Protocol Service responded with non-fatal error"
             );
@@ -515,7 +515,7 @@ where
           }
           Ok(()) => {
             tracing::trace!(
-              address = route_addr.as_str(),
+              address = ?route_addr,
               "Protocol Service reported success"
             );
             Ok(())

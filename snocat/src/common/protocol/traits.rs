@@ -14,10 +14,11 @@ use std::{
   sync::{Arc, Weak},
 };
 
-use super::tunnel::{registry::TunnelRegistry, Tunnel, TunnelId, TunnelName};
+use super::{
+  tunnel::{registry::TunnelRegistry, Tunnel, TunnelId, TunnelName},
+  RouteAddress,
+};
 use crate::common::protocol::tunnel::TunnelError;
-
-pub type RouteAddress = String;
 
 pub struct Request {
   pub address: RouteAddress,

@@ -5,6 +5,7 @@ use futures::{
   AsyncReadExt,
 };
 use std::{
+  convert::{TryFrom, TryInto},
   fmt::Display,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
   str::FromStr,
@@ -17,6 +18,7 @@ use tokio::{
 use tracing_futures::Instrument;
 
 use super::{
+  address::RouteAddressParseError,
   tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
   Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
   RoutingError, Service, ServiceError,
@@ -35,7 +37,7 @@ impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
   }
 
   pub fn build_addr(target: TcpStreamTarget) -> RouteAddress {
-    target.to_string()
+    target.into()
   }
 }
 
@@ -140,6 +142,59 @@ pub enum TcpStreamTarget {
   Dns(DnsTarget),
 }
 
+impl From<TcpStreamTarget> for RouteAddress {
+  fn from(target: TcpStreamTarget) -> Self {
+    target
+      .to_string()
+      .parse()
+      .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
+  }
+}
+
+impl TryFrom<RouteAddress> for TcpStreamTarget {
+  type Error = TcpStreamTargetFormatError;
+
+  fn try_from(value: RouteAddress) -> Result<Self, Self::Error> {
+    (&value).try_into()
+  }
+}
+
+impl TryFrom<&RouteAddress> for TcpStreamTarget {
+  type Error = TcpStreamTargetFormatError;
+
+  fn try_from(value: &RouteAddress) -> Result<Self, Self::Error> {
+    let parts: Vec<&str> = value.iter_segments().take(4).collect();
+    let (port, parts) = parts
+      .split_last()
+      .ok_or(TcpStreamTargetFormatError::TooFewSegments)?;
+    let port: u16 = port.parse()?;
+    match parts {
+      ["tcp"] => Ok(TcpStreamTarget::SocketAddr(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+      ))),
+      ["ip4", addr, "tcp"] => addr
+        .parse::<Ipv4Addr>()
+        .map_err(Into::into)
+        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(addr), port))),
+      ["ip6", addr, "tcp"] => addr
+        .parse::<Ipv6Addr>()
+        .map_err(Into::into)
+        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V6(addr), port))),
+      [dns_class @ ("dns" | "dns4" | "dns6"), host, "tcp"] => {
+        let host = host.to_string();
+        Ok(TcpStreamTarget::Dns(match *dns_class {
+          "dns" => DnsTarget::PreferHigher { host, port },
+          "dns6" => DnsTarget::Dns6 { host, port },
+          "dns4" => DnsTarget::Dns4 { host, port },
+          _ => unreachable!("Checked statically via matcher"),
+        }))
+      }
+      _ => Err(TcpStreamTargetFormatError::NoMatchingFormat),
+    }
+  }
+}
+
 /// Format a [RouteAddress] from a [TcpStreamTarget]
 impl Display for TcpStreamTarget {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,17 +221,23 @@ impl Display for TcpStreamTarget {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum TcpStreamTargetParseError {
+pub enum TcpStreamTargetFormatError {
   #[error("Not enough segments present to represent valid target")]
   TooFewSegments,
-  #[error("Addresses must start with a '/' character")]
-  InvalidPrefix,
   #[error("No supported address type matches the provided format")]
   NoMatchingFormat,
   #[error("Port specification invalid")]
   InvalidPort(#[from] std::num::ParseIntError, std::backtrace::Backtrace),
   #[error("IP format invalid")]
   InvalidIP(#[from] std::net::AddrParseError, std::backtrace::Backtrace),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TcpStreamTargetParseError {
+  #[error(transparent)]
+  RouteAddressParseError(#[from] RouteAddressParseError),
+  #[error(transparent)]
+  TcpStreamTargetFormatError(#[from] TcpStreamTargetFormatError),
 }
 
 /// Try to parse a [RouteAddress] into a [TcpStreamTarget]
@@ -193,41 +254,8 @@ impl FromStr for TcpStreamTarget {
   type Err = TcpStreamTargetParseError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let parts = s.splitn(5, '/').collect::<Vec<_>>();
-    let (prefix, parts) = parts
-      .split_first()
-      .ok_or(TcpStreamTargetParseError::TooFewSegments)?;
-    if !prefix.is_empty() {
-      return Err(TcpStreamTargetParseError::InvalidPrefix);
-    }
-    let (port, parts) = parts
-      .split_last()
-      .ok_or(TcpStreamTargetParseError::TooFewSegments)?;
-    let port: u16 = port.parse()?;
-    match parts {
-      ["tcp"] => Ok(TcpStreamTarget::SocketAddr(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-      ))),
-      ["ip4", addr, "tcp"] => addr
-        .parse::<Ipv4Addr>()
-        .map_err(Into::into)
-        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(addr), port))),
-      ["ip6", addr, "tcp"] => addr
-        .parse::<Ipv6Addr>()
-        .map_err(Into::into)
-        .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V6(addr), port))),
-      [dns_class @ ("dns" | "dns4" | "dns6"), host, "tcp"] => {
-        let host = host.to_string();
-        Ok(TcpStreamTarget::Dns(match *dns_class {
-          "dns" => DnsTarget::PreferHigher { host, port },
-          "dns6" => DnsTarget::Dns6 { host, port },
-          "dns4" => DnsTarget::Dns4 { host, port },
-          _ => unreachable!("Checked statically via matcher"),
-        }))
-      }
-      _ => Err(TcpStreamTargetParseError::NoMatchingFormat),
-    }
+    let route_addr = s.parse::<RouteAddress>()?;
+    Ok((&route_addr).try_into()?)
   }
 }
 
@@ -300,7 +328,7 @@ impl Service for TcpStreamService {
   type Error = anyhow::Error;
 
   fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
-    addr.parse::<TcpStreamTarget>().is_ok()
+    TcpStreamTarget::try_from(addr).is_ok()
   }
 
   fn handle<'a>(
@@ -315,10 +343,7 @@ impl Service for TcpStreamService {
       addr
     );
     let span = tracing::span!(tracing::Level::DEBUG, "proxy_tcp", target = ?addr);
-    let target = match addr
-      .parse::<TcpStreamTarget>()
-      .map_err(|_| ServiceError::AddressError)
-    {
+    let target: TcpStreamTarget = match addr.try_into().map_err(|_| ServiceError::AddressError) {
       Err(e) => return futures::future::ready(Err(e)).boxed(),
       Ok(target) => target,
     };
@@ -353,5 +378,51 @@ impl Service for TcpStreamService {
     };
 
     fut.instrument(span).boxed()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+  use crate::common::protocol::{
+    proxy_tcp::{DnsTarget, TcpStreamTarget},
+    RouteAddress,
+  };
+
+  #[test]
+  fn target_parsing() {
+    assert_eq!(
+      "/tcp/2468".parse::<TcpStreamTarget>().unwrap(),
+      TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2468))
+    );
+    assert_eq!(
+      "/ip4/127.0.0.1/tcp/2468"
+        .parse::<TcpStreamTarget>()
+        .unwrap(),
+      TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2468))
+    );
+    assert_eq!(
+      "/ip6/::1/tcp/2468".parse::<TcpStreamTarget>().unwrap(),
+      TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 2468))
+    );
+    assert_eq!(
+      "/dns4/localhost/tcp/2468"
+        .parse::<TcpStreamTarget>()
+        .unwrap(),
+      TcpStreamTarget::Dns(DnsTarget::Dns4 {
+        host: "localhost".into(),
+        port: 2468
+      })
+    );
+    assert_eq!(
+      "/dns6/localhost/tcp/2468"
+        .parse::<TcpStreamTarget>()
+        .unwrap(),
+      TcpStreamTarget::Dns(DnsTarget::Dns6 {
+        host: "localhost".into(),
+        port: 2468
+      })
+    );
   }
 }

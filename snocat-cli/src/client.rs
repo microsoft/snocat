@@ -223,7 +223,9 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
             "/proxyme/0.0.1/{}/{}",
             proxy_target.ip().to_string(),
             proxy_target.port()
-          ),
+          )
+          .parse()
+          .expect("Generated address must be valid"),
           demand_proxy,
         )
         .await?;

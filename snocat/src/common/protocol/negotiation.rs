@@ -205,11 +205,13 @@ where
         return Err(NegotiationError::UnsupportedProtocolVersion);
       }
 
-      let addr = crate::util::framed::read_frame(&mut link, Some(2048))
+      let addr: RouteAddress = crate::util::framed::read_frame(&mut link, Some(2048))
         .await
-        .map_err(|_| NegotiationError::ProtocolViolation)?; // Address must be sent as a frame in v0
-
-      let addr = String::from_utf8(addr).map_err(|_| NegotiationError::ProtocolViolation)?; // Addresses must be valid UTF-8
+        .map_err(|_| NegotiationError::ProtocolViolation) // Address must be sent as a frame in v0
+        // Addresses must be valid UTF-8
+        .and_then(|raw| String::from_utf8(raw).map_err(|_| NegotiationError::ProtocolViolation))
+        // Addresses must be legal SlashAddrs
+        .and_then(|raw| raw.parse().map_err(|_| NegotiationError::ProtocolViolation))?;
 
       tracing::trace!("searching service registry for address handlers");
       let found = service_registry.find_service(&addr, &tunnel_id);
@@ -320,7 +322,12 @@ mod tests {
     let (client_stream, server_stream) = WrappedStream::duplex(8192);
 
     let client_future = async move {
-      let _stream = client.handle(TEST_ADDR.into(), client_stream).await?;
+      let _stream = client
+        .handle(
+          TEST_ADDR.parse().expect("Illegal test address"),
+          client_stream,
+        )
+        .await?;
       Result::<_, NegotiationError>::Ok(())
     };
 
@@ -334,6 +341,6 @@ mod tests {
     let fut = futures::future::try_join(client_future, server_future);
     let fut = timeout(Duration::from_secs(5), fut);
     let ((), (addr, _service)) = fut.await.expect("Must not time out").unwrap();
-    assert_eq!(addr.as_str(), TEST_ADDR);
+    assert_eq!(&addr.to_string(), TEST_ADDR);
   }
 }

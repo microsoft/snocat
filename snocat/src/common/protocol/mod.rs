@@ -23,11 +23,14 @@
 
 pub mod traits;
 pub use traits::{
-  Client, ClientError, DynamicResponseClient, MappedService, Request, Response, RouteAddress,
-  Router, RoutingError, Service, ServiceError, ServiceRegistry,
+  Client, ClientError, DynamicResponseClient, MappedService, Request, Response, Router,
+  RoutingError, Service, ServiceError, ServiceRegistry,
 };
 
+pub mod address;
 pub mod negotiation;
 pub mod proxy_tcp;
 pub mod request_handler;
 pub mod tunnel;
+
+pub use address::RouteAddress;

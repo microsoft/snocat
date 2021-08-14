@@ -76,6 +76,7 @@ impl Client for DemandProxyClient {
   }
 }
 
+// TODO: This service is obsolete- listen on the server side for connection events instead
 pub struct DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> {
   tunnel_registry: Weak<TTunnelRegistry>,
   request_client_handler:
@@ -93,7 +94,8 @@ impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> std::fmt::Debug
   }
 }
 
-const DEMAND_PROXY_ADDRESS_BASE: &'static str = "/proxyme/0.0.1/";
+const DEMAND_PROXY_PROTOCOL_NAME: &'static str = "proxyme";
+const DEMAND_PROXY_VERSION: &'static str = "0.0.1";
 
 impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
   DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
@@ -265,18 +267,36 @@ impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
     }
   }
 
-  fn parse_address(addr: &str) -> Result<(Option<&str>, u16), ()> {
-    addr
-      .strip_prefix(DEMAND_PROXY_ADDRESS_BASE)
+  fn parse_address(addr: &RouteAddress) -> Result<(Option<&str>, u16), ()> {
+    let mut segments = addr.iter_segments();
+    // Verify the first segment is the protocol name
+    segments.next().ok_or(()).and_then(|segment| {
+      (segment == DEMAND_PROXY_PROTOCOL_NAME)
+        .then(|| ())
+        .ok_or(())
+    })?;
+    // Verify the second segment is the protocol version; for v0.0.1 we check strict equality
+    segments
+      .next()
       .ok_or(())
-      .and_then(|suffix: &str| {
-        let (host, port) = match suffix.split_once("/") {
-          Some((host_section, port_section)) => ((Some(host_section), port_section)),
-          None => (None, suffix),
-        };
-        let port = port.parse::<u16>().map_err(|_| ())?;
-        Ok((host, port))
-      })
+      .and_then(|segment| (segment == DEMAND_PROXY_VERSION).then(|| ()).ok_or(()))?;
+
+    let (host, port_segment) = {
+      let first = segments.next().ok_or(())?;
+      if let Some(second) = segments.next() {
+        (Some(first), second)
+      } else {
+        (None, first)
+      }
+    };
+
+    if segments.next().is_some() {
+      // Extra trailing segment, bail
+      return Err(());
+    }
+
+    let port = port_segment.parse::<u16>().map_err(|_| ())?;
+    Ok((host, port))
   }
 }
 
