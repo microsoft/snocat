@@ -467,7 +467,7 @@ dependencies = [
  "quinn-proto",
  "rustls",
  "socket2",
- "thiserror",
+ "thiserror 1.0.26 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
  "webpki",
@@ -486,7 +486,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "slab",
- "thiserror",
+ "thiserror 1.0.26 (registry+https://github.com/rust-lang/crates.io-index)",
  "tinyvec",
  "tracing",
  "webpki",
@@ -741,7 +741,7 @@ dependencies = [
  "quinn",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.26 (git+https://github.com/Dessix/thiserror?rev=e863837edfee78d894647fc415a2e7760512eb6a)",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -821,7 +821,15 @@ version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93119e4feac1cbe6c798c34d3a53ea0026b0b1de6a120deef895137c0529bfe2"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.26 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "thiserror"
+version = "1.0.26"
+source = "git+https://github.com/Dessix/thiserror?rev=e863837edfee78d894647fc415a2e7760512eb6a#e863837edfee78d894647fc415a2e7760512eb6a"
+dependencies = [
+ "thiserror-impl 1.0.26 (git+https://github.com/Dessix/thiserror?rev=e863837edfee78d894647fc415a2e7760512eb6a)",
 ]
 
 [[package]]
@@ -829,6 +837,16 @@ name = "thiserror-impl"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "060d69a0afe7796bf42e9e2ff91f5ee691fb15c53d38b4b62a9a53eb23164745"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.26"
+source = "git+https://github.com/Dessix/thiserror?rev=e863837edfee78d894647fc415a2e7760512eb6a#e863837edfee78d894647fc415a2e7760512eb6a"
 dependencies = [
  "proc-macro2",
  "quote",
