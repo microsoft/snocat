@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
+#![allow(clippy::type_complexity)]
 use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
 use downcast_rs::{impl_downcast, Downcast, DowncastSync};
 use futures::{

@@ -11,6 +11,8 @@
 #![feature(type_ascription)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
+#![allow(clippy::needless_lifetimes)]
+#![allow(clippy::unused_unit)]
 
 pub mod common;
 pub mod util;
