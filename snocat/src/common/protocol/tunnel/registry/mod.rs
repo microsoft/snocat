@@ -1,21 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #![allow(clippy::type_complexity)]
-use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
+
 use downcast_rs::{impl_downcast, Downcast, DowncastSync};
 use futures::{
   future::{BoxFuture, FutureExt},
   TryFutureExt,
 };
 use std::{
-  any::Any,
-  backtrace::Backtrace,
-  collections::BTreeMap,
   fmt::{Debug, Display},
-  sync::{Arc, Weak},
+  sync::Arc,
 };
 
-use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName};
+use crate::common::protocol::tunnel::{TunnelId, TunnelName};
 
 pub mod local;
 pub mod serialized;

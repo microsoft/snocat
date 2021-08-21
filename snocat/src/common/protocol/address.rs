@@ -24,6 +24,24 @@ impl RouteAddress {
     Box::new(s.split('/')) as Box<dyn Iterator<Item = &'a str> + Send + Sync>
   }
 
+  pub fn strip_segment_prefix<
+    'a,
+    Segments: IntoIterator<Item = Segment>,
+    Segment: AsRef<str> + 'a,
+  >(
+    &'a self,
+    expected_segments: Segments,
+  ) -> Option<impl Iterator<Item = &'a str>> {
+    let mut actual_segments = self.iter_segments();
+    for expected in expected_segments.into_iter() {
+      let actual = actual_segments.next();
+      if actual != Some(expected.as_ref()) {
+        return None;
+      }
+    }
+    Some(actual_segments)
+  }
+
   pub fn into_bytes(self) -> Vec<u8> {
     self.0.into_bytes()
   }

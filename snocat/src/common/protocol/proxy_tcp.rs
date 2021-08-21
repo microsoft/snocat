@@ -5,8 +5,9 @@ use futures::{
   AsyncReadExt,
 };
 use std::{
-  convert::{TryFrom, TryInto},
+  convert::{Infallible, TryFrom, TryInto},
   fmt::Display,
+  marker::PhantomData,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
   str::FromStr,
   sync::Weak,
@@ -19,9 +20,9 @@ use tracing_futures::Instrument;
 
 use super::{
   address::RouteAddressParseError,
+  service::{Client, ClientError, ClientResult, ProtocolInfo, ResultTypeOf, RouteAddressBuilder},
   tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
-  Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
-  RoutingError, Service, ServiceError,
+  RouteAddress, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 
@@ -41,19 +42,50 @@ impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
   }
 }
 
-impl<Reader, Writer> Client for TcpStreamClient<Reader, Writer>
+impl ProtocolInfo for TcpStreamService {
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    "proxy-tcp"
+  }
+}
+
+impl<Reader, Writer> ProtocolInfo for TcpStreamClient<Reader, Writer> {
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    TcpStreamService::protocol_name()
+  }
+}
+
+impl<Reader, Writer> RouteAddressBuilder for TcpStreamClient<Reader, Writer> {
+  type Params = TcpStreamTarget;
+  type BuildError = Infallible;
+
+  fn build_addr(args: Self::Params) -> Result<RouteAddress, Self::BuildError>
+  where
+    Self: Sized,
+  {
+    Ok(args.into())
+  }
+}
+
+impl<'stream, TStream, Reader, Writer> Client<'stream, TStream> for TcpStreamClient<Reader, Writer>
 where
-  Reader: AsyncRead + Send + Unpin + 'static,
-  Writer: AsyncWrite + Send + Unpin + 'static,
+  Reader: AsyncRead + Send + Unpin + 'stream,
+  Writer: AsyncWrite + Send + Unpin + 'stream,
+  TStream: TunnelStream + Send + 'stream,
 {
   // TODO: make Response the number of bytes forwarded by the client
   type Response = ();
 
-  fn handle(
-    mut self,
-    _addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Self::Response, ClientError>> {
+  type Error = ();
+
+  type Future = BoxFuture<'stream, ClientResult<'stream, Self, TStream>>;
+
+  fn handle(mut self, _addr: RouteAddress, tunnel: TStream) -> Self::Future {
     let fut = async move {
       // TODO: Read protocol version here, and ServiceError::Refused if unsupported
       // TODO: Send protocol version here, allow other side to refuse if unsupported
@@ -108,6 +140,17 @@ impl DnsTarget {
     }
   }
 
+  /// Host string, without port if present
+  ///
+  /// Not all DNS records have a constant, known port; See [SRV records](https://en.wikipedia.org/wiki/SRV_record)
+  pub fn host(&self) -> &str {
+    match self {
+      DnsTarget::PreferHigher { host, .. } => host.as_str(),
+      DnsTarget::Dns6 { host, .. } => host.as_str(),
+      DnsTarget::Dns4 { host, .. } => host.as_str(),
+    }
+  }
+
   /// Exposed port for the specified address
   ///
   /// Not all DNS records have a constant, known port; See [SRV records](https://en.wikipedia.org/wiki/SRV_record)
@@ -129,9 +172,19 @@ impl DnsTarget {
   }
 }
 
-impl Into<TcpStreamTarget> for DnsTarget {
-  fn into(self) -> TcpStreamTarget {
-    TcpStreamTarget::Dns(self)
+impl From<DnsTarget> for TcpStreamTarget {
+  fn from(val: DnsTarget) -> Self {
+    TcpStreamTarget::Dns(val)
+  }
+}
+
+impl From<TcpStreamTarget> for (String, Option<u16>) {
+  fn from(target: TcpStreamTarget) -> Self {
+    match target {
+      TcpStreamTarget::Port(p) => (Ipv4Addr::LOCALHOST.to_string(), Some(p)),
+      TcpStreamTarget::SocketAddr(s) => (s.ip().to_string(), Some(s.port())),
+      TcpStreamTarget::Dns(d) => (d.host().to_string(), d.port()),
+    }
   }
 }
 
@@ -144,10 +197,13 @@ pub enum TcpStreamTarget {
 
 impl From<TcpStreamTarget> for RouteAddress {
   fn from(target: TcpStreamTarget) -> Self {
-    target
-      .to_string()
-      .parse()
-      .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
+    format!(
+      "/{}{}",
+      TcpStreamService::protocol_name(),
+      target.to_string(),
+    )
+    .parse()
+    .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
   }
 }
 
@@ -163,7 +219,14 @@ impl TryFrom<&RouteAddress> for TcpStreamTarget {
   type Error = TcpStreamTargetFormatError;
 
   fn try_from(value: &RouteAddress) -> Result<Self, Self::Error> {
-    let parts: Vec<&str> = value.iter_segments().take(4).collect();
+    let parts: Vec<&str> =
+      if let Some(stripped) = value.strip_segment_prefix([TcpStreamService::protocol_name()]) {
+        stripped
+      } else {
+        return Err(TcpStreamTargetFormatError::NoMatchingFormat)?;
+      }
+      .take(4)
+      .collect();
     let (port, parts) = parts
       .split_last()
       .ok_or(TcpStreamTargetFormatError::TooFewSegments)?;
@@ -255,7 +318,22 @@ impl FromStr for TcpStreamTarget {
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     let route_addr = s.parse::<RouteAddress>()?;
-    Ok((&route_addr).try_into()?)
+    (&route_addr).try_into().or_else(|e| match e {
+      // If we had an error where the prefix could be missing, retry parsing with it added
+      TcpStreamTargetFormatError::TooFewSegments | TcpStreamTargetFormatError::NoMatchingFormat => {
+        match route_addr.iter_segments().nth(0) {
+          Some("dns" | "dns4" | "dns6" | "ip4" | "ip6" | "tcp") => {
+            let prefixed =
+              format!("/{}{}", TcpStreamService::protocol_name(), s).parse::<RouteAddress>()?;
+            Ok(prefixed.try_into()?)
+          }
+          _ => Err(TcpStreamTargetParseError::TcpStreamTargetFormatError(
+            TcpStreamTargetFormatError::NoMatchingFormat,
+          )),
+        }
+      }
+      _ => Err(e.into()),
+    })
   }
 }
 

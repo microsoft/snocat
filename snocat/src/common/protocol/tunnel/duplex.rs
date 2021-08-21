@@ -14,13 +14,20 @@ use crate::{
   util::tunnel_stream::WrappedStream,
 };
 
-use super::Baggage;
+use super::{Baggage, TunnelId, WithTunnelId};
 
 pub struct DuplexTunnel<B = ()> {
+  id: TunnelId,
   channel_to_remote: UnboundedSender<WrappedStream>,
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
   baggage: Arc<B>,
+}
+
+impl<B> WithTunnelId for DuplexTunnel<B> {
+  fn id(&self) -> &TunnelId {
+    &self.id
+  }
 }
 
 impl<B> Sided for DuplexTunnel<B> {
@@ -77,6 +84,7 @@ pub fn channel_with_baggage<BL, BC>(
   connector_baggage: BC,
 ) -> EntangledTunnels<BL, BC> {
   fn duplex_for<B>(
+    id: TunnelId,
     up: UnboundedSender<WrappedStream>,
     down: UnboundedReceiver<WrappedStream>,
     side: TunnelSide,
@@ -86,10 +94,12 @@ pub fn channel_with_baggage<BL, BC>(
     let down = UnboundedReceiverStream::new(down);
     let incoming_inner = down.map(TunnelIncomingType::BiStream).map(Ok).boxed();
     let incoming = TunnelIncoming {
+      id,
       inner: incoming_inner,
       side,
     };
     DuplexTunnel {
+      id,
       channel_to_remote: up,
       side,
       incoming: Arc::new(tokio::sync::Mutex::new(incoming)),
@@ -99,8 +109,20 @@ pub fn channel_with_baggage<BL, BC>(
   let (left_up, right_down) = mpsc::unbounded_channel::<WrappedStream>();
   let (right_up, left_down) = mpsc::unbounded_channel::<WrappedStream>();
   let (listener, connector) = (
-    duplex_for(left_up, left_down, TunnelSide::Listen, listener_baggage),
-    duplex_for(right_up, right_down, TunnelSide::Connect, connector_baggage),
+    duplex_for(
+      TunnelId::new(0),
+      left_up,
+      left_down,
+      TunnelSide::Listen,
+      listener_baggage,
+    ),
+    duplex_for(
+      TunnelId::new(1),
+      right_up,
+      right_down,
+      TunnelSide::Connect,
+      connector_baggage,
+    ),
   );
   EntangledTunnels {
     listener,

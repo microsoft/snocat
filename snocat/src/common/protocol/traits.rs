@@ -20,138 +20,9 @@ use super::{
 };
 use crate::common::protocol::tunnel::TunnelError;
 
-pub struct Request {
-  pub address: RouteAddress,
-  pub protocol_client: Box<dyn DynamicResponseClient + Send + Sync + 'static>,
-}
-
-impl Debug for Request {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("Request")
-      .field("address", &self.address)
-      .finish_non_exhaustive()
-  }
-}
-
-pub struct Response {
-  content: Box<dyn Any>,
-}
-
-impl Response {
-  pub fn new(content: Box<dyn Any>) -> Self {
-    Self { content }
-  }
-  pub fn content(&self) -> &Box<dyn Any> {
-    &self.content
-  }
-  pub fn into_inner(self) -> Box<dyn Any> {
-    self.content
-  }
-}
-
-impl Request {
-  pub fn new<TProtocolClient>(address: RouteAddress, protocol_client: TProtocolClient) -> Self
-  where
-    TProtocolClient: Client + Send + Sync + 'static,
-  {
-    Self {
-      address,
-      protocol_client: Box::new(protocol_client),
-    }
-  }
-}
-
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum RoutingError<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> {
-  #[error("Invalid tunnel address format")]
-  InvalidAddress,
-  #[error("No matching tunnel could be found")]
-  NoMatchingTunnel,
-  #[error("The tunnel failed to provide a link")]
-  LinkOpenFailure(TunnelError),
-  #[error("Tunnel registry handling failed")]
-  TunnelRegistryError(TunnelRegistryError),
-}
-
-impl<TunnelRegistryError: std::fmt::Debug + std::fmt::Display> From<TunnelRegistryError>
-  for RoutingError<TunnelRegistryError>
-{
-  fn from(e: TunnelRegistryError) -> Self {
-    Self::TunnelRegistryError(e)
-  }
-}
-
-/// Routers are responsible for taking an address and forwarding it to
-/// the appropriate tunnel. When forwarding, the router can alter the
-/// address to remove any routing-specific information before it is
-/// handed to the Request's protocol::Client.
-pub trait Router<TTunnel, TTunnelRegistry: ?Sized>: Downcast + DowncastSync
-where
-  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync,
-{
-  fn route(
-    &self,
-    //TODO: Consider taking only a [RouteAddress] here, except if other request metadata is desired
-    request: &Request,
-    tunnel_registry: Arc<TTunnelRegistry>,
-  ) -> BoxFuture<
-    Result<
-      (RouteAddress, Box<dyn TunnelStream + Send + Sync + 'static>),
-      RoutingError<TTunnelRegistry::Error>,
-    >,
-  >;
-}
-impl_downcast!(sync Router<TTunnel, TTunnelRegistry> where TTunnel: Tunnel + Send + Sync, TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync);
-
 #[derive(thiserror::Error, Debug)]
-pub enum ClientError {
-  #[error("Invalid address provided to client")]
-  InvalidAddress,
-  #[error("Address refused by client")]
-  Refused,
-  #[error("Unexpected end of stream with remote")]
-  UnexpectedEnd,
-  #[error("Illegal response from remote")]
-  IllegalResponse(Option<Backtrace>),
-}
-
-pub trait Client {
-  type Response: Send + 'static;
-
-  fn handle(
-    self,
-    addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Self::Response, ClientError>>;
-}
-
-pub trait DynamicResponseClient: Send {
-  fn handle_dynamic(
-    self: Box<Self>,
-    addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Response, ClientError>>;
-}
-
-impl<TResponse, TClient> DynamicResponseClient for TClient
-where
-  TClient: Client<Response = TResponse> + Send + 'static,
-  TResponse: Any + Send + 'static,
-  Self: Sized,
-{
-  fn handle_dynamic(
-    self: Box<Self>,
-    addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Response, ClientError>> {
-    Client::handle(*self, addr, tunnel)
-      .map(|result| result.map(|inner| Response::new(Box::new(inner))))
-      .boxed()
-  }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum ServiceError<InternalError: std::fmt::Debug + std::fmt::Display> {
+#[error(bound = std::fmt::Debug)]
+pub enum ServiceError<InternalError> {
   #[error("Address refused by client")]
   Refused,
   #[error("Unexpected end of stream with remote")]
@@ -170,10 +41,9 @@ pub enum ServiceError<InternalError: std::fmt::Debug + std::fmt::Display> {
   InternalFailure(anyhow::Error),
 }
 
-impl<InternalError: std::fmt::Debug + std::fmt::Display> ServiceError<InternalError> {
+impl<InternalError> ServiceError<InternalError> {
   pub fn map_internal<TNewError, F>(self, f: F) -> ServiceError<TNewError>
   where
-    TNewError: std::fmt::Debug + std::fmt::Display,
     F: Fn(InternalError) -> TNewError,
   {
     match self {
@@ -190,7 +60,7 @@ impl<InternalError: std::fmt::Debug + std::fmt::Display> ServiceError<InternalEr
 
   pub fn err_into<TNewError>(self) -> ServiceError<TNewError>
   where
-    TNewError: From<InternalError> + std::fmt::Debug + std::fmt::Display,
+    TNewError: From<InternalError>,
   {
     self.map_internal(From::from)
   }
@@ -205,7 +75,7 @@ impl<InternalError: std::fmt::Debug + std::fmt::Display> From<InternalError>
 }
 
 pub trait Service {
-  type Error: std::fmt::Debug + std::fmt::Display;
+  type Error;
 
   fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool;
   // fn protocol_id() -> String where Self: Sized;

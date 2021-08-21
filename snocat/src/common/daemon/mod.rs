@@ -18,7 +18,6 @@ use crate::{
     },
     protocol::{
       negotiation::{self, NegotiationError, NegotiationService},
-      request_handler::RequestClientHandler,
       tunnel::{
         self,
         id::TunnelIDGenerator,
@@ -28,10 +27,15 @@ use crate::{
         },
         Tunnel, TunnelDownlink, TunnelError, TunnelId, TunnelIncomingType, TunnelName,
       },
-      RouteAddress, Router, ServiceRegistry,
+      RouteAddress, ServiceRegistry,
     },
   },
   util::tunnel_stream::WrappedStream,
+};
+
+use super::protocol::{
+  service::Router,
+  tunnel::{AssignTunnelId, WithTunnelId},
 };
 
 pub struct ModularDaemon<
@@ -44,13 +48,13 @@ pub struct ModularDaemon<
   service_registry: Arc<TServiceRegistry>,
   tunnel_registry: Arc<TTunnelRegistry>,
   router: Arc<TRouter>,
-  request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
+  // request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
   authentication_handler: Arc<TAuthenticationHandler>,
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 
   // event hooks
-  pub tunnel_connected: Broadcaster<(TunnelId, Arc<TTunnel>)>,
-  pub tunnel_authenticated: Broadcaster<(TunnelId, TunnelName, Arc<TTunnel>)>,
+  pub tunnel_connected: Broadcaster<Arc<TTunnel>>,
+  pub tunnel_authenticated: Broadcaster<(Arc<TTunnel>, TunnelName)>,
   pub tunnel_disconnected:
     Broadcaster<(TunnelId, Option<TunnelName> /*, DisconnectReason? */)>,
 }
@@ -63,10 +67,8 @@ impl<
     TAuthenticationHandler: ?Sized,
   > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 {
-  pub fn requests<'a>(
-    &'a self,
-  ) -> &Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>> {
-    &self.request_handler
+  pub fn router<'a>(&'a self) -> &Arc<TRouter> {
+    &self.router
   }
 }
 
@@ -142,7 +144,7 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   pub fn new(
@@ -153,11 +155,6 @@ where
     tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
   ) -> Self {
     Self {
-      request_handler: Arc::new(RequestClientHandler::new(
-        Arc::clone(&tunnel_registry),
-        Arc::clone(&service_registry),
-        Arc::clone(&router),
-      )),
       service_registry,
       tunnel_registry,
       router,
@@ -183,7 +180,7 @@ where
   ) -> tokio::task::JoinHandle<()>
   where
     TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
-    TIntoTunnel: Into<TTunnel> + 'static,
+    TIntoTunnel: AssignTunnelId<TTunnel> + 'static,
     TTunnel: Tunnel + 'static,
   {
     let this = Arc::clone(&self);
@@ -196,10 +193,10 @@ where
         let shutdown_request_listener = shutdown_request_listener.clone();
         async move { shutdown_request_listener.cancelled().await }
       })
-      .map(move |tunnel| {
+      .map(move |pretunnel| {
         let id = this.tunnel_id_generator.next();
-        let tunnel: TTunnel = tunnel.into();
-        (tunnel, id, this.clone(), shutdown_request_listener.clone())
+        let tunnel: TTunnel = pretunnel.assign_tunnel_id(id);
+        (tunnel, this.clone(), shutdown_request_listener.clone())
       });
 
     // Tunnel Lifecycle - Sub-pipeline performed by futures on a per-tunnel basis
@@ -207,10 +204,10 @@ where
     // to understand stream associated types at this level.
     let pipeline = pipeline.for_each_concurrent(
       None,
-      |(tunnel, id, this, shutdown_request_listener)| async move {
+      |(tunnel, this, shutdown_request_listener)| async move {
         let tunnel = Arc::new(tunnel);
         if let Err(e) = this
-          .tunnel_lifecycle(id, tunnel, shutdown_request_listener)
+          .tunnel_lifecycle(tunnel, shutdown_request_listener)
           .await
         {
           tracing::debug!(error=?e, "tunnel lifetime exited with error");
@@ -280,16 +277,16 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   fn tunnel_lifecycle(
     self: Arc<Self>,
-    id: TunnelId,
     tunnel: Arc<TTunnel>,
     shutdown: CancellationToken,
   ) -> impl Future<Output = Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>>>
        + 'static {
+    let tunnel_id = *tunnel.id();
     async move {
       // A registry mutex that prevents us from racing when calling the registry for
       // this particular tunnel entry. This should also be enforced at the registry level.
@@ -298,23 +295,23 @@ where
       // Tunnel registration - The tunnel registry is called to imbue the tunnel with an ID
       {
         let tunnel_registry = serialized_registry.clone();
-        Self::register_tunnel(id, Arc::clone(&tunnel), tunnel_registry)
-          .instrument(tracing::span!(tracing::Level::DEBUG, "registration", ?id))
+        Self::register_tunnel(Arc::clone(&tunnel), tunnel_registry)
+          .instrument(tracing::span!(tracing::Level::DEBUG, "registration", tunnel=?*tunnel.id()))
       }.await?;
 
       // Send tunnel_connected event once the tunnel is successfully registered to its ID
       // Ignore error as it occurs only when no receivers exist to read the event
-      let _ = self.tunnel_connected.send((id, tunnel.clone()));
+      let _ = self.tunnel_connected.send(tunnel.clone());
 
       // From here on, any failure must trigger attempted deregistration of the tunnel,
       // So further phases return their result to check for failures, which then result
       // in a deregistration call.
       // Phases resume in registered_tunnel_lifecycle.
       let tunnel_registry = Arc::clone(&serialized_registry);
-      match self.registered_tunnel_lifecycle(id, tunnel, shutdown, tunnel_registry).await {
+      match self.registered_tunnel_lifecycle(tunnel, shutdown, tunnel_registry).await {
         Ok(lifecycle_result) => Ok(lifecycle_result),
         Err(e) => {
-          let deregistered = serialized_registry.deregister_tunnel(id).await.ok();
+          let deregistered = serialized_registry.deregister_tunnel(tunnel_id).await.ok();
           match &e {
             &TunnelLifecycleError::AuthenticationRefused => tracing::debug!(err=?e, record=?deregistered, "Deregistered due to authentication refusal"),
             e => tracing::info!(err=?e, record=?deregistered, "Deregistered due to lifecycle error")
@@ -322,12 +319,11 @@ where
           Err(e)
         }
       }
-    }.instrument(tracing::span!(tracing::Level::DEBUG, "tunnel", ?id))
+    }.instrument(tracing::span!(tracing::Level::DEBUG, "tunnel", tunnel=?tunnel_id))
   }
 
   async fn registered_tunnel_lifecycle<TTunnelRegistryNaming>(
     self: Arc<Self>,
-    id: TunnelId,
     tunnel: Arc<TTunnel>,
     shutdown: CancellationToken,
     serialized_tunnel_registry: Arc<TTunnelRegistryNaming>,
@@ -338,6 +334,7 @@ where
       + Sync
       + 'static,
   {
+    let id = *tunnel.id();
     // Authenticate connections - Each connection will be piped into the authenticator,
     // which has the option of declining the connection, and may save additional metadata.
     let tunnel_authentication = {
@@ -358,11 +355,13 @@ where
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
     {
       let tunnel_registry = Arc::clone(&serialized_tunnel_registry);
-      Self::name_tunnel(id, tunnel_name.clone(), tunnel_registry).instrument(tracing::span!(
-        tracing::Level::DEBUG,
-        "naming",
-        ?id
-      ))
+      Self::name_tunnel(*tunnel.id(), tunnel_name.clone(), tunnel_registry).instrument(
+        tracing::span!(
+          tracing::Level::DEBUG,
+          "naming",
+          id=?*tunnel.id()
+        ),
+      )
     }
     .await?;
 
@@ -370,7 +369,7 @@ where
     // Ignore error as it occurs only when no receivers exist to read the event
     let _ = self
       .tunnel_authenticated
-      .send((id, tunnel_name.clone(), tunnel.clone()));
+      .send((tunnel.clone(), tunnel_name.clone()));
 
     // Process incoming requests until the incoming channel is closed.
     {
@@ -526,7 +525,6 @@ where
   }
 
   async fn register_tunnel<TTunnelRegistryNaming>(
-    id: TunnelId,
     tunnel: Arc<TTunnel>,
     tunnel_registry: Arc<TTunnelRegistryNaming>,
   ) -> Result<(), TunnelRegistrationError<TTunnelRegistry::Error>>
@@ -538,7 +536,7 @@ where
   {
     let registration = async move {
       tunnel_registry
-        .register_tunnel(id, tunnel)
+        .register_tunnel(*tunnel.id(), tunnel)
         .map_err(|e| match e {
           TunnelRegistrationError::IdOccupied(id) => {
             tracing::error!(?id, "ID occupied; dropping tunnel");

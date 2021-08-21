@@ -12,20 +12,21 @@ use snocat::{
     authentication::SimpleAckAuthenticationHandler,
     daemon::ModularDaemon,
     protocol::{
+      negotiation::NegotiationClient,
+      service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
         id::MonotonicAtomicGenerator,
+        quinn_tunnel::QuinnTunnel,
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
-        QuinnTunnel, Tunnel,
+        Tunnel, TunnelNameOrId,
       },
-      Request, RouteAddress, Router, RoutingError,
     },
     tunnel_source::QuinnListenEndpoint,
   },
   server::PortRangeAllocator,
-  util::tunnel_stream::TunnelStream,
+  util::tunnel_stream::WrappedStream,
 };
 use std::{
-  boxed::Box,
   net::{IpAddr, Ipv4Addr, Ipv6Addr},
   path::PathBuf,
   sync::{Arc, Weak},
@@ -43,47 +44,52 @@ pub struct ServerArgs {
 }
 
 pub struct SnocatServerRouter<TTunnel> {
-  tunnel_phantom: std::marker::PhantomData<TTunnel>,
+  tunnel_registry: Weak<InMemoryTunnelRegistry<TTunnel>>,
 }
 
 impl<TTunnel> SnocatServerRouter<TTunnel> {
-  pub fn new() -> Self {
+  pub fn new<TTunnelRegistry: Into<Weak<InMemoryTunnelRegistry<TTunnel>>>>(
+    tunnel_registry: TTunnelRegistry,
+  ) -> Self {
     Self {
-      tunnel_phantom: std::marker::PhantomData,
+      tunnel_registry: tunnel_registry.into(),
     }
   }
 }
-impl<TTunnel> Router<TTunnel, InMemoryTunnelRegistry<TTunnel>> for SnocatServerRouter<TTunnel>
+
+impl<TTunnel> Router for SnocatServerRouter<TTunnel>
 where
   TTunnel: Tunnel + Send + Sync + 'static,
 {
-  fn route(
+  type Error = <InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error;
+  type Stream = WrappedStream;
+  type LocalAddress = TunnelNameOrId;
+
+  fn route<'client, 'result, TProtocolClient, IntoLocalAddress: Into<Self::LocalAddress>>(
     &self,
-    request: &Request,
-    // We don't need this one because we keep our own reference around for an unboxed variant
-    // this allows us to access methods specific to our tunnel type's implementation
-    tunnel_registry: Arc<InMemoryTunnelRegistry<TTunnel>>,
-  ) -> BoxFuture<
-    '_,
-    Result<
-      (RouteAddress, Box<dyn TunnelStream + Send + Sync>),
-      RoutingError<<InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error>,
-    >,
-  > {
+    request: Request<'client, Self::Stream, TProtocolClient>,
+    local_address: IntoLocalAddress,
+  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
+  where
+    TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
+  {
     let addr = request.address.clone();
+    let local_address = local_address.into();
+    let tunnel_registry = self.tunnel_registry.clone();
+    let err_addr = request.address.clone();
+    let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
     async move {
-      // Select the highest keyed tunnel or bail; the highest tunnel is the newest connection, in our case
-      let highest_keyed_tunnel_id = tunnel_registry
-        .max_key()
-        .await
-        .ok_or(RoutingError::NoMatchingTunnel)?;
-      // Find the tunnel if it's still around when we finish looking it up, or bail
-      let tunnel = tunnel_registry
-        .lookup_by_id(highest_keyed_tunnel_id)
-        .await
-        .map_err(Into::into)
-        .and_then(|t| t.ok_or(RoutingError::NoMatchingTunnel))?;
-      // .ok_or(RoutingError::NoMatchingTunnel)?;
+      // Get the tunnel registry if it's still available
+      let tunnel_registry = tunnel_registry
+        .upgrade()
+        .ok_or_else(err_not_found.clone())?;
+      // Lookup the tunnel or bail if it doesn't exist anymore
+      let tunnel = match local_address {
+        TunnelNameOrId::Id(id) => tunnel_registry.lookup_by_id(id).await,
+        TunnelNameOrId::Name(name) => tunnel_registry.lookup_by_name(name).await,
+      }
+      .map_err(RoutingError::RouterError)
+      .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
       let tunnel_id = tunnel.id;
       let link = tunnel
         .tunnel
@@ -92,13 +98,16 @@ where
             ?tunnel_id,
             "Attempted to route to tunnel not available in the local registry"
           );
-          RoutingError::NoMatchingTunnel
+          err_not_found()
         })?
         .open_link()
         .await
         .map_err(RoutingError::LinkOpenFailure)?;
-      let boxed_link: Box<dyn TunnelStream + Send + Sync + 'static> = Box::new(link);
-      Ok((addr, boxed_link))
+      let negotiator = NegotiationClient::new();
+      let link = negotiator
+        .negotiate::<_, Self::Error>(addr.clone(), link)
+        .await?;
+      Ok(request.protocol_client.handle(addr, link))
     }
     .boxed()
   }
@@ -133,7 +142,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 
   let service_registry = Arc::new(PresetServiceRegistry::<anyhow::Error>::new());
 
-  let router = { Arc::new(SnocatServerRouter::new()) };
+  let router = { Arc::new(SnocatServerRouter::new(Arc::downgrade(&tunnel_registry))) };
 
   let authentication_handler = Arc::new(SimpleAckAuthenticationHandler::new());
 
@@ -157,8 +166,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 
   {
     let demand_proxy_service = Arc::new(DemandProxyService::new(
-      Arc::downgrade(&tunnel_registry) as Weak<_>, // `as` clause triggers CoerceUnsize to make a dynamic Arc
-      Arc::downgrade(modular.requests()),
+      Arc::downgrade(modular.router()),
       PortRangeAllocator::new(config.tcp_bind_port_range),
       vec![
         IpAddr::V6(Ipv6Addr::UNSPECIFIED),

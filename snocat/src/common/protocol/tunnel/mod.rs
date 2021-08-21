@@ -1,29 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::{
-  borrow::{Borrow, BorrowMut},
-  net::SocketAddr,
-  ops::Deref,
-  pin::Pin,
-  sync::Arc,
-};
+
+#![warn(unused_imports, dead_code, unused_variables)]
+
+use std::{borrow::BorrowMut, net::SocketAddr, ops::Deref, sync::Arc};
+
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt, StreamExt};
+use serde::{Deserializer, Serializer};
 
 use crate::util::tunnel_stream::WrappedStream;
-use futures::{
-  future::{BoxFuture, Either},
-  stream::{BoxStream, LocalBoxStream, Stream, StreamFuture, TryStreamExt},
-  Future, FutureExt, StreamExt,
-};
-use quinn::{crypto::Session, generic::RecvStream, ApplicationClose, SendStream};
-use serde::{Deserializer, Serializer};
-use tokio::{
-  io::{AsyncRead, AsyncWrite},
-  sync::{
-    broadcast,
-    mpsc::{self, UnboundedReceiver, UnboundedSender},
-    oneshot, OwnedMutexGuard,
-  },
-};
 
 pub mod duplex;
 pub mod id;
@@ -31,7 +16,6 @@ pub mod quinn_tunnel;
 pub mod registry;
 
 pub use self::id::TunnelId;
-pub use self::quinn_tunnel::{from_quinn_endpoint, QuinnTunnel};
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 
@@ -77,6 +61,54 @@ impl Into<String> for TunnelName {
 impl std::fmt::Debug for TunnelName {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Snocat").field("Id", &self.0).finish()
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
+pub enum TunnelNameOrId {
+  Name(TunnelName),
+  Id(TunnelId),
+}
+
+impl From<&TunnelId> for TunnelNameOrId {
+  fn from(id: &TunnelId) -> Self {
+    TunnelNameOrId::Id(*id)
+  }
+}
+
+impl From<TunnelId> for TunnelNameOrId {
+  fn from(id: TunnelId) -> Self {
+    TunnelNameOrId::Id(id)
+  }
+}
+
+impl From<TunnelName> for TunnelNameOrId {
+  fn from(name: TunnelName) -> Self {
+    TunnelNameOrId::Name(name)
+  }
+}
+
+impl From<&TunnelName> for TunnelNameOrId {
+  fn from(name: &TunnelName) -> Self {
+    TunnelNameOrId::Name(name.clone())
+  }
+}
+
+impl From<TunnelNameOrId> for Option<TunnelId> {
+  fn from(name_or_id: TunnelNameOrId) -> Self {
+    match name_or_id {
+      TunnelNameOrId::Id(id) => Some(id),
+      _ => None,
+    }
+  }
+}
+
+impl From<TunnelNameOrId> for Option<TunnelName> {
+  fn from(name_or_id: TunnelNameOrId) -> Self {
+    match name_or_id {
+      TunnelNameOrId::Name(name) => Some(name),
+      _ => None,
+    }
   }
 }
 
@@ -256,6 +288,19 @@ pub trait Baggage {
   fn bag<'a>(&'a self) -> Self::Bag<'a>;
 }
 
+pub trait WithTunnelId {
+  fn id(&self) -> &TunnelId;
+}
+
+impl<T: std::ops::Deref> WithTunnelId for T
+where
+  T::Target: WithTunnelId,
+{
+  fn id(&self) -> &TunnelId {
+    self.deref().id()
+  }
+}
+
 pub trait Sided {
   fn side(&self) -> TunnelSide;
 }
@@ -269,7 +314,7 @@ where
   }
 }
 
-pub trait TunnelUplink: Sided {
+pub trait TunnelUplink: WithTunnelId + Sided {
   fn addr(&self) -> TunnelAddressInfo {
     TunnelAddressInfo::Unidentified
   }
@@ -287,7 +332,7 @@ where
   }
 }
 
-pub trait TunnelDownlink: Sided {
+pub trait TunnelDownlink: WithTunnelId + Sided {
   fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
 }
 
@@ -300,7 +345,7 @@ where
   }
 }
 
-pub trait Tunnel: TunnelUplink + Send + Sync + Unpin {
+pub trait Tunnel: WithTunnelId + TunnelUplink + Send + Sync + Unpin {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>>;
 }
 
@@ -314,16 +359,61 @@ where
   }
 }
 
+/// Creates a tunnel with the provided ID
+///
+/// Compliant implementations must use the provided ID, and must remain
+/// stable throughout the lifetime of the resulting tunnel instance
+pub trait AssignTunnelId<TTunnel>
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> TTunnel;
+}
+
+impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Box<TTunnel>>
+  for TAssignTunnelId
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Box<TTunnel> {
+    Box::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+  }
+}
+
+impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Arc<TTunnel>>
+  for TAssignTunnelId
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Arc<TTunnel> {
+    Arc::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+  }
+}
+
 pub enum TunnelIncomingType {
   BiStream(WrappedStream),
 }
 
 pub struct TunnelIncoming {
+  id: TunnelId,
   inner: BoxStream<'static, Result<TunnelIncomingType, TunnelError>>,
   side: TunnelSide,
 }
 
+impl std::fmt::Debug for TunnelIncoming {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TunnelIncoming")
+      .field("id", &self.id)
+      .field("side", &self.side)
+      .finish_non_exhaustive()
+  }
+}
+
 impl TunnelIncoming {
+  pub fn id(&self) -> &TunnelId {
+    &self.id
+  }
+
   pub fn side(&self) -> TunnelSide {
     self.side
   }
@@ -334,6 +424,12 @@ impl TunnelIncoming {
 
   pub fn streams_ref<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {
     self.inner.borrow_mut().boxed()
+  }
+}
+
+impl WithTunnelId for TunnelIncoming {
+  fn id(&self) -> &TunnelId {
+    &self.id
   }
 }
 
