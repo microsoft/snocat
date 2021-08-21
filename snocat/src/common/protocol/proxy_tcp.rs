@@ -7,6 +7,7 @@ use futures::{
 use std::{
   convert::{TryFrom, TryInto},
   fmt::Display,
+  marker::PhantomData,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
   str::FromStr,
   sync::Weak,
@@ -19,21 +20,26 @@ use tracing_futures::Instrument;
 
 use super::{
   address::RouteAddressParseError,
+  service::{Client, ClientError, ClientResult, ResultTypeOf},
   tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
-  Client, ClientError, DynamicResponseClient, Request, Response, RouteAddress, Router,
-  RoutingError, Service, ServiceError,
+  RouteAddress, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 
 #[derive(Debug, Clone)]
-pub struct TcpStreamClient<Reader, Writer> {
+pub struct TcpStreamClient<TStream, Reader, Writer> {
   recv: Reader,
   send: Writer,
+  link_stream: PhantomData<TStream>,
 }
 
-impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
+impl<TStream, Reader, Writer> TcpStreamClient<TStream, Reader, Writer> {
   pub fn new(recv: Reader, send: Writer) -> Self {
-    Self { recv, send }
+    Self {
+      recv,
+      send,
+      link_stream: PhantomData,
+    }
   }
 
   pub fn build_addr(target: TcpStreamTarget) -> RouteAddress {
@@ -41,19 +47,29 @@ impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
   }
 }
 
-impl<Reader, Writer> Client for TcpStreamClient<Reader, Writer>
+impl<'stream, TStream, Reader, Writer> Client<'stream> for TcpStreamClient<TStream, Reader, Writer>
 where
-  Reader: AsyncRead + Send + Unpin + 'static,
-  Writer: AsyncWrite + Send + Unpin + 'static,
+  TStream: TunnelStream + 'stream,
+  Reader: AsyncRead + Send + Unpin + 'stream,
+  Writer: AsyncWrite + Send + Unpin + 'stream,
 {
   // TODO: make Response the number of bytes forwarded by the client
   type Response = ();
 
-  fn handle(
-    mut self,
-    _addr: RouteAddress,
-    tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Self::Response, ClientError>> {
+  type Error = ();
+
+  type Stream = TStream;
+
+  type Future = BoxFuture<'stream, ClientResult<'stream, Self>>;
+
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    todo!()
+  }
+
+  fn handle(mut self, _addr: RouteAddress, tunnel: Self::Stream) -> Self::Future {
     let fut = async move {
       // TODO: Read protocol version here, and ServiceError::Refused if unsupported
       // TODO: Send protocol version here, allow other side to refuse if unsupported

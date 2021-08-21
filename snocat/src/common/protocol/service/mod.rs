@@ -77,8 +77,9 @@ pub type BoxAddressBuilderClient<'client, TStream, TParams> = Box<
     + 'client,
 >;
 
-pub type ResultTypeOf<'result, TClient> =
+pub type ClientResult<'result, TClient> =
   Result<<TClient as Client<'result>>::Response, ClientError<<TClient as Client<'result>>::Error>>;
+pub type ResultTypeOf<'result, TClient> = <<TClient as Client<'result>>::Future as Future>::Output;
 
 pub trait Client<'result> {
   type Response: Send + 'result;
@@ -275,6 +276,7 @@ impl<'client, 'result, TClient: Client<'result> + 'client> ClientExt<'client, 'r
 
 // Request
 
+#[derive(Clone)]
 pub struct Request<'a, TClient> {
   pub address: RouteAddress,
   pub protocol_client: TClient,
@@ -308,40 +310,45 @@ impl<'client, TClient> Request<'client, TClient> {
 
 #[derive(thiserror::Error, Debug, Clone)]
 #[error(bound = std::error::Error)]
-pub enum RoutingError<TunnelRegistryError> {
+pub enum RoutingError<'client, TClient, ContextError> {
+  #[error("Route not found for request {0:?}")]
+  RouteNotFound(Request<'client, TClient>),
+  #[error("Route found but unavailable for request {0:?}")]
+  RouteUnavailable(Request<'client, TClient>),
   #[error("Invalid tunnel address format")]
   InvalidAddress,
-  #[error("No matching tunnel could be found")]
-  NoMatchingTunnel,
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(super::tunnel::TunnelError),
-  #[error("Tunnel registry handling failed")]
-  TunnelRegistryError(TunnelRegistryError),
+  #[error("Routing context error: {0:?}")]
+  ContextError(ContextError),
 }
 
-impl<TunnelRegistryError> From<TunnelRegistryError> for RoutingError<TunnelRegistryError> {
+impl<'client, TClient, TunnelRegistryError> From<TunnelRegistryError>
+  for RoutingError<'client, TClient, TunnelRegistryError>
+{
   fn from(e: TunnelRegistryError) -> Self {
-    Self::TunnelRegistryError(e)
+    Self::ContextError(e)
   }
 }
 
+pub type RouterResult<'client, 'result, TRouter, TProtocolClient, TContext> = Result<
+  <TProtocolClient as Client<'result>>::Future,
+  RoutingError<'client, TProtocolClient, <TRouter as Router<TContext>>::ContextError>,
+>;
 /// Routers are responsible for taking an address and forwarding it to
 /// the appropriate tunnel. When forwarding, the router can alter the
 /// address to remove any routing-specific information before it is
 /// handed to the Request's protocol::Client.
-pub trait Router<Context> {
+pub trait Router<Context: ?Sized> {
   type ContextError;
 
-  fn route<'a, TProtocolClient>(
+  fn route<'client, 'result, TProtocolClient>(
     self,
-    request: Request<'a, TProtocolClient>,
+    request: Request<'client, TProtocolClient>,
     context: &Context,
-  ) -> BoxFuture<
-    'a,
-    Result<<TProtocolClient as Client<'a>>::Future, RoutingError<Self::ContextError>>,
-  >
+  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient, Context>>
   where
-    TProtocolClient: Client<'a> + Send + 'a;
+    TProtocolClient: Client<'result> + Send + 'client;
 }
 
 #[cfg(test)]

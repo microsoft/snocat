@@ -22,15 +22,11 @@
 // Note that authentication doesn't occur on this level- this is *after* tunnel establishment
 
 pub mod traits;
-pub use traits::{
-  Client, ClientError, DynamicResponseClient, MappedService, Request, Response, Router,
-  RoutingError, Service, ServiceError, ServiceRegistry,
-};
+pub use traits::{MappedService, Service, ServiceError, ServiceRegistry};
 
 pub mod address;
 pub mod negotiation;
 pub mod proxy_tcp;
-pub mod request_handler;
 pub mod service;
 pub mod tunnel;
 

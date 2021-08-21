@@ -18,7 +18,6 @@ use crate::{
     },
     protocol::{
       negotiation::{self, NegotiationError, NegotiationService},
-      request_handler::RequestClientHandler,
       tunnel::{
         self,
         id::TunnelIDGenerator,
@@ -28,11 +27,13 @@ use crate::{
         },
         Tunnel, TunnelDownlink, TunnelError, TunnelId, TunnelIncomingType, TunnelName,
       },
-      RouteAddress, Router, ServiceRegistry,
+      RouteAddress, ServiceRegistry,
     },
   },
   util::tunnel_stream::WrappedStream,
 };
+
+use super::protocol::service::Router;
 
 pub struct ModularDaemon<
   TTunnel,
@@ -44,7 +45,7 @@ pub struct ModularDaemon<
   service_registry: Arc<TServiceRegistry>,
   tunnel_registry: Arc<TTunnelRegistry>,
   router: Arc<TRouter>,
-  request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
+  // request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
   authentication_handler: Arc<TAuthenticationHandler>,
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 
@@ -63,10 +64,8 @@ impl<
     TAuthenticationHandler: ?Sized,
   > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 {
-  pub fn requests<'a>(
-    &'a self,
-  ) -> &Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>> {
-    &self.request_handler
+  pub fn router<'a>(&'a self) -> &Arc<TRouter> {
+    &self.router
   }
 }
 
@@ -142,7 +141,7 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router<TTunnelRegistry> + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   pub fn new(
@@ -153,11 +152,6 @@ where
     tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
   ) -> Self {
     Self {
-      request_handler: Arc::new(RequestClientHandler::new(
-        Arc::clone(&tunnel_registry),
-        Arc::clone(&service_registry),
-        Arc::clone(&router),
-      )),
       service_registry,
       tunnel_registry,
       router,
@@ -280,7 +274,7 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router<TTunnelRegistry> + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   fn tunnel_lifecycle(

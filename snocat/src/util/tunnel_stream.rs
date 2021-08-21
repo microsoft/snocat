@@ -7,19 +7,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream
 
 /// A duplex stream abstracting over a connection, allowing use of memory streams and Quinn connections
 pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {
-  fn as_boxed_ref<'a>(self: &'a mut Self) -> Box<&'a mut dyn TunnelStream>
+  fn as_dyn_mut<'a>(self: &'a mut Self) -> &'a mut dyn TunnelStream
   where
     Self: Sized,
   {
-    Box::new(self)
+    self
   }
 }
 
-impl<
-    T: std::ops::Deref<Target = dyn TunnelStream + Send> + AsyncWrite + AsyncRead + Send + Unpin,
-  > TunnelStream for T
-{
-}
+impl<'stream, TInner: TunnelStream + 'stream> TunnelStream for &mut TInner {}
+impl<'stream, TInner: TunnelStream + 'stream> TunnelStream for Box<TInner> {}
 
 pub struct QuinnTunnelRefStream<'a, TSession: quinn::crypto::Session>(
   &'a mut quinn::generic::SendStream<TSession>,
