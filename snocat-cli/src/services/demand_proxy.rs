@@ -10,7 +10,7 @@ use snocat::{
       RoutingError,
     },
     tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
-    RouteAddress, Service, ServiceError, ServiceRegistry,
+    RouteAddress, Service, ServiceError,
   },
   server::PortRangeAllocator,
 };
@@ -33,21 +33,23 @@ use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 type PortGrantedNotificationType = Option<Vec<SocketAddr>>;
 
 #[derive(Debug, Clone)]
-pub struct DemandProxyClient<TStream> {
+pub struct DemandProxyClient<'stream, TStream> {
   pub proxied_subject: String,
   stream: PhantomData<TStream>,
+  stream_life: PhantomData<&'stream ()>,
 }
 
-impl<TStream> DemandProxyClient<TStream> {
+impl<'stream, TStream> DemandProxyClient<'stream, TStream> {
   pub fn new(proxied_subject: String) -> Self {
     Self {
       proxied_subject,
       stream: PhantomData,
+      stream_life: PhantomData,
     }
   }
 }
 
-impl<TStream> ProtocolInfo for DemandProxyClient<TStream> {
+impl<'stream, TStream> ProtocolInfo for DemandProxyClient<'stream, TStream> {
   fn protocol_name() -> &'static str
   where
     Self: Sized,
@@ -64,7 +66,7 @@ pub enum DemandProxyAddressError {
   UnparseableOutput(#[from] RouteAddressParseError),
 }
 
-impl<TStream> RouteAddressBuilder for DemandProxyClient<TStream> {
+impl<'stream, TStream> RouteAddressBuilder for DemandProxyClient<'stream, TStream> {
   type Params = TcpStreamTarget;
   type BuildError = DemandProxyAddressError;
 
@@ -85,18 +87,18 @@ impl<TStream> RouteAddressBuilder for DemandProxyClient<TStream> {
   }
 }
 
-impl<'stream, TStream> Client<'static, TStream> for DemandProxyClient<TStream>
+impl<'stream, TStream> Client<'stream, TStream> for DemandProxyClient<'stream, TStream>
 where
   TStream: TunnelStream + 'stream,
 {
   type Response = (
     Vec<SocketAddr>,
-    BoxFuture<'static, Result<(), ClientError<Self::Error>>>,
+    BoxFuture<'stream, Result<(), ClientError<Self::Error>>>,
   );
 
   type Error = Option<Backtrace>;
 
-  type Future = BoxFuture<'static, ClientResult<'static, Self, TStream>>;
+  type Future = BoxFuture<'stream, ClientResult<'stream, Self, TStream>>;
 
   fn handle(self, addr: RouteAddress, mut tunnel: TStream) -> Self::Future {
     let span = tracing::span!(tracing::Level::DEBUG, "demand_proxy_client", target=?addr);
@@ -161,6 +163,8 @@ where
   TTunnel: Tunnel + Send + Sync + 'static,
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
+  TRouter::Stream: TunnelStream + Send,
+  TRouter::Error: Send,
 {
   pub fn new(
     tunnel_registry: Weak<TTunnelRegistry>,
@@ -194,17 +198,14 @@ where
         Box::new(stop_accepting).cancelled()
         // async move { stop_accepting.cancelled().await }
       })
-      .map_ok(|stream| {
-        (
-          stream,
-          target_addr.clone(),
-          weak_tunnel.clone(),
-          router.clone(),
-        )
-      })
-      .try_for_each_concurrent(
-        None,
-        |(tcp_stream, target_addr, weak_tunnel, request_client_handler)| async move {
+      .try_for_each_concurrent(None, move |tcp_stream| {
+        let target_addr = target_addr.clone();
+        let weak_tunnel = weak_tunnel.clone();
+        let router = router.clone();
+        async move {
+          // TODO: Link is unused; probably an artifact of direct routing leftovers- see what's needed
+          // Probably need to come up with a way to specify a tunnel for outgoing requests
+          // when `route`'d, now that I think of it
           let link = {
             let tunnel = weak_tunnel
               .upgrade()
@@ -214,7 +215,7 @@ where
               .await
               .or(Err(ServiceError::UnexpectedEnd))?
           };
-          use snocat::common::protocol::proxy_tcp::{DnsTarget, TcpStreamClient, TcpStreamTarget};
+          use snocat::common::protocol::proxy_tcp::{DnsTarget, TcpStreamClient};
           let (tcp_recv, tcp_send) = tokio::io::split(tcp_stream);
           let client = TcpStreamClient::new(tcp_recv, tcp_send);
           let target: TcpStreamTarget = DnsTarget::PreferHigher {
@@ -227,8 +228,8 @@ where
             port: target_addr.1,
           }
           .into();
-          let req = Request::new(client, target)?;
-          let () = router
+          let req = Request::new(client, target).map_err(|_e| ServiceError::AddressError)?;
+          router
             .upgrade()
             .ok_or(ServiceError::DependencyFailure)?
             .route(req)
@@ -241,11 +242,18 @@ where
               RoutingError::RouterError(_) => ServiceError::DependencyFailure,
               RoutingError::LinkOpenFailure(_) => ServiceError::DependencyFailure,
               RoutingError::InvalidAddress => ServiceError::AddressError,
+            })?
+            .await
+            .map_err(|res| match res {
+              ClientError::InvalidAddress => ServiceError::AddressError,
+              ClientError::Refused => ServiceError::Refused,
+              ClientError::UnexpectedEnd => ServiceError::UnexpectedEnd,
+              ClientError::IllegalResponse(_) => ServiceError::IllegalResponse,
             })?;
 
           Ok(())
-        },
-      )
+        }
+      })
       .await?;
     Ok(())
   }
@@ -257,7 +265,7 @@ where
     weak_tunnel: Weak<TTunnel>,
     router: Weak<TRouter>,
     no_new_requests_listener: CancellationToken,
-  ) -> Result<(), ServiceError<Self::Error>> {
+  ) -> Result<(), ServiceError<TRouter::Error>> {
     let span =
       tracing::span!(tracing::Level::DEBUG, "demand_proxy_forwarding", target = ?target_addr);
     use futures::stream::TryStreamExt;
@@ -352,6 +360,8 @@ where
   TTunnel: Tunnel + Send + Sync + 'static,
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
+  TRouter::Stream: TunnelStream + Send,
+  TRouter::Error: Send,
 {
   type Error = TRouter::Error;
 
@@ -487,7 +497,7 @@ where
         bindings,
         parsed_addr,
         weak_tunnel,
-        self.request_client_handler.clone(),
+        self.router.clone(),
         no_new_requests,
       );
 

@@ -18,15 +18,13 @@ use snocat::{
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
         QuinnTunnel, Tunnel,
       },
-      RouteAddress,
     },
     tunnel_source::QuinnListenEndpoint,
   },
   server::PortRangeAllocator,
-  util::tunnel_stream::{TunnelStream, WrappedStream},
+  util::tunnel_stream::WrappedStream,
 };
 use std::{
-  boxed::Box,
   net::{IpAddr, Ipv4Addr, Ipv6Addr},
   path::PathBuf,
   sync::{Arc, Weak},
@@ -72,20 +70,25 @@ where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
   {
     let addr = request.address.clone();
+    let tunnel_registry = self.tunnel_registry.clone();
+    let err_addr = request.address.clone();
+    let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
     async move {
+      // Get the tunnel registry if it's still available
+      let tunnel_registry = tunnel_registry
+        .upgrade()
+        .ok_or_else(err_not_found.clone())?;
       // Select the highest keyed tunnel or bail; the highest tunnel is the newest connection, in our case
-      let highest_keyed_tunnel_id = self
-        .tunnel_registry
+      let highest_keyed_tunnel_id = tunnel_registry
         .max_key()
         .await
-        .ok_or(RoutingError::NoMatchingTunnel)?;
+        .ok_or_else(err_not_found.clone())?;
       // Find the tunnel if it's still around when we finish looking it up, or bail
-      let tunnel = self
-        .tunnel_registry
+      let tunnel = tunnel_registry
         .lookup_by_id(highest_keyed_tunnel_id)
         .await
         .map_err(Into::into)
-        .and_then(|t| t.ok_or(RoutingError::NoMatchingTunnel))?;
+        .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
       // .ok_or(RoutingError::NoMatchingTunnel)?;
       let tunnel_id = tunnel.id;
       let link = tunnel
@@ -95,13 +98,12 @@ where
             ?tunnel_id,
             "Attempted to route to tunnel not available in the local registry"
           );
-          RoutingError::NoMatchingTunnel
+          err_not_found()
         })?
         .open_link()
         .await
         .map_err(RoutingError::LinkOpenFailure)?;
-      let boxed_link: Box<dyn TunnelStream + Send + Sync + 'static> = Box::new(link);
-      Ok((addr, boxed_link))
+      Ok(request.protocol_client.handle(addr, link))
     }
     .boxed()
   }
@@ -161,7 +163,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   {
     let demand_proxy_service = Arc::new(DemandProxyService::new(
       Arc::downgrade(&tunnel_registry) as Weak<_>, // `as` clause triggers CoerceUnsize to make a dynamic Arc
-      Arc::downgrade(modular.requests()),
+      Arc::downgrade(modular.router()),
       PortRangeAllocator::new(config.tcp_bind_port_range),
       vec![
         IpAddr::V6(Ipv6Addr::UNSPECIFIED),

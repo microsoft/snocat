@@ -396,12 +396,12 @@ impl<'client, TStream, TClient> Request<'client, TStream, TClient> {
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-#[error(bound = std::error::Error)]
-pub enum RoutingError<'client, TStream, TClient, RouterError> {
-  #[error("Route not found for request {0:?}")]
-  RouteNotFound(Request<'client, TClient, TStream>),
-  #[error("Route found but unavailable for request {0:?}")]
-  RouteUnavailable(Request<'client, TClient, TStream>),
+#[error(bound = std::fmt::Debug)]
+pub enum RoutingError<RouterError> {
+  #[error("Route not found for request")]
+  RouteNotFound(RouteAddress),
+  #[error("Route found but unavailable for request")]
+  RouteUnavailable(RouteAddress),
   #[error("Invalid tunnel address format")]
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
@@ -410,17 +410,15 @@ pub enum RoutingError<'client, TStream, TClient, RouterError> {
   RouterError(RouterError),
 }
 
-impl<'client, TStream, TClient, TunnelRegistryError> From<TunnelRegistryError>
-  for RoutingError<'client, TStream, TClient, TunnelRegistryError>
-{
-  fn from(e: TunnelRegistryError) -> Self {
+impl<TRouterError> From<TRouterError> for RoutingError<TRouterError> {
+  fn from(e: TRouterError) -> Self {
     Self::RouterError(e)
   }
 }
 
 pub type RouterResult<'client, 'result, TRouter, TProtocolClient> = Result<
   <TProtocolClient as Client<'result, <TRouter as Router>::Stream>>::Future,
-  RoutingError<'client, <TRouter as Router>::Stream, TProtocolClient, <TRouter as Router>::Error>,
+  RoutingError<<TRouter as Router>::Error>,
 >;
 /// Routers are responsible for taking an address and forwarding it to
 /// the appropriate tunnel. When forwarding, the router can alter the
@@ -433,7 +431,7 @@ pub trait Router {
   fn route<'client, 'result, TProtocolClient>(
     &self,
     request: Request<'client, Self::Stream, TProtocolClient>,
-  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
+  ) -> BoxFuture<'client, Result<TProtocolClient::Future, RoutingError<Self::Error>>>
   where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client;
 }
@@ -444,7 +442,7 @@ mod tests {
 
   /// This is a static test- it does not need run to test its behaviour, just compiled
   fn static_test_boxed_client_is_object_safe<'a, 'result, Stream, C>(
-    unboxed: C,
+    _unboxed: C,
   ) -> Option<
     Box<
       dyn super::BoxedClient<

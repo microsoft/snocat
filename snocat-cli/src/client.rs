@@ -17,14 +17,10 @@ use snocat::{
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
         QuinnTunnel, Tunnel, TunnelSide, TunnelUplink,
       },
-      RouteAddress,
     },
     tunnel_source::DynamicConnectionSet,
   },
-  util::{
-    self,
-    tunnel_stream::{TunnelStream, WrappedStream},
-  },
+  util::{self, tunnel_stream::WrappedStream},
 };
 use std::{
   path::PathBuf,
@@ -69,22 +65,25 @@ where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
   {
     let addr = request.address.clone();
+    let err_addr = request.address.clone();
+    let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
     let tunnel_registry = self.tunnel_registry.clone();
     async move {
+      // Get the tunnel registry if it's still available
       let tunnel_registry = tunnel_registry
         .upgrade()
-        .ok_or_else(|| RoutingError::RouteNotFound(request))?;
+        .ok_or_else(err_not_found.clone())?;
       // Select the highest keyed tunnel or bail; the highest tunnel is the newest connection, in our case
       let highest_keyed_tunnel_id = tunnel_registry
         .max_key()
         .await
-        .ok_or_else(|| RoutingError::RouteNotFound(request))?;
+        .ok_or_else(err_not_found.clone())?;
       // Find the tunnel if it's still around when we finish looking it up, or bail
       let tunnel = tunnel_registry
         .lookup_by_id(highest_keyed_tunnel_id)
         .await
         .map_err(Into::into)
-        .and_then(|t| t.ok_or_else(|| RoutingError::RouteNotFound(request)))?;
+        .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
       let tunnel_id = tunnel.id;
       let link = tunnel
         .tunnel
@@ -93,7 +92,7 @@ where
             ?tunnel_id,
             "Attempted to route to tunnel not available in the local registry"
           );
-          RoutingError::RouteNotFound(request)
+          err_not_found()
         })?
         .open_link()
         .await
@@ -232,7 +231,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
         }
         .into(),
       )?;
-      let (_remote_addr, wait_close) = request_handler.route(req).await?;
+      let (_remote_addrs, wait_close) = request_handler.route(req).await?.await?;
       let res = futures::future::select(wait_close, Box::pin(shutdown.cancelled())).await;
       match res {
         Either::Left((Err(res), _listener)) => Err(res)?,
