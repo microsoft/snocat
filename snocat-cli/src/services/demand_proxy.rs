@@ -3,14 +3,20 @@
 
 use snocat::{
   common::protocol::{
-    request_handler::RequestClientHandler,
+    address::RouteAddressParseError,
+    proxy_tcp::TcpStreamTarget,
+    service::{
+      Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
+      RoutingError,
+    },
     tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
-    Client, ClientError, RouteAddress, Router, Service, ServiceError, ServiceRegistry,
+    RouteAddress, Service, ServiceError, ServiceRegistry,
   },
   server::PortRangeAllocator,
 };
 use std::{
   backtrace::Backtrace,
+  marker::PhantomData,
   net::IpAddr,
   sync::{Arc, Weak},
 };
@@ -27,18 +33,72 @@ use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 type PortGrantedNotificationType = Option<Vec<SocketAddr>>;
 
 #[derive(Debug, Clone)]
-pub struct DemandProxyClient {
+pub struct DemandProxyClient<TStream> {
   pub proxied_subject: String,
+  stream: PhantomData<TStream>,
 }
 
-impl Client for DemandProxyClient {
-  type Response = (Vec<SocketAddr>, BoxFuture<'static, Result<(), ClientError>>);
+impl<TStream> DemandProxyClient<TStream> {
+  pub fn new(proxied_subject: String) -> Self {
+    Self {
+      proxied_subject,
+      stream: PhantomData,
+    }
+  }
+}
 
-  fn handle(
-    self,
-    addr: RouteAddress,
-    mut tunnel: Box<dyn TunnelStream + Send + 'static>,
-  ) -> BoxFuture<Result<Self::Response, ClientError>> {
+impl<TStream> ProtocolInfo for DemandProxyClient<TStream> {
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    DEMAND_PROXY_PROTOCOL_NAME
+  }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum DemandProxyAddressError {
+  #[error("RFC6763 DNS-Based Service Discovery is not supported by DemandProxyClient")]
+  RFC6763NotSupported,
+  #[error(transparent)]
+  UnparseableOutput(#[from] RouteAddressParseError),
+}
+
+impl<TStream> RouteAddressBuilder for DemandProxyClient<TStream> {
+  type Params = TcpStreamTarget;
+  type BuildError = DemandProxyAddressError;
+
+  fn build_addr(args: Self::Params) -> Result<RouteAddress, Self::BuildError>
+  where
+    Self: Sized,
+  {
+    let (host, port) = <(String, Option<u16>)>::from(args);
+    Ok(
+      format!(
+        "/{}/0.0.1/{}/{}",
+        Self::protocol_name(),
+        host,
+        port.ok_or(DemandProxyAddressError::RFC6763NotSupported)?
+      )
+      .parse()?,
+    )
+  }
+}
+
+impl<'stream, TStream> Client<'static, TStream> for DemandProxyClient<TStream>
+where
+  TStream: TunnelStream + 'stream,
+{
+  type Response = (
+    Vec<SocketAddr>,
+    BoxFuture<'static, Result<(), ClientError<Self::Error>>>,
+  );
+
+  type Error = Option<Backtrace>;
+
+  type Future = BoxFuture<'static, ClientResult<'static, Self, TStream>>;
+
+  fn handle(self, addr: RouteAddress, mut tunnel: TStream) -> Self::Future {
     let span = tracing::span!(tracing::Level::DEBUG, "demand_proxy_client", target=?addr);
     let fut = async move {
       tracing::info!("Sending subject to service");
@@ -77,17 +137,16 @@ impl Client for DemandProxyClient {
 }
 
 // TODO: This service is obsolete- listen on the server side for connection events instead
-pub struct DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> {
+pub struct DemandProxyService<TTunnel, TTunnelRegistry, TRouter> {
   tunnel_registry: Weak<TTunnelRegistry>,
-  request_client_handler:
-    Weak<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
+  router: Weak<TRouter>,
   port_range_allocator: PortRangeAllocator,
   bind_addrs: Arc<Vec<IpAddr>>,
   tunnel_phantom: std::marker::PhantomData<TTunnel>,
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> std::fmt::Debug
-  for DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+impl<TTunnel, TTunnelRegistry, TRouter> std::fmt::Debug
+  for DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("DemandProxy server").finish_non_exhaustive()
@@ -97,27 +156,22 @@ impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> std::fmt::Debug
 const DEMAND_PROXY_PROTOCOL_NAME: &'static str = "proxyme";
 const DEMAND_PROXY_VERSION: &'static str = "0.0.1";
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
-  DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+impl<TTunnel, TTunnelRegistry, TRouter> DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
 where
   TTunnel: Tunnel + Send + Sync + 'static,
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
-  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TServiceRegistry::Error: Send + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
 {
   pub fn new(
     tunnel_registry: Weak<TTunnelRegistry>,
-    request_client_handler: Weak<
-      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
-    >,
+    router: Weak<TRouter>,
     port_range_allocator: PortRangeAllocator,
     mut bind_addrs: Vec<IpAddr>,
   ) -> Self {
     Self::handle_dual_stack_addrs(&mut bind_addrs);
     Self {
       tunnel_registry,
-      request_client_handler,
+      router,
       port_range_allocator,
       bind_addrs: Arc::new(bind_addrs),
       tunnel_phantom: std::marker::PhantomData,
@@ -128,11 +182,9 @@ where
     target_addr: Arc<(Option<String>, u16)>,
     tcp_listener: TcpListener,
     weak_tunnel: Weak<TTunnel>,
-    request_client_handler: Weak<
-      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
-    >,
+    router: Weak<TRouter>,
     stop_accepting: CancellationToken,
-  ) -> Result<(), ServiceError<TServiceRegistry::Error>> {
+  ) -> Result<(), ServiceError<TRouter::Error>> {
     use futures::stream::{StreamExt, TryStreamExt};
     let tcp_listener = tokio_stream::wrappers::TcpListenerStream::new(tcp_listener);
     tcp_listener
@@ -147,7 +199,7 @@ where
           stream,
           target_addr.clone(),
           weak_tunnel.clone(),
-          request_client_handler.clone(),
+          router.clone(),
         )
       })
       .try_for_each_concurrent(
@@ -162,10 +214,7 @@ where
               .await
               .or(Err(ServiceError::UnexpectedEnd))?
           };
-          use snocat::common::protocol::{
-            proxy_tcp::{DnsTarget, TcpStreamClient, TcpStreamTarget},
-            request_handler::RequestHandlingError,
-          };
+          use snocat::common::protocol::proxy_tcp::{DnsTarget, TcpStreamClient, TcpStreamTarget};
           let (tcp_recv, tcp_send) = tokio::io::split(tcp_stream);
           let client = TcpStreamClient::new(tcp_recv, tcp_send);
           let target: TcpStreamTarget = DnsTarget::PreferHigher {
@@ -178,19 +227,20 @@ where
             port: target_addr.1,
           }
           .into();
-          let addr: RouteAddress = TcpStreamClient::<(), ()>::build_addr(target);
-          let () = request_client_handler
+          let req = Request::new(client, target)?;
+          let () = router
             .upgrade()
             .ok_or(ServiceError::DependencyFailure)?
-            .handle_direct(addr, client, Box::new(link))
+            .route(req)
             .await
             .map_err(|res| match res {
-              RequestHandlingError::RouteNotFound(_) => {
+              RoutingError::RouteNotFound(_) => {
                 unreachable!("Direct requests cannot fail to find a route")
               }
-              RequestHandlingError::RouteUnavailable(_) => ServiceError::DependencyFailure,
-              RequestHandlingError::ProtocolClientError(_) => ServiceError::DependencyFailure,
-              RequestHandlingError::NegotiationError(_, _) => ServiceError::Refused,
+              RoutingError::RouteUnavailable(_) => ServiceError::DependencyFailure,
+              RoutingError::RouterError(_) => ServiceError::DependencyFailure,
+              RoutingError::LinkOpenFailure(_) => ServiceError::DependencyFailure,
+              RoutingError::InvalidAddress => ServiceError::AddressError,
             })?;
 
           Ok(())
@@ -205,11 +255,9 @@ where
     bindings: Vec<TcpListener>,
     target_addr: (Option<String>, u16),
     weak_tunnel: Weak<TTunnel>,
-    request_client_handler: Weak<
-      RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>,
-    >,
+    router: Weak<TRouter>,
     no_new_requests_listener: CancellationToken,
-  ) -> Result<(), ServiceError<TServiceRegistry::Error>> {
+  ) -> Result<(), ServiceError<Self::Error>> {
     let span =
       tracing::span!(tracing::Level::DEBUG, "demand_proxy_forwarding", target = ?target_addr);
     use futures::stream::TryStreamExt;
@@ -221,7 +269,7 @@ where
           (
             listener,
             weak_tunnel.clone(),
-            request_client_handler.clone(),
+            router.clone(),
             no_new_requests_listener.clone(),
             Arc::clone(&parsed_addr),
           )
@@ -252,9 +300,7 @@ where
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
-  DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
-{
+impl<TTunnel, TTunnelRegistry, TRouter> DemandProxyService<TTunnel, TTunnelRegistry, TRouter> {
   /// Removes incidents where one "unspecified" / dual-stack-mode IP will steal from others on the host
   fn handle_dual_stack_addrs(bind_addrs: &mut Vec<IpAddr>) {
     match bind_addrs.iter().find(|addr| addr.is_unspecified()) {
@@ -300,16 +346,14 @@ impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter> Service
-  for DemandProxyService<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>
+impl<TTunnel, TTunnelRegistry, TRouter> Service
+  for DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
 where
   TTunnel: Tunnel + Send + Sync + 'static,
   TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
-  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TServiceRegistry::Error: Send + 'static,
-  TRouter: Router<TTunnel, TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
 {
-  type Error = TServiceRegistry::Error;
+  type Error = TRouter::Error;
 
   fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
     Self::parse_address(addr).is_ok()
@@ -320,7 +364,7 @@ where
     addr: RouteAddress,
     mut stream: Box<dyn TunnelStream + Send + 'static>,
     tunnel_id: TunnelId,
-  ) -> BoxFuture<'_, Result<(), ServiceError<TServiceRegistry::Error>>> {
+  ) -> BoxFuture<'_, Result<(), ServiceError<Self::Error>>> {
     tracing::debug!(
       "Demand proxy proxy connection request received with addr {}; building span...",
       addr

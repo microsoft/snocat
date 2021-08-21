@@ -8,6 +8,8 @@ use futures::{
 };
 use std::{any::Any, fmt::Debug, marker::PhantomData, process::Output};
 
+use crate::util::tunnel_stream::TunnelStream;
+
 use super::RouteAddress;
 
 // Client
@@ -39,25 +41,57 @@ impl<ApplicationError> ClientError<ApplicationError> {
   }
 }
 
-pub trait RouteAddressBuilder {
-  type Params: Send;
-
-  fn build_addr(args: Self::Params) -> RouteAddress
+pub trait ProtocolInfo {
+  fn protocol_name() -> &'static str
   where
     Self: Sized;
 }
 
-pub trait AddressBuilderClient<'a>: Client<'a> + RouteAddressBuilder {}
+pub trait RouteAddressBuilder: ProtocolInfo {
+  type Params: Send;
+  type BuildError: Send;
+
+  fn build_addr(args: Self::Params) -> Result<RouteAddress, Self::BuildError>
+  where
+    Self: Sized;
+}
+
+pub type ClientResult<'result, TClient, TStream> = Result<
+  <TClient as Client<'result, TStream>>::Response,
+  ClientError<<TClient as Client<'result, TStream>>::Error>,
+>;
+pub type ResultTypeOf<'result, TClient, TStream> =
+  <<TClient as Client<'result, TStream>>::Future as Future>::Output;
+
+pub trait Client<'result, TStream>: ProtocolInfo {
+  type Response: Send + 'result;
+  type Error: Send + 'result;
+  type Future: Future<Output = Result<Self::Response, ClientError<Self::Error>>>;
+
+  fn handle(self, addr: RouteAddress, stream: TStream) -> Self::Future;
+}
+
+pub trait BoxedClient<'client, 'result>:
+  Client<'result, Box<dyn TunnelStream + Send + 'client>>
+{
+  fn handle(
+    self,
+    addr: RouteAddress,
+    stream: Box<dyn TunnelStream + Send + 'result>,
+  ) -> Self::Future;
+}
+
+pub trait AddressBuilderClient<'a, TStream>: Client<'a, TStream> + RouteAddressBuilder {}
 
 // std::any::Any requires a 'static lifetime, so that is implied here
 pub type BoxClientResponse = Box<dyn Any + Send + 'static>;
 pub type BoxClientError = Box<dyn Any + Send + 'static>;
 pub type BoxClientFuture<'client> =
   BoxFuture<'client, Result<BoxClientResponse, ClientError<BoxClientError>>>;
-pub type BoxClient<'client, TStream> = Box<
-  dyn Client<
+pub type BoxClient<'client> = Box<
+  dyn BoxedClient<
+      'client,
       'static,
-      Stream = TStream,
       Response = BoxClientResponse,
       Error = BoxClientError,
       Future = BoxClientFuture<'client>,
@@ -65,52 +99,38 @@ pub type BoxClient<'client, TStream> = Box<
     + 'client,
 >;
 
-pub type BoxAddressBuilderClient<'client, TStream, TParams> = Box<
-  dyn AddressBuilderClient<
-      'static,
-      Stream = TStream,
-      Response = BoxClientResponse,
-      Error = BoxClientError,
-      Future = BoxClientFuture<'client>,
-      Params = TParams,
-    > + Send
-    + 'client,
->;
-
-pub type ClientResult<'result, TClient> =
-  Result<<TClient as Client<'result>>::Response, ClientError<<TClient as Client<'result>>::Error>>;
-pub type ResultTypeOf<'result, TClient> = <<TClient as Client<'result>>::Future as Future>::Output;
-
-pub trait Client<'result> {
-  type Response: Send + 'result;
-  type Error: Send + 'result;
-  type Stream: Send;
-  type Future: Future<Output = Result<Self::Response, ClientError<Self::Error>>>;
-
-  fn protocol_name() -> &'static str
-  where
-    Self: Sized;
-
-  fn handle(self, addr: RouteAddress, stream: Self::Stream) -> Self::Future;
-}
-
-pub struct BoxDispatchClient<'c, TInnerClient> {
+pub struct BoxDispatchClient<'c, TStream, TInnerClient> {
   client: TInnerClient,
   client_lifetime: PhantomData<&'c ()>,
+  stream: PhantomData<TStream>,
 }
 
-impl<'c, TInnerClient> BoxDispatchClient<'c, TInnerClient> {
+impl<'c, TStream, TInnerClient> BoxDispatchClient<'c, TStream, TInnerClient> {
   pub fn new(client: TInnerClient) -> Self {
     Self {
       client,
       client_lifetime: PhantomData,
+      stream: PhantomData,
     }
   }
 }
 
-impl<'c, TInnerClient: 'c> Client<'static> for BoxDispatchClient<'c, TInnerClient>
+impl<'c, TStream, TInnerClient: 'c> ProtocolInfo for BoxDispatchClient<'c, TStream, TInnerClient>
 where
-  TInnerClient: Client<'static> + Send + 'c,
+  TInnerClient: ProtocolInfo,
+{
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    TInnerClient::protocol_name()
+  }
+}
+
+impl<'c, TStream, TInnerClient: 'c> Client<'static, TStream>
+  for BoxDispatchClient<'c, TStream, TInnerClient>
+where
+  TInnerClient: Client<'static, TStream> + Send + 'c,
   TInnerClient::Error: Any + Send + 'static,
   TInnerClient::Response: Any + Send + 'static,
   TInnerClient::Future: Send + 'c,
@@ -119,19 +139,89 @@ where
 
   type Error = BoxClientError;
 
-  type Stream = TInnerClient::Stream;
-
   type Future = BoxClientFuture<'c>;
 
+  fn handle(self, addr: RouteAddress, stream: TStream) -> Self::Future {
+    TInnerClient::handle(self.client, addr, stream)
+      .map_ok(|ok| Box::new(ok) as Box<_>)
+      .map_err(|err| err.map_err(|err| Box::new(err) as Box<_>))
+      .boxed()
+  }
+}
+
+impl<'c, TInnerClient: 'c> BoxedClient<'c, 'static>
+  for BoxDispatchClient<'c, Box<(dyn TunnelStream + std::marker::Send + 'c)>, TInnerClient>
+where
+  TInnerClient: Client<'static, Box<(dyn TunnelStream + std::marker::Send + 'c)>> + Send + 'c,
+  TInnerClient::Error: Any + Send + 'static,
+  TInnerClient::Response: Any + Send + 'static,
+  TInnerClient::Future: Send + 'c,
+{
+  fn handle(self, addr: RouteAddress, stream: Box<dyn TunnelStream + Send + 'c>) -> Self::Future {
+    <TInnerClient as Client<_>>::handle(self.client, addr, stream)
+      .map_ok(|ok| Box::new(ok) as Box<_>)
+      .map_err(|err| err.map_err(|err| Box::new(err) as Box<_>))
+      .boxed()
+  }
+}
+
+pub struct BoxStreamDispatchClient<'c, TInnerClient> {
+  client: TInnerClient,
+  client_lifetime: PhantomData<&'c ()>,
+}
+
+impl<'c, TInnerClient> BoxStreamDispatchClient<'c, TInnerClient> {
+  pub fn new(client: TInnerClient) -> Self {
+    Self {
+      client,
+      client_lifetime: PhantomData,
+    }
+  }
+}
+
+impl<'c, TInnerClient: 'c> ProtocolInfo for BoxStreamDispatchClient<'c, TInnerClient>
+where
+  TInnerClient: ProtocolInfo,
+{
   fn protocol_name() -> &'static str
   where
     Self: Sized,
   {
     TInnerClient::protocol_name()
   }
+}
 
-  fn handle(self, addr: RouteAddress, stream: Self::Stream) -> Self::Future {
+impl<'c, TInnerClient: 'c> Client<'static, Box<dyn TunnelStream + Send + 'c>>
+  for BoxStreamDispatchClient<'c, TInnerClient>
+where
+  TInnerClient: Client<'static, Box<dyn TunnelStream + Send + 'c>> + Send + 'c,
+  TInnerClient::Error: Any + Send + 'static,
+  TInnerClient::Response: Any + Send + 'static,
+  TInnerClient::Future: Send + 'c,
+{
+  type Response = BoxClientResponse;
+
+  type Error = BoxClientError;
+
+  type Future = BoxClientFuture<'c>;
+
+  fn handle(self, addr: RouteAddress, stream: Box<dyn TunnelStream + Send + 'c>) -> Self::Future {
     TInnerClient::handle(self.client, addr, stream)
+      .map_ok(|ok| Box::new(ok) as Box<_>)
+      .map_err(|err| err.map_err(|err| Box::new(err) as Box<_>))
+      .boxed()
+  }
+}
+
+impl<'c, TInnerClient: 'c> BoxedClient<'c, 'static> for BoxStreamDispatchClient<'c, TInnerClient>
+where
+  TInnerClient: Client<'static, Box<(dyn TunnelStream + std::marker::Send + 'c)>> + Send + 'c,
+  TInnerClient::Error: Any + Send + 'static,
+  TInnerClient::Response: Any + Send + 'static,
+  TInnerClient::Future: Send + 'c,
+{
+  fn handle(self, addr: RouteAddress, stream: Box<dyn TunnelStream + Send + 'c>) -> Self::Future {
+    <TInnerClient as Client<_>>::handle(self.client, addr, stream)
       .map_ok(|ok| Box::new(ok) as Box<_>)
       .map_err(|err| err.map_err(|err| Box::new(err) as Box<_>))
       .boxed()
@@ -146,10 +236,23 @@ pub struct BoundClient<TClient, F, Fut, TResponse, TError> {
   error: PhantomData<TError>,
 }
 
-impl<'client, 'result, TClient, F, ThenFut, TResponse, TError> Client<'result>
+impl<'client, 'result, TClient, F, ThenFut, TResponse, TError> ProtocolInfo
   for BoundClient<TClient, F, ThenFut, TResponse, TError>
 where
-  TClient: Client<'result> + 'client,
+  TClient: ProtocolInfo,
+{
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    TClient::protocol_name()
+  }
+}
+
+impl<'client, 'result, TStream, TClient, F, ThenFut, TResponse, TError> Client<'result, TStream>
+  for BoundClient<TClient, F, ThenFut, TResponse, TError>
+where
+  TClient: Client<'result, TStream> + 'client,
   TResponse: Send + 'result,
   TError: Send + 'result,
   F: FnOnce(Result<TClient::Response, ClientError<TClient::Error>>) -> ThenFut + 'result + 'client,
@@ -159,18 +262,9 @@ where
 
   type Error = TError;
 
-  type Stream = TClient::Stream;
-
   type Future = Then<TClient::Future, ThenFut, F>;
 
-  fn protocol_name() -> &'static str
-  where
-    Self: Sized,
-  {
-    TClient::protocol_name()
-  }
-
-  fn handle(self, addr: RouteAddress, stream: Self::Stream) -> Self::Future {
+  fn handle(self, addr: RouteAddress, stream: TStream) -> Self::Future {
     self.client.handle(addr, stream).then(self.f)
   }
 }
@@ -182,10 +276,23 @@ pub struct MappedClient<TClient, F, TResponse, TError> {
   error: PhantomData<TError>,
 }
 
-impl<'client, 'result, TClient, F, TResponse, TError> Client<'result>
+impl<'client, 'result, TClient, F, TResponse, TError> ProtocolInfo
   for MappedClient<TClient, F, TResponse, TError>
 where
-  TClient: Client<'result> + 'client,
+  TClient: ProtocolInfo,
+{
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    TClient::protocol_name()
+  }
+}
+
+impl<'client, 'result, TStream, TClient, F, TResponse, TError> Client<'result, TStream>
+  for MappedClient<TClient, F, TResponse, TError>
+where
+  TClient: Client<'result, TStream> + 'client,
   TResponse: Send + 'result,
   TError: Send + 'result,
   F: FnOnce(
@@ -197,31 +304,14 @@ where
 
   type Error = TError;
 
-  type Stream = TClient::Stream;
-
   type Future = futures::future::Map<TClient::Future, F>;
 
-  fn protocol_name() -> &'static str
-  where
-    Self: Sized,
-  {
-    TClient::protocol_name()
-  }
-
-  fn handle(self, addr: RouteAddress, stream: Self::Stream) -> Self::Future {
+  fn handle(self, addr: RouteAddress, stream: TStream) -> Self::Future {
     self.client.handle(addr, stream).map(self.f)
   }
 }
 
-mod private_client_ext {
-  use super::Client;
-
-  pub trait Sealed {}
-
-  impl<'a, C> Sealed for C where C: ?Sized + Client<'a> {}
-}
-
-pub trait ClientExt<'client, 'result>: Client<'result> + private_client_ext::Sealed {
+pub trait ClientExt<'client, 'result, TStream>: Client<'result, TStream> {
   fn map<F, ThenFut, TResponse, TError>(self, f: F) -> MappedClient<Self, F, TResponse, TError>
   where
     Self: Sized,
@@ -259,31 +349,24 @@ pub trait ClientExt<'client, 'result>: Client<'result> + private_client_ext::Sea
       future: PhantomData,
     }
   }
-
-  fn boxed(self) -> BoxClient<'client, Self::Stream>
-  where
-    Self: Sized + Send + 'client,
-    Self::Future: Send + 'client,
-    Self::Stream: Send + 'client,
-    'result: 'static,
-  {
-    let dispatcher: BoxDispatchClient<'client, _> = BoxDispatchClient::new(self);
-    Box::new(dispatcher) as BoxClient<'client, _>
-  }
 }
 
-impl<'client, 'result, TClient: Client<'result> + 'client> ClientExt<'client, 'result> for TClient {}
+impl<'client, 'result, TStream, TClient: Client<'result, TStream> + 'client>
+  ClientExt<'client, 'result, TStream> for TClient
+{
+}
 
 // Request
 
 #[derive(Clone)]
-pub struct Request<'a, TClient> {
+pub struct Request<'a, TStream, TClient> {
   pub address: RouteAddress,
   pub protocol_client: TClient,
   phantom_lifetime: PhantomData<&'a ()>,
+  phantom_stream: PhantomData<TStream>,
 }
 
-impl<'a, TClient> Debug for Request<'a, TClient> {
+impl<'a, TStream, TClient> Debug for Request<'a, TStream, TClient> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Request")
       .field("address", &self.address)
@@ -291,80 +374,93 @@ impl<'a, TClient> Debug for Request<'a, TClient> {
   }
 }
 
-impl<'client, TClient> Request<'client, TClient> {
+impl<'client, TStream, TClient> Request<'client, TStream, TClient> {
   // By requiring that we pass the address parameters here,
   // we prevent illegal addresses from being passed. This
   // has an escape hatch by making a dishonest Client impl.
-  pub fn new(address_parameters: TClient::Params, protocol_client: TClient) -> Self
+  pub fn new(
+    protocol_client: TClient,
+    address_parameters: <TClient as RouteAddressBuilder>::Params,
+  ) -> Result<Self, <TClient as RouteAddressBuilder>::BuildError>
   where
-    TClient: Client<'client> + RouteAddressBuilder + Send + 'static,
+    TClient: Client<'client, TStream> + RouteAddressBuilder + Send + 'static,
   {
-    let address = TClient::build_addr(address_parameters);
-    Self {
+    let address = TClient::build_addr(address_parameters)?;
+    Ok(Self {
       address,
       protocol_client,
       phantom_lifetime: PhantomData,
-    }
+      phantom_stream: PhantomData,
+    })
   }
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
 #[error(bound = std::error::Error)]
-pub enum RoutingError<'client, TClient, ContextError> {
+pub enum RoutingError<'client, TStream, TClient, RouterError> {
   #[error("Route not found for request {0:?}")]
-  RouteNotFound(Request<'client, TClient>),
+  RouteNotFound(Request<'client, TClient, TStream>),
   #[error("Route found but unavailable for request {0:?}")]
-  RouteUnavailable(Request<'client, TClient>),
+  RouteUnavailable(Request<'client, TClient, TStream>),
   #[error("Invalid tunnel address format")]
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(super::tunnel::TunnelError),
-  #[error("Routing context error: {0:?}")]
-  ContextError(ContextError),
+  #[error("Routing error: {0:?}")]
+  RouterError(RouterError),
 }
 
-impl<'client, TClient, TunnelRegistryError> From<TunnelRegistryError>
-  for RoutingError<'client, TClient, TunnelRegistryError>
+impl<'client, TStream, TClient, TunnelRegistryError> From<TunnelRegistryError>
+  for RoutingError<'client, TStream, TClient, TunnelRegistryError>
 {
   fn from(e: TunnelRegistryError) -> Self {
-    Self::ContextError(e)
+    Self::RouterError(e)
   }
 }
 
-pub type RouterResult<'client, 'result, TRouter, TProtocolClient, TContext> = Result<
-  <TProtocolClient as Client<'result>>::Future,
-  RoutingError<'client, TProtocolClient, <TRouter as Router<TContext>>::ContextError>,
+pub type RouterResult<'client, 'result, TRouter, TProtocolClient> = Result<
+  <TProtocolClient as Client<'result, <TRouter as Router>::Stream>>::Future,
+  RoutingError<'client, <TRouter as Router>::Stream, TProtocolClient, <TRouter as Router>::Error>,
 >;
 /// Routers are responsible for taking an address and forwarding it to
 /// the appropriate tunnel. When forwarding, the router can alter the
 /// address to remove any routing-specific information before it is
 /// handed to the Request's protocol::Client.
-pub trait Router<Context: ?Sized> {
-  type ContextError;
+pub trait Router {
+  type Error;
+  type Stream;
 
   fn route<'client, 'result, TProtocolClient>(
-    self,
-    request: Request<'client, TProtocolClient>,
-    context: &Context,
-  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient, Context>>
+    &self,
+    request: Request<'client, Self::Stream, TProtocolClient>,
+  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
   where
-    TProtocolClient: Client<'result> + Send + 'client;
+    TProtocolClient: Client<'result, Self::Stream> + Send + 'client;
 }
 
 #[cfg(test)]
 mod tests {
+  use super::ClientExt;
+
   /// This is a static test- it does not need run to test its behaviour, just compiled
-  fn static_test_client_is_object_safe<'a, Stream, C: super::Client<'a> + 'a>(
+  fn static_test_boxed_client_is_object_safe<'a, 'result, Stream, C>(
     unboxed: C,
-  ) -> Box<
-    dyn super::Client<
-        'a,
-        Future = C::Future,
-        Stream = C::Stream,
-        Error = C::Error,
-        Response = C::Response,
-      > + 'a,
-  > {
-    Box::new(unboxed) as Box<_>
+  ) -> Option<
+    Box<
+      dyn super::BoxedClient<
+          'a,
+          'result,
+          Future = C::Future,
+          Error = C::Error,
+          Response = C::Response,
+        > + 'a,
+    >,
+  >
+  where
+    Stream: Send + 'a,
+    C: super::Client<'result, Stream> + Send + 'a,
+    C::Future: Send,
+  {
+    None
   }
 }

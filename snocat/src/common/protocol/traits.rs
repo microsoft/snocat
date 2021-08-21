@@ -21,7 +21,8 @@ use super::{
 use crate::common::protocol::tunnel::TunnelError;
 
 #[derive(thiserror::Error, Debug)]
-pub enum ServiceError<InternalError: std::fmt::Debug + std::fmt::Display> {
+#[error(bound = std::fmt::Debug)]
+pub enum ServiceError<InternalError> {
   #[error("Address refused by client")]
   Refused,
   #[error("Unexpected end of stream with remote")]
@@ -40,10 +41,9 @@ pub enum ServiceError<InternalError: std::fmt::Debug + std::fmt::Display> {
   InternalFailure(anyhow::Error),
 }
 
-impl<InternalError: std::fmt::Debug + std::fmt::Display> ServiceError<InternalError> {
+impl<InternalError> ServiceError<InternalError> {
   pub fn map_internal<TNewError, F>(self, f: F) -> ServiceError<TNewError>
   where
-    TNewError: std::fmt::Debug + std::fmt::Display,
     F: Fn(InternalError) -> TNewError,
   {
     match self {
@@ -60,7 +60,7 @@ impl<InternalError: std::fmt::Debug + std::fmt::Display> ServiceError<InternalEr
 
   pub fn err_into<TNewError>(self) -> ServiceError<TNewError>
   where
-    TNewError: From<InternalError> + std::fmt::Debug + std::fmt::Display,
+    TNewError: From<InternalError>,
   {
     self.map_internal(From::from)
   }
@@ -75,7 +75,7 @@ impl<InternalError: std::fmt::Debug + std::fmt::Display> From<InternalError>
 }
 
 pub trait Service {
-  type Error: std::fmt::Debug + std::fmt::Display;
+  type Error;
 
   fn accepts(&self, addr: &RouteAddress, tunnel_id: &TunnelId) -> bool;
   // fn protocol_id() -> String where Self: Sized;

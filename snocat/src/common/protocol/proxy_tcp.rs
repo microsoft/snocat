@@ -20,26 +20,21 @@ use tracing_futures::Instrument;
 
 use super::{
   address::RouteAddressParseError,
-  service::{Client, ClientError, ClientResult, ResultTypeOf},
+  service::{Client, ClientError, ClientResult, ProtocolInfo, ResultTypeOf, RouteAddressBuilder},
   tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
   RouteAddress, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
 
 #[derive(Debug, Clone)]
-pub struct TcpStreamClient<TStream, Reader, Writer> {
+pub struct TcpStreamClient<Reader, Writer> {
   recv: Reader,
   send: Writer,
-  link_stream: PhantomData<TStream>,
 }
 
-impl<TStream, Reader, Writer> TcpStreamClient<TStream, Reader, Writer> {
+impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
   pub fn new(recv: Reader, send: Writer) -> Self {
-    Self {
-      recv,
-      send,
-      link_stream: PhantomData,
-    }
+    Self { recv, send }
   }
 
   pub fn build_addr(target: TcpStreamTarget) -> RouteAddress {
@@ -47,29 +42,50 @@ impl<TStream, Reader, Writer> TcpStreamClient<TStream, Reader, Writer> {
   }
 }
 
-impl<'stream, TStream, Reader, Writer> Client<'stream> for TcpStreamClient<TStream, Reader, Writer>
+impl<Reader, Writer> ProtocolInfo for TcpStreamClient<Reader, Writer> {
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    "proxy-tcp"
+  }
+}
+
+impl<Reader, Writer> RouteAddressBuilder for TcpStreamClient<Reader, Writer> {
+  type Params = TcpStreamTarget;
+  type BuildError = RouteAddressParseError;
+
+  fn build_addr(args: Self::Params) -> Result<RouteAddress, Self::BuildError>
+  where
+    Self: Sized,
+  {
+    let (host, port) = <(String, Option<u16>)>::from(args);
+    Ok(
+      format!(
+        "/{}/0.0.1/{}/{}",
+        Self::protocol_name(),
+        host,
+        port.expect("RFC6763 DNS-Based Service Discovery is not supported by DemandProxyClient")
+      )
+      .parse()?,
+    )
+  }
+}
+
+impl<'stream, TStream, Reader, Writer> Client<'stream, TStream> for TcpStreamClient<Reader, Writer>
 where
-  TStream: TunnelStream + 'stream,
   Reader: AsyncRead + Send + Unpin + 'stream,
   Writer: AsyncWrite + Send + Unpin + 'stream,
+  TStream: TunnelStream + Send + 'stream,
 {
   // TODO: make Response the number of bytes forwarded by the client
   type Response = ();
 
   type Error = ();
 
-  type Stream = TStream;
+  type Future = BoxFuture<'stream, ClientResult<'stream, Self, TStream>>;
 
-  type Future = BoxFuture<'stream, ClientResult<'stream, Self>>;
-
-  fn protocol_name() -> &'static str
-  where
-    Self: Sized,
-  {
-    todo!()
-  }
-
-  fn handle(mut self, _addr: RouteAddress, tunnel: Self::Stream) -> Self::Future {
+  fn handle(mut self, _addr: RouteAddress, tunnel: TStream) -> Self::Future {
     let fut = async move {
       // TODO: Read protocol version here, and ServiceError::Refused if unsupported
       // TODO: Send protocol version here, allow other side to refuse if unsupported
@@ -124,6 +140,17 @@ impl DnsTarget {
     }
   }
 
+  /// Host string, without port if present
+  ///
+  /// Not all DNS records have a constant, known port; See [SRV records](https://en.wikipedia.org/wiki/SRV_record)
+  pub fn host(&self) -> &str {
+    match self {
+      DnsTarget::PreferHigher { host, .. } => host.as_str(),
+      DnsTarget::Dns6 { host, .. } => host.as_str(),
+      DnsTarget::Dns4 { host, .. } => host.as_str(),
+    }
+  }
+
   /// Exposed port for the specified address
   ///
   /// Not all DNS records have a constant, known port; See [SRV records](https://en.wikipedia.org/wiki/SRV_record)
@@ -145,9 +172,19 @@ impl DnsTarget {
   }
 }
 
-impl Into<TcpStreamTarget> for DnsTarget {
-  fn into(self) -> TcpStreamTarget {
-    TcpStreamTarget::Dns(self)
+impl From<DnsTarget> for TcpStreamTarget {
+  fn from(val: DnsTarget) -> Self {
+    TcpStreamTarget::Dns(val)
+  }
+}
+
+impl From<TcpStreamTarget> for (String, Option<u16>) {
+  fn from(target: TcpStreamTarget) -> Self {
+    match target {
+      TcpStreamTarget::Port(p) => (Ipv4Addr::LOCALHOST.to_string(), Some(p)),
+      TcpStreamTarget::SocketAddr(s) => (s.ip().to_string(), Some(s.port())),
+      TcpStreamTarget::Dns(d) => (d.host().to_string(), d.port()),
+    }
   }
 }
 

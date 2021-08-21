@@ -141,7 +141,7 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   pub fn new(
@@ -274,7 +274,7 @@ where
   TTunnelRegistry::Error: Send + 'static,
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router<TTunnelRegistry> + Send + Sync + 'static,
+  TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
 {
   fn tunnel_lifecycle(

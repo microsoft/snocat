@@ -12,17 +12,18 @@ use snocat::{
     authentication::SimpleAckAuthenticationHandler,
     daemon::ModularDaemon,
     protocol::{
+      service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
         id::MonotonicAtomicGenerator,
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
         QuinnTunnel, Tunnel,
       },
-      Request, RouteAddress, Router, RoutingError,
+      RouteAddress,
     },
     tunnel_source::QuinnListenEndpoint,
   },
   server::PortRangeAllocator,
-  util::tunnel_stream::TunnelStream,
+  util::tunnel_stream::{TunnelStream, WrappedStream},
 };
 use std::{
   boxed::Box,
@@ -43,42 +44,44 @@ pub struct ServerArgs {
 }
 
 pub struct SnocatServerRouter<TTunnel> {
-  tunnel_phantom: std::marker::PhantomData<TTunnel>,
+  tunnel_registry: Weak<InMemoryTunnelRegistry<TTunnel>>,
 }
 
 impl<TTunnel> SnocatServerRouter<TTunnel> {
-  pub fn new() -> Self {
+  pub fn new<TTunnelRegistry: Into<Weak<InMemoryTunnelRegistry<TTunnel>>>>(
+    tunnel_registry: TTunnelRegistry,
+  ) -> Self {
     Self {
-      tunnel_phantom: std::marker::PhantomData,
+      tunnel_registry: tunnel_registry.into(),
     }
   }
 }
-impl<TTunnel> Router<TTunnel, InMemoryTunnelRegistry<TTunnel>> for SnocatServerRouter<TTunnel>
+
+impl<TTunnel> Router for SnocatServerRouter<TTunnel>
 where
   TTunnel: Tunnel + Send + Sync + 'static,
 {
-  fn route(
+  type Error = <InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error;
+  type Stream = WrappedStream;
+
+  fn route<'client, 'result, TProtocolClient>(
     &self,
-    request: &Request,
-    // We don't need this one because we keep our own reference around for an unboxed variant
-    // this allows us to access methods specific to our tunnel type's implementation
-    tunnel_registry: Arc<InMemoryTunnelRegistry<TTunnel>>,
-  ) -> BoxFuture<
-    '_,
-    Result<
-      (RouteAddress, Box<dyn TunnelStream + Send + Sync>),
-      RoutingError<<InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error>,
-    >,
-  > {
+    request: Request<'client, Self::Stream, TProtocolClient>,
+  ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
+  where
+    TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
+  {
     let addr = request.address.clone();
     async move {
       // Select the highest keyed tunnel or bail; the highest tunnel is the newest connection, in our case
-      let highest_keyed_tunnel_id = tunnel_registry
+      let highest_keyed_tunnel_id = self
+        .tunnel_registry
         .max_key()
         .await
         .ok_or(RoutingError::NoMatchingTunnel)?;
       // Find the tunnel if it's still around when we finish looking it up, or bail
-      let tunnel = tunnel_registry
+      let tunnel = self
+        .tunnel_registry
         .lookup_by_id(highest_keyed_tunnel_id)
         .await
         .map_err(Into::into)
@@ -133,7 +136,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 
   let service_registry = Arc::new(PresetServiceRegistry::<anyhow::Error>::new());
 
-  let router = { Arc::new(SnocatServerRouter::new()) };
+  let router = { Arc::new(SnocatServerRouter::new(Arc::downgrade(&tunnel_registry))) };
 
   let authentication_handler = Arc::new(SimpleAckAuthenticationHandler::new());
 

@@ -764,6 +764,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "snocat",
+ "thiserror 1.0.26 (git+https://github.com/Dessix/thiserror?rev=e863837edfee78d894647fc415a2e7760512eb6a)",
  "tokio",
  "tokio-stream",
  "tokio-util",
