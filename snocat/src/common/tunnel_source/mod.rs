@@ -3,16 +3,23 @@
 //! Sources both listen- and connection-based tunnels
 
 use futures::stream::{BoxStream, Stream, StreamExt};
-use std::{net::SocketAddr, pin::Pin, task::Poll};
+use std::{
+  fmt::Debug,
+  hash::Hash,
+  net::SocketAddr,
+  pin::Pin,
+  sync::{Arc, TryLockError},
+  task::{Context, Poll},
+};
 
-use crate::common::protocol::tunnel::quinn_tunnel::from_quinn_endpoint_with_baggage;
-
-use super::protocol::tunnel::{from_quinn_endpoint, BoxedTunnel, QuinnTunnel, TunnelSide};
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::sync::{Arc, TryLockError};
-use std::task::Context;
 use tokio_stream::StreamMap;
+
+use crate::common::protocol::tunnel::{
+  quinn_tunnel::{from_quinn_connection_with_baggage, QuinnTunnel},
+  BoxedTunnel, TunnelSide,
+};
+
+use super::protocol::tunnel::{AssignTunnelId, Tunnel, TunnelId, WithTunnelId};
 
 pub struct QuinnListenEndpoint<Session: quinn::crypto::Session, Baggage> {
   bind_addr: SocketAddr,
@@ -62,7 +69,7 @@ where
   Session: quinn::crypto::Session + Send + 'static,
   Self: Send + Unpin,
 {
-  type Item = QuinnTunnel<Session, Baggage>;
+  type Item = (quinn::generic::NewConnection<Session>, TunnelSide, Baggage);
 
   fn poll_next(
     mut self: std::pin::Pin<&mut Self>,
@@ -73,8 +80,7 @@ where
       None => Poll::Ready(None),
       Some(new_connection) => {
         let baggage = (self.baggage_constructor)(&new_connection);
-        let tunnel = from_quinn_endpoint_with_baggage(new_connection, TunnelSide::Listen, baggage);
-        Poll::Ready(Some(tunnel))
+        Poll::Ready(Some((new_connection, TunnelSide::Listen, baggage)))
       }
     }
   }
@@ -257,13 +263,26 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::{DynamicStreamSet, NamedBoxedStream};
-  use crate::common::protocol::tunnel::BoxedTunnel;
+  use super::{DynamicStreamSet, NamedBoxedStream, QuinnListenEndpoint};
+  use crate::common::protocol::tunnel::quinn_tunnel::QuinnTunnel;
+  use crate::common::protocol::tunnel::{AssignTunnelId, BoxedTunnel};
   use futures::task::Context;
   use futures::{future, stream, FutureExt, Stream, StreamExt};
   use std::collections::HashSet;
   use std::iter::FromIterator;
   use std::pin::Pin;
+
+  /// Enforce that the content of the endpoint is a valid tunnel assignment content stream
+  fn static_test_endpoint_items_assign_tunnel_id<Session: quinn::crypto::Session, Baggage>(
+    mut endpoint: QuinnListenEndpoint<Session, Baggage>,
+  ) -> Option<impl AssignTunnelId<QuinnTunnel<Session, Baggage>>>
+  where
+    Session: quinn::crypto::Session + Send + Unpin + 'static,
+    Baggage: Send + Sync + 'static,
+    QuinnListenEndpoint<Session, Baggage>: Send + Unpin + 'static,
+  {
+    endpoint.next().now_or_never().flatten()
+  }
 
   #[tokio::test]
   async fn add_and_remove() {

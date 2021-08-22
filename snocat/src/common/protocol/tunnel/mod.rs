@@ -31,7 +31,6 @@ pub mod quinn_tunnel;
 pub mod registry;
 
 pub use self::id::TunnelId;
-pub use self::quinn_tunnel::{from_quinn_endpoint, QuinnTunnel};
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 
@@ -256,6 +255,19 @@ pub trait Baggage {
   fn bag<'a>(&'a self) -> Self::Bag<'a>;
 }
 
+pub trait WithTunnelId {
+  fn id(&self) -> &TunnelId;
+}
+
+impl<T: std::ops::Deref> WithTunnelId for T
+where
+  T::Target: WithTunnelId,
+{
+  fn id(&self) -> &TunnelId {
+    self.deref().id()
+  }
+}
+
 pub trait Sided {
   fn side(&self) -> TunnelSide;
 }
@@ -269,7 +281,7 @@ where
   }
 }
 
-pub trait TunnelUplink: Sided {
+pub trait TunnelUplink: WithTunnelId + Sided {
   fn addr(&self) -> TunnelAddressInfo {
     TunnelAddressInfo::Unidentified
   }
@@ -287,7 +299,7 @@ where
   }
 }
 
-pub trait TunnelDownlink: Sided {
+pub trait TunnelDownlink: WithTunnelId + Sided {
   fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
 }
 
@@ -300,7 +312,7 @@ where
   }
 }
 
-pub trait Tunnel: TunnelUplink + Send + Sync + Unpin {
+pub trait Tunnel: WithTunnelId + TunnelUplink + Send + Sync + Unpin {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>>;
 }
 
@@ -314,16 +326,81 @@ where
   }
 }
 
+/// Creates a tunnel with the provided ID
+///
+/// Compliant implementations must use the provided ID, and must remain
+/// stable throughout the lifetime of the resulting tunnel instance
+pub trait AssignTunnelId<TTunnel>
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> TTunnel;
+}
+
+impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Box<TTunnel>>
+  for TAssignTunnelId
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Box<TTunnel> {
+    Box::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+  }
+}
+
+impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Arc<TTunnel>>
+  for TAssignTunnelId
+where
+  TTunnel: WithTunnelId,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Arc<TTunnel> {
+    Arc::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+  }
+}
+
+// /// Creates a tunnel with the provided ID
+// ///
+// /// Compliant implementations must use the provided ID, and must remain
+// /// stable throughout the lifetime of the resulting tunnel instance
+// pub trait FromTunnelComponents<TComponents> : Tunnel + WithTunnelId {
+//   fn assign_tunnel_id(tunnel_id: TunnelId, components: TComponents) -> Self;
+// }
+
+// /// Any tunnel type which can be infallibly converted from the result of
+// /// another tunnel assignment method on the same inputs is an assignment method.
+// impl<TComponents, T: FromTunnelComponents<TComponents>, TOut> FromTunnelComponents<TComponents> for TOut
+// where
+//   T: Into<TOut>,
+// {
+//   fn assign_tunnel_id(tunnel_id: TunnelId, components: TComponents) -> TOut {
+//     let inner = T::assign_tunnel_id(components, tunnel_id);
+//     inner.into()
+//   }
+// }
+
 pub enum TunnelIncomingType {
   BiStream(WrappedStream),
 }
 
 pub struct TunnelIncoming {
+  id: TunnelId,
   inner: BoxStream<'static, Result<TunnelIncomingType, TunnelError>>,
   side: TunnelSide,
 }
 
+impl std::fmt::Debug for TunnelIncoming {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TunnelIncoming")
+      .field("id", &self.id)
+      .field("side", &self.side)
+      .finish_non_exhaustive()
+  }
+}
+
 impl TunnelIncoming {
+  pub fn id(&self) -> &TunnelId {
+    &self.id
+  }
+
   pub fn side(&self) -> TunnelSide {
     self.side
   }
@@ -334,6 +411,12 @@ impl TunnelIncoming {
 
   pub fn streams_ref<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {
     self.inner.borrow_mut().boxed()
+  }
+}
+
+impl WithTunnelId for TunnelIncoming {
+  fn id(&self) -> &TunnelId {
+    &self.id
   }
 }
 

@@ -15,8 +15,9 @@ use snocat::{
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
         id::MonotonicAtomicGenerator,
+        quinn_tunnel::QuinnTunnel,
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
-        QuinnTunnel, Tunnel,
+        Tunnel,
       },
     },
     tunnel_source::QuinnListenEndpoint,

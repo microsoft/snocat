@@ -18,10 +18,12 @@ use crate::{
 };
 
 use super::{
-  Baggage, TunnelControl, TunnelControlPerChannel, TunnelMonitoring, TunnelMonitoringPerChannel,
+  AssignTunnelId, Baggage, TunnelControl, TunnelControlPerChannel, TunnelId, TunnelMonitoring,
+  TunnelMonitoringPerChannel, WithTunnelId,
 };
 
 pub struct QuinnTunnel<S: quinn::crypto::Session, B = ()> {
+  id: TunnelId,
   connection: quinn::generic::Connection<S>,
   side: TunnelSide,
   incoming: Arc<tokio::sync::Mutex<TunnelIncoming>>,
@@ -32,15 +34,27 @@ pub struct QuinnTunnel<S: quinn::crypto::Session, B = ()> {
   baggage: Arc<B>,
 }
 
+impl<S: quinn::crypto::Session, Baggage> std::fmt::Debug for QuinnTunnel<S, Baggage> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("QuinnTunnel")
+      .field("id", &self.id)
+      .field("side", &self.side)
+      .field("incoming_closed", &self.incoming_closed)
+      .field("outgoing_closed", &self.outgoing_closed)
+      .finish()
+  }
+}
+
 impl<S: quinn::crypto::Session, B> QuinnTunnel<S, B> {
   pub fn into_inner(
     self,
   ) -> (
+    TunnelId,
     quinn::generic::Connection<S>,
     TunnelSide,
     Arc<tokio::sync::Mutex<TunnelIncoming>>,
   ) {
-    (self.connection, self.side, self.incoming)
+    (self.id, self.connection, self.side, self.incoming)
   }
 }
 
@@ -110,6 +124,15 @@ where
   fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>> {
     let in_close = self.incoming_closed.deref().deref().clone();
     async move { in_close.cancelled().map(|_| Ok(())).await }.boxed()
+  }
+}
+
+impl<S, B> WithTunnelId for QuinnTunnel<S, B>
+where
+  S: quinn::crypto::Session + 'static,
+{
+  fn id(&self) -> &TunnelId {
+    &self.id
   }
 }
 
@@ -209,17 +232,19 @@ where
   }
 }
 
-pub fn from_quinn_endpoint<S>(
+pub fn from_quinn_connection<S>(
+  id: TunnelId,
   new_connection: quinn::generic::NewConnection<S>,
   side: TunnelSide,
 ) -> QuinnTunnel<S, ()>
 where
   S: quinn::crypto::Session + 'static,
 {
-  from_quinn_endpoint_with_baggage(new_connection, side, ())
+  from_quinn_connection_with_baggage(id, new_connection, side, ())
 }
 
-pub fn from_quinn_endpoint_with_baggage<S, B>(
+pub fn from_quinn_connection_with_baggage<S, B>(
+  id: TunnelId,
   new_connection: quinn::generic::NewConnection<S>,
   side: TunnelSide,
   baggage: B,
@@ -269,13 +294,27 @@ where
     .boxed();
   QuinnTunnel {
     connection,
+    id,
     side,
     incoming: Arc::new(tokio::sync::Mutex::new(TunnelIncoming {
       inner: stream_tunnels,
+      id,
       side,
     })),
     incoming_closed: incoming_cancellation,
     outgoing_closed: Arc::new(CancellationToken::new().into()),
     baggage: Arc::new(baggage),
+  }
+}
+
+impl<Session, Baggage> AssignTunnelId<QuinnTunnel<Session, Baggage>>
+  for (quinn::generic::NewConnection<Session>, TunnelSide, Baggage)
+where
+  Session: quinn::crypto::Session + Send + 'static,
+  Baggage: Send + Sync + 'static,
+{
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> QuinnTunnel<Session, Baggage> {
+    let (new_connection, side, baggage) = self;
+    from_quinn_connection_with_baggage(tunnel_id, new_connection, side, baggage)
   }
 }

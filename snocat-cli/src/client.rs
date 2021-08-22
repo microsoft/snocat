@@ -12,10 +12,10 @@ use snocat::{
       proxy_tcp::{DnsTarget, TcpStreamService},
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        from_quinn_endpoint,
         id::MonotonicAtomicGenerator,
+        quinn_tunnel::QuinnTunnel,
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
-        QuinnTunnel, Tunnel, TunnelSide, TunnelUplink,
+        Tunnel, TunnelSide, TunnelUplink,
       },
     },
     tunnel_source::DynamicConnectionSet,
@@ -182,7 +182,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     let mut current_connection_id = 0u32;
     let connections = DynamicConnectionSet::<u32, _>::new();
     let connections_handle = connections.handle();
-    let add_new_connection = move |tunnel: QuinnTunnel<_>| -> u32 {
+    let add_new_connection = move |tunnel: (quinn::generic::NewConnection<_>, _, _)| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
       assert!(
@@ -202,9 +202,8 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .context("Connecting to server")?
       .await;
     let connection = connecting.context("Finalizing connection to server...")?;
-    let tunnel = from_quinn_endpoint(connection, TunnelSide::Connect);
-    let addr = tunnel.addr();
-    let conn_id = add_new_connection(tunnel);
+    let addr = connection.connection.remote_address();
+    let conn_id = add_new_connection((connection, TunnelSide::Connect, ()));
     tracing::info!(remote = ?addr, connection_id = conn_id, "connected");
   }
 
