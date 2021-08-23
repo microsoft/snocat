@@ -1,29 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::{
-  borrow::{Borrow, BorrowMut},
-  net::SocketAddr,
-  ops::Deref,
-  pin::Pin,
-  sync::Arc,
-};
+
+#![warn(unused_imports, dead_code, unused_variables)]
+
+use std::{borrow::BorrowMut, net::SocketAddr, ops::Deref, sync::Arc};
+
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt, StreamExt};
+use serde::{Deserializer, Serializer};
 
 use crate::util::tunnel_stream::WrappedStream;
-use futures::{
-  future::{BoxFuture, Either},
-  stream::{BoxStream, LocalBoxStream, Stream, StreamFuture, TryStreamExt},
-  Future, FutureExt, StreamExt,
-};
-use quinn::{crypto::Session, generic::RecvStream, ApplicationClose, SendStream};
-use serde::{Deserializer, Serializer};
-use tokio::{
-  io::{AsyncRead, AsyncWrite},
-  sync::{
-    broadcast,
-    mpsc::{self, UnboundedReceiver, UnboundedSender},
-    oneshot, OwnedMutexGuard,
-  },
-};
 
 pub mod duplex;
 pub mod id;
@@ -404,26 +389,6 @@ where
     Arc::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
   }
 }
-
-// /// Creates a tunnel with the provided ID
-// ///
-// /// Compliant implementations must use the provided ID, and must remain
-// /// stable throughout the lifetime of the resulting tunnel instance
-// pub trait FromTunnelComponents<TComponents> : Tunnel + WithTunnelId {
-//   fn assign_tunnel_id(tunnel_id: TunnelId, components: TComponents) -> Self;
-// }
-
-// /// Any tunnel type which can be infallibly converted from the result of
-// /// another tunnel assignment method on the same inputs is an assignment method.
-// impl<TComponents, T: FromTunnelComponents<TComponents>, TOut> FromTunnelComponents<TComponents> for TOut
-// where
-//   T: Into<TOut>,
-// {
-//   fn assign_tunnel_id(tunnel_id: TunnelId, components: TComponents) -> TOut {
-//     let inner = T::assign_tunnel_id(components, tunnel_id);
-//     inner.into()
-//   }
-// }
 
 pub enum TunnelIncomingType {
   BiStream(WrappedStream),

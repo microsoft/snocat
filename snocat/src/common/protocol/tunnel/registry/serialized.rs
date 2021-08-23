@@ -1,19 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
-use downcast_rs::{impl_downcast, Downcast, DowncastSync};
+
+use std::sync::Arc;
+
 use futures::future::{BoxFuture, FutureExt};
-use std::{
-  any::Any,
-  backtrace::Backtrace,
-  collections::BTreeMap,
-  fmt::Debug,
-  sync::{Arc, Weak},
+
+use crate::common::protocol::tunnel::{
+  registry::{TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegistry},
+  Tunnel, TunnelId, TunnelName,
 };
-
-use crate::common::protocol::tunnel::{Tunnel, TunnelError, TunnelId, TunnelName};
-
-use super::{TunnelNamingError, TunnelRecord, TunnelRegistrationError, TunnelRegistry};
 
 /// A TunnelRegistry wrapper that ensures that mutations are performed sequentially,
 /// using a RwLock to serialize all write operations while allowing lookups to be concurrent.
