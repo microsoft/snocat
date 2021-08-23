@@ -14,7 +14,7 @@ use crate::util::tunnel_stream::TunnelStream;
 use super::{
   traits::{MappedService, ServiceRegistry},
   tunnel::TunnelId,
-  RouteAddress,
+  RouteAddress, ServiceError,
 };
 
 /// Identifies the SNOCAT protocol over a stream
@@ -39,6 +39,45 @@ pub enum NegotiationError<ApplicationError> {
   ApplicationError(ApplicationError),
   #[error("Negotiation fatal error: {0:?}")]
   FatalError(ApplicationError),
+}
+
+impl<ApplicationError> NegotiationError<ApplicationError> {
+  pub fn map_err<F, TErr>(self, f: F) -> NegotiationError<F::Output>
+  where
+    F: FnOnce(ApplicationError) -> TErr,
+  {
+    match self {
+      NegotiationError::ReadError => NegotiationError::ReadError,
+      NegotiationError::WriteError => NegotiationError::WriteError,
+      NegotiationError::ProtocolViolation => NegotiationError::ProtocolViolation,
+      NegotiationError::Refused => NegotiationError::Refused,
+      NegotiationError::UnsupportedProtocolVersion => NegotiationError::UnsupportedProtocolVersion,
+      NegotiationError::UnsupportedServiceVersion => NegotiationError::UnsupportedServiceVersion,
+      NegotiationError::ApplicationError(e) => NegotiationError::ApplicationError(f(e)),
+      NegotiationError::FatalError(e) => NegotiationError::FatalError(f(e)),
+    }
+  }
+
+  pub fn err_into<TNewErr: From<ApplicationError>>(self) -> NegotiationError<TNewErr> {
+    self.map_err(TNewErr::from)
+  }
+}
+
+impl<SourceError: Into<OutError>, OutError> From<NegotiationError<SourceError>>
+  for ServiceError<OutError>
+{
+  fn from(e: NegotiationError<SourceError>) -> Self {
+    match e {
+      NegotiationError::ReadError => ServiceError::UnexpectedEnd,
+      NegotiationError::WriteError => ServiceError::UnexpectedEnd,
+      NegotiationError::ProtocolViolation => ServiceError::IllegalResponse,
+      NegotiationError::Refused => ServiceError::Refused,
+      NegotiationError::UnsupportedProtocolVersion => ServiceError::Refused,
+      NegotiationError::UnsupportedServiceVersion => ServiceError::Refused,
+      NegotiationError::ApplicationError(e) => ServiceError::InternalError(e.into()),
+      NegotiationError::FatalError(e) => ServiceError::InternalError(e.into()),
+    }
+  }
 }
 
 /// Write future to send our magic and version to the remote,

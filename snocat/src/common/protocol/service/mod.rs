@@ -406,10 +406,30 @@ pub enum RoutingError<RouterError> {
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(#[from] super::tunnel::TunnelError),
-  #[error("Protocol negotiation failed")]
+  #[error(transparent)]
   NegotiationError(NegotiationError<RouterError>),
   #[error("Routing error: {0:?}")]
   RouterError(RouterError),
+}
+
+impl<RouterError> RoutingError<RouterError> {
+  pub fn map_err<F, TErr>(self, f: F) -> RoutingError<F::Output>
+  where
+    F: FnOnce(RouterError) -> TErr,
+  {
+    match self {
+      RoutingError::RouteNotFound(e) => RoutingError::RouteNotFound(e),
+      RoutingError::RouteUnavailable(e) => RoutingError::RouteUnavailable(e),
+      RoutingError::InvalidAddress => RoutingError::InvalidAddress,
+      RoutingError::LinkOpenFailure(e) => RoutingError::LinkOpenFailure(e),
+      RoutingError::NegotiationError(e) => RoutingError::NegotiationError(e.map_err(f)),
+      RoutingError::RouterError(e) => RoutingError::RouterError(f(e)),
+    }
+  }
+
+  pub fn err_into<TNewErr: From<RouterError>>(self) -> RoutingError<TNewErr> {
+    self.map_err(TNewErr::from)
+  }
 }
 
 impl<T, RouterError> From<NegotiationError<T>> for RoutingError<RouterError>

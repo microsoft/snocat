@@ -66,14 +66,6 @@ impl<InternalError> ServiceError<InternalError> {
   }
 }
 
-impl<InternalError: std::fmt::Debug + std::fmt::Display> From<InternalError>
-  for ServiceError<InternalError>
-{
-  fn from(e: InternalError) -> Self {
-    Self::InternalError(e)
-  }
-}
-
 pub trait Service {
   type Error;
 
