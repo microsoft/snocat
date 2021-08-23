@@ -10,21 +10,21 @@ categories = ["network-programming"]
 include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
-anyhow = "~1.0.42"
+anyhow = "~1.0.43"
 downcast-rs = "^1.2.0"
-futures = "^0.3.15"
-futures-io = "^0.3.15"
+futures = "^0.3.16"
+futures-io = "^0.3.16"
 gen-z = "~0.1.0"
 lazy_static = "1.4.0"
 log = "~0.4.13"
 quinn = "~0.7.2"
-serde = { version = "~1.0.126", features=["derive"] }
-serde_json = "~1.0.64"
-thiserror = { version = "^1.0.26", git = "https://github.com/Dessix/thiserror", rev = "e863837edfee78d894647fc415a2e7760512eb6a" }
+serde = { version = "~1.0.128", features=["derive"] }
+serde_json = "~1.0.66"
+thiserror = { version = "^1.0.26", git = "https://github.com/Dessix/thiserror", rev = "02012b03f07bd7e06380fd2f13ea6a37ce4dfcc0" }
 tracing = "~0.1.22"
 tracing-futures = "~0.2.4"
-tracing-subscriber = "~0.2.19"
-tokio = { version = "^1.8.1", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tracing-subscriber = "~0.2.20"
+tokio = { version = "^1.10.0", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "^0.1.7", features=["net", "io-util", "sync"] }
 tokio-util = { version = "^0.6.7", features=["default", "io", "time"] }
 
