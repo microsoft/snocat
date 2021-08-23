@@ -318,7 +318,22 @@ impl FromStr for TcpStreamTarget {
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     let route_addr = s.parse::<RouteAddress>()?;
-    Ok((&route_addr).try_into()?)
+    (&route_addr).try_into().or_else(|e| match e {
+      // If we had an error where the prefix could be missing, retry parsing with it added
+      TcpStreamTargetFormatError::TooFewSegments | TcpStreamTargetFormatError::NoMatchingFormat => {
+        match route_addr.iter_segments().nth(0) {
+          Some("dns" | "dns4" | "dns6" | "ip4" | "ip6" | "tcp") => {
+            let prefixed =
+              format!("/{}{}", TcpStreamService::protocol_name(), s).parse::<RouteAddress>()?;
+            Ok(prefixed.try_into()?)
+          }
+          _ => Err(TcpStreamTargetParseError::TcpStreamTargetFormatError(
+            TcpStreamTargetFormatError::NoMatchingFormat,
+          )),
+        }
+      }
+      _ => Err(e.into()),
+    })
   }
 }
 
