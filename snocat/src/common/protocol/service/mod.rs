@@ -10,7 +10,7 @@ use std::{any::Any, fmt::Debug, marker::PhantomData, process::Output};
 
 use crate::util::tunnel_stream::TunnelStream;
 
-use super::RouteAddress;
+use super::{negotiation::NegotiationError, RouteAddress};
 
 // Client
 
@@ -395,7 +395,7 @@ impl<'client, TStream, TClient> Request<'client, TStream, TClient> {
   }
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 #[error(bound = std::fmt::Debug)]
 pub enum RoutingError<RouterError> {
   #[error("Route not found for request")]
@@ -405,14 +405,28 @@ pub enum RoutingError<RouterError> {
   #[error("Invalid tunnel address format")]
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
-  LinkOpenFailure(super::tunnel::TunnelError),
+  LinkOpenFailure(#[from] super::tunnel::TunnelError),
+  #[error("Protocol negotiation failed")]
+  NegotiationError(NegotiationError<RouterError>),
   #[error("Routing error: {0:?}")]
   RouterError(RouterError),
 }
 
-impl<TRouterError> From<TRouterError> for RoutingError<TRouterError> {
-  fn from(e: TRouterError) -> Self {
-    Self::RouterError(e)
+impl<T, RouterError> From<NegotiationError<T>> for RoutingError<RouterError>
+where
+  T: Into<RouterError>,
+{
+  fn from(negotiation_error: NegotiationError<T>) -> Self {
+    RoutingError::NegotiationError(match negotiation_error {
+      NegotiationError::ReadError => NegotiationError::ReadError,
+      NegotiationError::WriteError => NegotiationError::WriteError,
+      NegotiationError::ProtocolViolation => NegotiationError::ProtocolViolation,
+      NegotiationError::Refused => NegotiationError::Refused,
+      NegotiationError::UnsupportedProtocolVersion => NegotiationError::UnsupportedProtocolVersion,
+      NegotiationError::UnsupportedServiceVersion => NegotiationError::UnsupportedServiceVersion,
+      NegotiationError::ApplicationError(e) => NegotiationError::ApplicationError(e.into()),
+      NegotiationError::FatalError(e) => NegotiationError::FatalError(e.into()),
+    })
   }
 }
 
@@ -420,6 +434,7 @@ pub type RouterResult<'client, 'result, TRouter, TProtocolClient> = Result<
   <TProtocolClient as Client<'result, <TRouter as Router>::Stream>>::Future,
   RoutingError<<TRouter as Router>::Error>,
 >;
+
 /// Routers are responsible for taking an address and forwarding it to
 /// the appropriate tunnel. When forwarding, the router can alter the
 /// address to remove any routing-specific information before it is

@@ -12,6 +12,7 @@ use snocat::{
     authentication::SimpleAckAuthenticationHandler,
     daemon::ModularDaemon,
     protocol::{
+      negotiation::NegotiationClient,
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
         id::MonotonicAtomicGenerator,
@@ -87,7 +88,7 @@ where
         TunnelNameOrId::Id(id) => tunnel_registry.lookup_by_id(id).await,
         TunnelNameOrId::Name(name) => tunnel_registry.lookup_by_name(name).await,
       }
-      .map_err(Into::into)
+      .map_err(RoutingError::RouterError)
       .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
       let tunnel_id = tunnel.id;
       let link = tunnel
@@ -102,6 +103,10 @@ where
         .open_link()
         .await
         .map_err(RoutingError::LinkOpenFailure)?;
+      let negotiator = NegotiationClient::new();
+      let link = negotiator
+        .negotiate::<_, Self::Error>(addr.clone(), link)
+        .await?;
       Ok(request.protocol_client.handle(addr, link))
     }
     .boxed()

@@ -4,6 +4,7 @@
 use snocat::{
   common::protocol::{
     address::RouteAddressParseError,
+    negotiation::NegotiationError,
     proxy_tcp::TcpStreamTarget,
     service::{
       Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
@@ -221,6 +222,16 @@ where
               RoutingError::RouterError(_) => ServiceError::DependencyFailure,
               RoutingError::LinkOpenFailure(_) => ServiceError::DependencyFailure,
               RoutingError::InvalidAddress => ServiceError::AddressError,
+              RoutingError::NegotiationError(negotiation_error) => match negotiation_error {
+                NegotiationError::ReadError => ServiceError::UnexpectedEnd,
+                NegotiationError::WriteError => ServiceError::UnexpectedEnd,
+                NegotiationError::ProtocolViolation => ServiceError::IllegalResponse,
+                NegotiationError::Refused => ServiceError::Refused,
+                NegotiationError::UnsupportedProtocolVersion => ServiceError::Refused,
+                NegotiationError::UnsupportedServiceVersion => ServiceError::Refused,
+                NegotiationError::ApplicationError(e) => ServiceError::InternalError(e.into()),
+                NegotiationError::FatalError(e) => ServiceError::InternalError(e.into()),
+              },
             })?
             .await
             .map_err(|res| match res {

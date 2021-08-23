@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use futures::{
   future::{BoxFuture, FutureExt},
@@ -21,7 +21,8 @@ use super::{
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
 
 #[derive(thiserror::Error, Debug)]
-pub enum NegotiationError {
+#[error(bound = std::fmt::Debug)]
+pub enum NegotiationError<ApplicationError> {
   #[error("Stream read failed")]
   ReadError,
   #[error("Stream write failed")]
@@ -34,19 +35,19 @@ pub enum NegotiationError {
   UnsupportedProtocolVersion,
   #[error("Service version not supported")]
   UnsupportedServiceVersion,
-  #[error(transparent)]
-  ApplicationError(#[from] anyhow::Error),
-  #[error(transparent)]
-  FatalError(anyhow::Error),
+  #[error("Negotiation application error: {0:?}")]
+  ApplicationError(ApplicationError),
+  #[error("Negotiation fatal error: {0:?}")]
+  FatalError(ApplicationError),
 }
 
 /// Write future to send our magic and version to the remote,
 /// returning an error if writes are refused by the stream.
 #[tracing::instrument(level = tracing::Level::TRACE, err, skip(stream))]
-async fn write_magic_and_version<S: AsyncWrite + Send + Unpin>(
+async fn write_magic_and_version<S: AsyncWrite + Send + Unpin, AE: Debug>(
   mut stream: S,
   protocol_version: u8,
-) -> Result<S, NegotiationError> {
+) -> Result<S, NegotiationError<AE>> {
   stream
     .write_all(SNOCAT_NEGOTIATION_MAGIC)
     .await
@@ -59,14 +60,14 @@ async fn write_magic_and_version<S: AsyncWrite + Send + Unpin>(
     .flush()
     .await
     .map_err(|_| NegotiationError::WriteError)?;
-  Result::<S, NegotiationError>::Ok(stream)
+  Result::<S, NegotiationError<AE>>::Ok(stream)
 }
 
 // Note: Protocol v0 is symmetric until negotiation handshake completes
-fn protocol_magic<'a, S: TunnelStream + Send + 'a>(
+fn protocol_magic<'a, S: TunnelStream + Send + 'a, AE: Debug + 'a>(
   stream: S,
   protocol_version: u8,
-) -> impl Future<Output = Result<u8, NegotiationError>> + 'a {
+) -> impl Future<Output = Result<u8, NegotiationError<AE>>> + 'a {
   let (mut read, write) = tokio::io::split(stream);
   // Write future to send our magic and version to the remote,
   // returning an error if writes are refused by the stream.
@@ -83,7 +84,7 @@ fn protocol_magic<'a, S: TunnelStream + Send + 'a>(
       return Err(NegotiationError::ProtocolViolation);
     }
     tracing::trace!("magic matched expectation");
-    Result::<_, NegotiationError>::Ok(read)
+    Result::<_, NegotiationError<AE>>::Ok(read)
   };
 
   async move {
@@ -108,11 +109,11 @@ impl NegotiationClient {
     Self {}
   }
 
-  pub fn negotiate<'stream, S>(
+  pub fn negotiate<'stream, S, AE: Debug + 'stream>(
     self,
     addr: RouteAddress,
     mut link: S,
-  ) -> impl Future<Output = Result<S, NegotiationError>> + 'stream
+  ) -> impl Future<Output = Result<S, NegotiationError<AE>>> + 'stream
   where
     S: TunnelStream + Send + 'stream,
     for<'a> &'a mut S: TunnelStream + Send + 'a,
@@ -123,7 +124,7 @@ impl NegotiationClient {
       // Absolute most-basic negotiation protocol - sends the address in a frame and waits for 0u8-or-fail
 
       tracing::trace!("performing negotiation protocol handshake");
-      let remote_version = protocol_magic::<&mut S>(&mut link, LOCAL_PROTOCOL_VERSION).await?;
+      let remote_version = protocol_magic::<&mut S, AE>(&mut link, LOCAL_PROTOCOL_VERSION).await?;
       // TODO: Consider adding a confirmation for negotiation protocol acceptance here
 
       // TODO: support multiple versions of negotiation mechanism
@@ -194,7 +195,10 @@ where
     tunnel_id: TunnelId,
   ) -> BoxFuture<
     'stream,
-    Result<(S, RouteAddress, ArcService<<R as ServiceRegistry>::Error>), NegotiationError>,
+    Result<
+      (S, RouteAddress, ArcService<<R as ServiceRegistry>::Error>),
+      NegotiationError<anyhow::Error>,
+    >,
   >
   where
     R: 'stream,
@@ -232,7 +236,7 @@ where
         None => {
           // Write refusal
           // v0 calls for a non-zero u8 to be written to the stream to refuse an address
-          tracing::trace!("refusing address");
+          tracing::trace!(?addr, "refusing address");
           link
             .write_u8(1)
             .await
@@ -340,7 +344,7 @@ mod tests {
           client_stream,
         )
         .await?;
-      Result::<_, NegotiationError>::Ok(())
+      Result::<_, NegotiationError<anyhow::Error>>::Ok(())
     };
 
     let server_future = async move {
@@ -348,7 +352,7 @@ mod tests {
       let (_stream, addr, service) = service
         .negotiate(server_stream, TunnelId::new(1u64))
         .await?;
-      Result::<_, NegotiationError>::Ok((addr, service))
+      Result::<_, NegotiationError<anyhow::Error>>::Ok((addr, service))
     };
     let fut = futures::future::try_join(client_future, server_future);
     let fut = timeout(Duration::from_secs(5), fut);

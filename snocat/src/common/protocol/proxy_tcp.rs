@@ -5,7 +5,7 @@ use futures::{
   AsyncReadExt,
 };
 use std::{
-  convert::{TryFrom, TryInto},
+  convert::{Infallible, TryFrom, TryInto},
   fmt::Display,
   marker::PhantomData,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -42,7 +42,7 @@ impl<Reader, Writer> TcpStreamClient<Reader, Writer> {
   }
 }
 
-impl<Reader, Writer> ProtocolInfo for TcpStreamClient<Reader, Writer> {
+impl ProtocolInfo for TcpStreamService {
   fn protocol_name() -> &'static str
   where
     Self: Sized,
@@ -51,24 +51,24 @@ impl<Reader, Writer> ProtocolInfo for TcpStreamClient<Reader, Writer> {
   }
 }
 
+impl<Reader, Writer> ProtocolInfo for TcpStreamClient<Reader, Writer> {
+  fn protocol_name() -> &'static str
+  where
+    Self: Sized,
+  {
+    TcpStreamService::protocol_name()
+  }
+}
+
 impl<Reader, Writer> RouteAddressBuilder for TcpStreamClient<Reader, Writer> {
   type Params = TcpStreamTarget;
-  type BuildError = RouteAddressParseError;
+  type BuildError = Infallible;
 
   fn build_addr(args: Self::Params) -> Result<RouteAddress, Self::BuildError>
   where
     Self: Sized,
   {
-    let (host, port) = <(String, Option<u16>)>::from(args);
-    Ok(
-      format!(
-        "/{}/0.0.1/{}/{}",
-        Self::protocol_name(),
-        host,
-        port.expect("RFC6763 DNS-Based Service Discovery is not supported by DemandProxyClient")
-      )
-      .parse()?,
-    )
+    Ok(args.into())
   }
 }
 
@@ -197,10 +197,13 @@ pub enum TcpStreamTarget {
 
 impl From<TcpStreamTarget> for RouteAddress {
   fn from(target: TcpStreamTarget) -> Self {
-    target
-      .to_string()
-      .parse()
-      .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
+    format!(
+      "/{}{}",
+      TcpStreamService::protocol_name(),
+      target.to_string(),
+    )
+    .parse()
+    .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
   }
 }
 
@@ -216,7 +219,14 @@ impl TryFrom<&RouteAddress> for TcpStreamTarget {
   type Error = TcpStreamTargetFormatError;
 
   fn try_from(value: &RouteAddress) -> Result<Self, Self::Error> {
-    let parts: Vec<&str> = value.iter_segments().take(4).collect();
+    let parts: Vec<&str> =
+      if let Some(stripped) = value.strip_segment_prefix([TcpStreamService::protocol_name()]) {
+        stripped
+      } else {
+        return Err(TcpStreamTargetFormatError::NoMatchingFormat)?;
+      }
+      .take(4)
+      .collect();
     let (port, parts) = parts
       .split_last()
       .ok_or(TcpStreamTargetFormatError::TooFewSegments)?;
