@@ -4,6 +4,7 @@
 #![feature(async_closure)]
 #![feature(backtrace)]
 #![feature(label_break_value)]
+#![feature(generic_associated_types)]
 #![allow(dead_code)]
 #![warn(unused_imports)]
 

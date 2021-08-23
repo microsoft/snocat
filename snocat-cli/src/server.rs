@@ -17,7 +17,7 @@ use snocat::{
         id::MonotonicAtomicGenerator,
         quinn_tunnel::QuinnTunnel,
         registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
-        Tunnel,
+        Tunnel, TunnelNameOrId,
       },
     },
     tunnel_source::QuinnListenEndpoint,
@@ -62,15 +62,18 @@ where
 {
   type Error = <InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error;
   type Stream = WrappedStream;
+  type LocalAddress = TunnelNameOrId;
 
-  fn route<'client, 'result, TProtocolClient>(
+  fn route<'client, 'result, TProtocolClient, IntoLocalAddress: Into<Self::LocalAddress>>(
     &self,
     request: Request<'client, Self::Stream, TProtocolClient>,
+    local_address: IntoLocalAddress,
   ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
   where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
   {
     let addr = request.address.clone();
+    let local_address = local_address.into();
     let tunnel_registry = self.tunnel_registry.clone();
     let err_addr = request.address.clone();
     let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
@@ -79,18 +82,13 @@ where
       let tunnel_registry = tunnel_registry
         .upgrade()
         .ok_or_else(err_not_found.clone())?;
-      // Select the highest keyed tunnel or bail; the highest tunnel is the newest connection, in our case
-      let highest_keyed_tunnel_id = tunnel_registry
-        .max_key()
-        .await
-        .ok_or_else(err_not_found.clone())?;
-      // Find the tunnel if it's still around when we finish looking it up, or bail
-      let tunnel = tunnel_registry
-        .lookup_by_id(highest_keyed_tunnel_id)
-        .await
-        .map_err(Into::into)
-        .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
-      // .ok_or(RoutingError::NoMatchingTunnel)?;
+      // Lookup the tunnel or bail if it doesn't exist anymore
+      let tunnel = match local_address {
+        TunnelNameOrId::Id(id) => tunnel_registry.lookup_by_id(id).await,
+        TunnelNameOrId::Name(name) => tunnel_registry.lookup_by_name(name).await,
+      }
+      .map_err(Into::into)
+      .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
       let tunnel_id = tunnel.id;
       let link = tunnel
         .tunnel
@@ -163,7 +161,6 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 
   {
     let demand_proxy_service = Arc::new(DemandProxyService::new(
-      Arc::downgrade(&tunnel_registry) as Weak<_>, // `as` clause triggers CoerceUnsize to make a dynamic Arc
       Arc::downgrade(modular.router()),
       PortRangeAllocator::new(config.tcp_bind_port_range),
       vec![

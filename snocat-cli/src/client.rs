@@ -50,20 +50,32 @@ impl<TTunnel> SnocatClientRouter<TTunnel> {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientLocalAddress {
+  MostRecentConnection,
+}
+
 impl<TTunnel> Router for SnocatClientRouter<TTunnel>
 where
   TTunnel: Tunnel + Send + Sync + 'static,
 {
   type Error = <InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error;
   type Stream = WrappedStream;
+  type LocalAddress = ClientLocalAddress;
 
-  fn route<'client, 'result, TProtocolClient>(
+  fn route<'client, 'result, TProtocolClient, IntoLocalAddress: Into<Self::LocalAddress>>(
     &self,
     request: Request<'client, Self::Stream, TProtocolClient>,
+    local_address: IntoLocalAddress,
   ) -> BoxFuture<'client, RouterResult<'client, 'result, Self, TProtocolClient>>
   where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client,
   {
+    // Assert that if another local address type is added, we handle it appropriately
+    // if we don't provide a match for it, we can't compile at all, let alone fail
+    match local_address.into() {
+      ClientLocalAddress::MostRecentConnection => (),
+    };
     let addr = request.address.clone();
     let err_addr = request.address.clone();
     let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
@@ -230,7 +242,10 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
         }
         .into(),
       )?;
-      let (_remote_addrs, wait_close) = request_handler.route(req).await?.await?;
+      let (_remote_addrs, wait_close) = request_handler
+        .route(req, ClientLocalAddress::MostRecentConnection)
+        .await?
+        .await?;
       let res = futures::future::select(wait_close, Box::pin(shutdown.cancelled())).await;
       match res {
         Either::Left((Err(res), _listener)) => Err(res)?,

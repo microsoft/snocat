@@ -9,7 +9,7 @@ use snocat::{
       Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
       RoutingError,
     },
-    tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
+    tunnel::TunnelId,
     RouteAddress, Service, ServiceError,
   },
   server::PortRangeAllocator,
@@ -139,17 +139,13 @@ where
 }
 
 // TODO: This service is obsolete- listen on the server side for connection events instead
-pub struct DemandProxyService<TTunnel, TTunnelRegistry, TRouter> {
-  tunnel_registry: Weak<TTunnelRegistry>,
+pub struct DemandProxyService<TRouter> {
   router: Weak<TRouter>,
   port_range_allocator: PortRangeAllocator,
   bind_addrs: Arc<Vec<IpAddr>>,
-  tunnel_phantom: std::marker::PhantomData<TTunnel>,
 }
 
-impl<TTunnel, TTunnelRegistry, TRouter> std::fmt::Debug
-  for DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
-{
+impl<TRouter> std::fmt::Debug for DemandProxyService<TRouter> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("DemandProxy server").finish_non_exhaustive()
   }
@@ -158,34 +154,30 @@ impl<TTunnel, TTunnelRegistry, TRouter> std::fmt::Debug
 const DEMAND_PROXY_PROTOCOL_NAME: &'static str = "proxyme";
 const DEMAND_PROXY_VERSION: &'static str = "0.0.1";
 
-impl<TTunnel, TTunnelRegistry, TRouter> DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
+impl<TRouter> DemandProxyService<TRouter>
 where
-  TTunnel: Tunnel + Send + Sync + 'static,
-  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
   TRouter::Stream: TunnelStream + Send,
   TRouter::Error: Send,
+  TRouter::LocalAddress: From<TunnelId>,
 {
   pub fn new(
-    tunnel_registry: Weak<TTunnelRegistry>,
     router: Weak<TRouter>,
     port_range_allocator: PortRangeAllocator,
     mut bind_addrs: Vec<IpAddr>,
   ) -> Self {
     Self::handle_dual_stack_addrs(&mut bind_addrs);
     Self {
-      tunnel_registry,
       router,
       port_range_allocator,
       bind_addrs: Arc::new(bind_addrs),
-      tunnel_phantom: std::marker::PhantomData,
     }
   }
 
   async fn run_tcp_listener(
     target_addr: Arc<(Option<String>, u16)>,
     tcp_listener: TcpListener,
-    weak_tunnel: Weak<TTunnel>,
+    target_tunnel: TunnelId,
     router: Weak<TRouter>,
     stop_accepting: CancellationToken,
   ) -> Result<(), ServiceError<TRouter::Error>> {
@@ -200,21 +192,8 @@ where
       })
       .try_for_each_concurrent(None, move |tcp_stream| {
         let target_addr = target_addr.clone();
-        let weak_tunnel = weak_tunnel.clone();
         let router = router.clone();
         async move {
-          // TODO: Link is unused; probably an artifact of direct routing leftovers- see what's needed
-          // Probably need to come up with a way to specify a tunnel for outgoing requests
-          // when `route`'d, now that I think of it
-          let link = {
-            let tunnel = weak_tunnel
-              .upgrade()
-              .ok_or(ServiceError::DependencyFailure)?;
-            tunnel
-              .open_link()
-              .await
-              .or(Err(ServiceError::UnexpectedEnd))?
-          };
           use snocat::common::protocol::proxy_tcp::{DnsTarget, TcpStreamClient};
           let (tcp_recv, tcp_send) = tokio::io::split(tcp_stream);
           let client = TcpStreamClient::new(tcp_recv, tcp_send);
@@ -232,7 +211,7 @@ where
           router
             .upgrade()
             .ok_or(ServiceError::DependencyFailure)?
-            .route(req)
+            .route(req, target_tunnel)
             .await
             .map_err(|res| match res {
               RoutingError::RouteNotFound(_) => {
@@ -262,41 +241,25 @@ where
   async fn run_tcp_listeners(
     bindings: Vec<TcpListener>,
     target_addr: (Option<String>, u16),
-    weak_tunnel: Weak<TTunnel>,
+    target_tunnel: TunnelId,
     router: Weak<TRouter>,
-    no_new_requests_listener: CancellationToken,
+    stop_accepting: CancellationToken,
   ) -> Result<(), ServiceError<TRouter::Error>> {
     let span =
       tracing::span!(tracing::Level::DEBUG, "demand_proxy_forwarding", target = ?target_addr);
     use futures::stream::TryStreamExt;
-    let parsed_addr = Arc::new(target_addr);
-    let fut = futures::stream::iter(
-      bindings
-        .into_iter()
-        .map(move |listener| {
-          (
-            listener,
-            weak_tunnel.clone(),
-            router.clone(),
-            no_new_requests_listener.clone(),
-            Arc::clone(&parsed_addr),
-          )
-        })
-        .map(Result::<_, ServiceError<_>>::Ok),
-    )
-    .try_for_each_concurrent(
-      None,
-      |(listener, weak_tunnel, request_client_handler, no_new_requests_listener, parsed_addr)| {
+    let target_addr = Arc::new(target_addr);
+    let fut = futures::stream::iter(bindings.into_iter().map(Ok))
+      .try_for_each_concurrent(None, move |tcp_listener| {
         Self::run_tcp_listener(
-          parsed_addr,
-          listener,
-          weak_tunnel,
-          request_client_handler,
-          no_new_requests_listener,
+          target_addr.clone(),
+          tcp_listener,
+          target_tunnel,
+          router.clone(),
+          stop_accepting.clone(),
         )
-      },
-    )
-    .instrument(span);
+      })
+      .instrument(span);
     // Run as a tokio::task to ensure scheduling across tunnels
     tokio::task::spawn(fut)
       // Treat JoinErrors as just another ServiceError
@@ -308,7 +271,7 @@ where
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TRouter> DemandProxyService<TTunnel, TTunnelRegistry, TRouter> {
+impl<TRouter> DemandProxyService<TRouter> {
   /// Removes incidents where one "unspecified" / dual-stack-mode IP will steal from others on the host
   fn handle_dual_stack_addrs(bind_addrs: &mut Vec<IpAddr>) {
     match bind_addrs.iter().find(|addr| addr.is_unspecified()) {
@@ -354,14 +317,12 @@ impl<TTunnel, TTunnelRegistry, TRouter> DemandProxyService<TTunnel, TTunnelRegis
   }
 }
 
-impl<TTunnel, TTunnelRegistry, TRouter> Service
-  for DemandProxyService<TTunnel, TTunnelRegistry, TRouter>
+impl<TRouter> Service for DemandProxyService<TRouter>
 where
-  TTunnel: Tunnel + Send + Sync + 'static,
-  TTunnelRegistry: TunnelRegistry<TTunnel> + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
   TRouter::Stream: TunnelStream + Send,
   TRouter::Error: Send,
+  TRouter::LocalAddress: From<TunnelId>,
 {
   type Error = TRouter::Error;
 
@@ -379,7 +340,6 @@ where
       "Demand proxy proxy connection request received with addr {}; building span...",
       addr
     );
-    let tunnel_registry = Weak::clone(&self.tunnel_registry);
     let port_range_allocator = self.port_range_allocator.clone();
     let bind_addrs = Arc::clone(&self.bind_addrs);
     let parsed_addr = {
@@ -399,22 +359,6 @@ where
           ServiceError::UnexpectedEnd
         })?;
       tracing::trace!("Discarding proxy demand subject as we do not yet use it");
-      let weak_tunnel = {
-        let tunnel_registry = tunnel_registry
-          .upgrade()
-          .ok_or(ServiceError::DependencyFailure)?;
-        let tunnel = tunnel_registry
-          .lookup_by_id(tunnel_id)
-          .await
-          .map_err(|_registry_error| ServiceError::AddressError)
-          .and_then(|x| x.ok_or(ServiceError::DependencyFailure))?;
-        if let Some(hatch) = tunnel.tunnel {
-          Ok(Arc::downgrade(&hatch))
-        } else {
-          tracing::warn!(tunnel_id = ?tunnel.id, "Attempted to route to tunnel not available in the local registry");
-          Err(ServiceError::AddressError)
-        }?
-      };
       let port = match port_range_allocator.allocate().await {
         Ok(port) => {
           // Notify the client of their allocated port
@@ -496,7 +440,7 @@ where
       let tcp_listener_task = Self::run_tcp_listeners(
         bindings,
         parsed_addr,
-        weak_tunnel,
+        tunnel_id,
         self.router.clone(),
         no_new_requests,
       );

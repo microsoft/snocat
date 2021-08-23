@@ -427,10 +427,12 @@ pub type RouterResult<'client, 'result, TRouter, TProtocolClient> = Result<
 pub trait Router {
   type Error;
   type Stream;
+  type LocalAddress;
 
-  fn route<'client, 'result, TProtocolClient>(
+  fn route<'client, 'result, TProtocolClient, IntoLocalAddress: Into<Self::LocalAddress>>(
     &self,
     request: Request<'client, Self::Stream, TProtocolClient>,
+    local_address: IntoLocalAddress,
   ) -> BoxFuture<'client, Result<TProtocolClient::Future, RoutingError<Self::Error>>>
   where
     TProtocolClient: Client<'result, Self::Stream> + Send + 'client;
