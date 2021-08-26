@@ -15,8 +15,8 @@ pub trait TunnelStream: AsyncRead + AsyncWrite + Send + Unpin {
   }
 }
 
-impl<'stream, TInner: TunnelStream + 'stream> TunnelStream for &mut TInner {}
-impl<'stream, TInner: TunnelStream + 'stream> TunnelStream for Box<TInner> {}
+impl<'stream, TInner: TunnelStream + ?Sized + 'stream> TunnelStream for &'stream mut TInner {}
+impl<TInner: TunnelStream + ?Sized> TunnelStream for Box<TInner> {}
 
 pub struct QuinnTunnelRefStream<'a, TSession: quinn::crypto::Session>(
   &'a mut quinn::generic::SendStream<TSession>,
