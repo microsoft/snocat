@@ -20,7 +20,7 @@ log = "~0.4.13"
 quinn = "~0.7.2"
 serde = { version = "~1.0.128", features=["derive"] }
 serde_json = "~1.0.66"
-thiserror = { version = "^1.0.26", git = "https://github.com/Dessix/thiserror", rev = "02012b03f07bd7e06380fd2f13ea6a37ce4dfcc0" }
+thiserror = { version = "^1.0.28", git = "https://github.com/Dessix/thiserror", rev = "377de4811778b1e59cdfd242f8387dee10a3c1cb" }
 tracing = "~0.1.22"
 tracing-futures = "~0.2.4"
 tracing-subscriber = "~0.2.20"

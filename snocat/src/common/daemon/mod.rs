@@ -222,15 +222,12 @@ where
 }
 
 #[derive(thiserror::Error, Debug)]
-enum TunnelLifecycleError<
-  ApplicationError: std::fmt::Debug + std::fmt::Display + 'static,
-  RegistryError: std::fmt::Debug + std::fmt::Display + 'static,
-> {
+enum TunnelLifecycleError<ApplicationError, RegistryError> {
   #[error("Tunnel registration error")]
   RegistrationError(#[from] TunnelRegistrationError<RegistryError>),
   #[error("Tunnel naming error")]
   RegistryNamingError(#[from] TunnelNamingError<RegistryError>),
-  #[error(transparent)]
+  #[error("{0}")]
   RequestProcessingError(RequestProcessingError<ApplicationError>),
   #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
   AuthenticationRefused,
@@ -239,7 +236,7 @@ enum TunnelLifecycleError<
 }
 
 #[derive(thiserror::Error, Debug)]
-enum RequestProcessingError<ApplicationError: std::fmt::Debug + std::fmt::Display> {
+enum RequestProcessingError<ApplicationError> {
   #[error("Protocol version mismatch")]
   UnsupportedProtocolVersion,
   #[error("Tunnel error encountered: {0}")]

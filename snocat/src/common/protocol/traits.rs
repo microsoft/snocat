@@ -21,7 +21,6 @@ use super::{
 use crate::common::protocol::tunnel::TunnelError;
 
 #[derive(thiserror::Error, Debug)]
-#[error(bound = std::fmt::Debug)]
 pub enum ServiceError<InternalError> {
   #[error("Address refused by client")]
   Refused,

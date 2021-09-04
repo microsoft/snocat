@@ -15,7 +15,6 @@ use super::{negotiation::NegotiationError, RouteAddress};
 // Client
 
 #[derive(thiserror::Error, Debug)]
-#[error(bound = std::fmt::Debug)]
 pub enum ClientError<ApplicationError> {
   #[error("Invalid address provided to client")]
   InvalidAddress,
@@ -396,7 +395,6 @@ impl<'client, TStream, TClient> Request<'client, TStream, TClient> {
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error(bound = std::fmt::Debug)]
 pub enum RoutingError<RouterError> {
   #[error("Route not found for request")]
   RouteNotFound(RouteAddress),
@@ -406,7 +404,7 @@ pub enum RoutingError<RouterError> {
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(#[from] super::tunnel::TunnelError),
-  #[error(transparent)]
+  #[error("{0}")]
   NegotiationError(NegotiationError<RouterError>),
   #[error("Routing error: {0:?}")]
   RouterError(RouterError),

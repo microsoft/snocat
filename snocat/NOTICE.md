@@ -73,9 +73,9 @@ their own copyright notices and license terms:
 * [socket2 v0.3.19](https://github.com/alexcrichton/socket2-rs) - MIT/Apache-2.0
 * [spin v0.5.2](https://github.com/mvdnes/spin-rs.git) - MIT
 * [syn v1.0.75](https://github.com/dtolnay/syn) - MIT OR Apache-2.0
-* [thiserror-impl v1.0.26](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
-* [thiserror-impl v1.0.26 (proc-macro) (https://github.com/Dessix/thiserror?rev=02012b03f07bd7e06380fd2f13ea6a37ce4dfcc0#02012b03)](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
-* [thiserror v1.0.26](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
+* [thiserror-impl v1.0.28](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
+* [thiserror-impl v1.0.28 (proc-macro) (https://github.com/Dessix/thiserror?rev=377de4811778b1e59cdfd242f8387dee10a3c1cb#377de481)](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
+* [thiserror v1.0.28](https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
 * [thread_local v1.1.3](https://github.com/Amanieu/thread_local-rs) - Apache-2.0/MIT
 * [tinyvec_macros v0.1.0](https://github.com/Soveu/tinyvec_macros) - MIT OR Apache-2.0 OR Zlib
 * [tinyvec v1.3.1](https://github.com/Lokathor/tinyvec) - Zlib OR Apache-2.0 OR MIT

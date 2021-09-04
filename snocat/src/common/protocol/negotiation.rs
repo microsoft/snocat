@@ -21,7 +21,6 @@ use super::{
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
 
 #[derive(thiserror::Error, Debug)]
-#[error(bound = std::fmt::Debug)]
 pub enum NegotiationError<ApplicationError> {
   #[error("Stream read failed")]
   ReadError,

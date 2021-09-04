@@ -71,7 +71,7 @@ impl<TTunnel: ?Sized, TMetadata> Debug for TunnelRecord<TTunnel, TMetadata> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum TunnelRegistrationError<ApplicationError: Debug + Display> {
+pub enum TunnelRegistrationError<ApplicationError> {
   #[error("Tunnel ID was already occupied")]
   IdOccupied(TunnelId),
   #[error("Application error in tunnel registration")]
@@ -87,7 +87,7 @@ impl<ApplicationError: Debug + Display> From<ApplicationError>
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum TunnelNamingError<ApplicationError: Debug + Display> {
+pub enum TunnelNamingError<ApplicationError> {
   #[error("The tunnel to be named was not found")]
   TunnelNotRegistered(TunnelId),
   #[error("Application error in tunnel naming")]
