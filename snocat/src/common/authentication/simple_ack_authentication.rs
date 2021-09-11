@@ -24,7 +24,8 @@ impl SimpleAckAuthenticationHandler {
     mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<<Self as AuthenticationHandler>::Error>>>
+  {
     async move {
       tracing::info!("Sending HELO...");
       let mut buffer = [0u8; 64];
@@ -68,7 +69,8 @@ impl SimpleAckAuthenticationHandler {
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<<Self as AuthenticationHandler>::Error>>>
+  {
     async move {
       let (mut recv, mut send) = tokio::io::split(channel);
       use std::io::Write;
@@ -111,12 +113,14 @@ impl std::fmt::Debug for SimpleAckAuthenticationHandler {
 }
 
 impl AuthenticationHandler for SimpleAckAuthenticationHandler {
+  type Error = std::convert::Infallible;
+
   fn authenticate<'a>(
     &'a self,
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
     match tunnel_info.side {
       TunnelSide::Listen => self
         .authenticate_listen_side(channel, tunnel_info, shutdown_notifier)

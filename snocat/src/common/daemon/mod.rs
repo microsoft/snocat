@@ -81,7 +81,8 @@ impl<
   > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
   TTunnel: Send + Sync + 'static,
-  TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
+  TAuthenticationHandler: AuthenticationHandler + 'static,
+  TAuthenticationHandler::Error: std::fmt::Debug,
 {
   fn authenticate_tunnel<'a>(
     self: &Arc<Self>,
@@ -100,19 +101,10 @@ where
       )
       .await;
       match result {
-        Err(AuthenticationError::Handling(AuthenticationHandlingError::FatalApplicationError(
-          fatal_error,
-        ))) => {
-          tracing::error!(reason=?fatal_error, "Authentication encountered fatal error!");
-          anyhow::Context::context(
-            Err(fatal_error),
-            "Fatal error encountered while handling authentication",
-          )
-        }
         Err(AuthenticationError::Handling(handling_error)) => {
           // Non-fatal handling errors are passed to tracing and close the tunnel
           tracing::warn!(
-            reason = (&handling_error as &dyn std::error::Error),
+            reason = ?&handling_error,
             "Tunnel closed due to authentication handling failure"
           );
           Ok(None)
@@ -145,7 +137,8 @@ where
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
-  TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
+  TAuthenticationHandler: AuthenticationHandler + 'static,
+  TAuthenticationHandler::Error: std::fmt::Debug,
 {
   pub fn new(
     service_registry: Arc<TServiceRegistry>,
@@ -275,7 +268,8 @@ where
   TTunnelRegistry::Metadata: Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
-  TAuthenticationHandler: AuthenticationHandler + Send + Sync + 'static,
+  TAuthenticationHandler: AuthenticationHandler + 'static,
+  TAuthenticationHandler::Error: std::fmt::Debug,
 {
   fn tunnel_lifecycle(
     self: Arc<Self>,

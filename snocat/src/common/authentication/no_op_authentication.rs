@@ -29,12 +29,14 @@ impl std::fmt::Debug for NoOpAuthenticationHandler {
 }
 
 impl AuthenticationHandler for NoOpAuthenticationHandler {
+  type Error = std::convert::Infallible;
+
   fn authenticate<'a>(
     &'a self,
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError>> {
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
     async move {
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
