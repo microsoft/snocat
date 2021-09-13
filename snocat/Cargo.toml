@@ -12,8 +12,8 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 [dependencies]
 anyhow = "~1.0.43"
 downcast-rs = "^1.2.0"
-futures = "^0.3.16"
-futures-io = "^0.3.16"
+futures = "^0.3.17"
+futures-io = "^0.3.17"
 gen-z = "~0.1.0"
 lazy_static = "1.4.0"
 log = "~0.4.13"
@@ -21,12 +21,12 @@ quinn = "~0.7.2"
 serde = { version = "~1.0.128", features=["derive"] }
 serde_json = "~1.0.66"
 thiserror = "1.0.29"
-tracing = "~0.1.22"
-tracing-futures = "~0.2.4"
-tracing-subscriber = "~0.2.20"
-tokio = { version = "^1.10.0", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tracing = "~0.1.27"
+tracing-futures = "~0.2.5"
+tracing-subscriber = "~0.2.22"
+tokio = { version = "^1.11.0", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "^0.1.7", features=["net", "io-util", "sync"] }
-tokio-util = { version = "^0.6.7", features=["default", "io", "time"] }
+tokio-util = { version = "^0.6.8", features=["default", "io", "time"] }
 
 [lib]
 crate-type = ["rlib", "cdylib"]
