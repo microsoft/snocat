@@ -10,7 +10,7 @@ their own copyright notices and license terms:
 
 * [ansi_term v0.11.0]() - MIT
 * [ansi_term v0.12.1](https://github.com/ogham/rust-ansi-term) - MIT
-* [anyhow v1.0.43](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
+* [anyhow v1.0.44](https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
 * [atty v0.2.14](https://github.com/softprops/atty) - MIT
 * [autocfg v1.0.1](https://github.com/cuviper/autocfg) - Apache-2.0 OR MIT
 * [base64 v0.13.0](https://github.com/marshallpierce/rust-base64) - MIT/Apache-2.0
@@ -90,13 +90,13 @@ their own copyright notices and license terms:
 * [tokio-stream v0.1.7](https://github.com/tokio-rs/tokio) - MIT
 * [tokio-util v0.6.8](https://github.com/tokio-rs/tokio) - MIT
 * [tokio v1.11.0](https://github.com/tokio-rs/tokio) - MIT
-* [tracing-attributes v0.1.15](https://github.com/tokio-rs/tracing) - MIT
-* [tracing-core v0.1.19](https://github.com/tokio-rs/tracing) - MIT
+* [tracing-attributes v0.1.16](https://github.com/tokio-rs/tracing) - MIT
+* [tracing-core v0.1.20](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-futures v0.2.5](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-log v0.1.2](https://github.com/tokio-rs/tracing) - MIT
 * [tracing-serde v0.1.2](https://github.com/tokio-rs/tracing) - MIT
-* [tracing-subscriber v0.2.20](https://github.com/tokio-rs/tracing) - MIT
-* [tracing v0.1.26](https://github.com/tokio-rs/tracing) - MIT
+* [tracing-subscriber v0.2.22](https://github.com/tokio-rs/tracing) - MIT
+* [tracing v0.1.27](https://github.com/tokio-rs/tracing) - MIT
 * [unicode-width v0.1.8](https://github.com/unicode-rs/unicode-width) - MIT/Apache-2.0
 * [unicode-xid v0.2.2](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
