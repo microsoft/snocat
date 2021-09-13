@@ -736,7 +736,6 @@ dependencies = [
  "futures",
  "futures-io",
  "gen-z",
- "lazy_static",
  "log",
  "quinn",
  "serde",

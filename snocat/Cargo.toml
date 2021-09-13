@@ -15,7 +15,6 @@ downcast-rs = "^1.2.0"
 futures = "^0.3.17"
 futures-io = "^0.3.17"
 gen-z = "~0.1.0"
-lazy_static = "1.4.0"
 log = "~0.4.13"
 quinn = "~0.7.2"
 serde = { version = "~1.0.128", features=["derive"] }
