@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "snocat-cli"
-version = "0.2.0-alpha.10"
+version = "0.3.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
