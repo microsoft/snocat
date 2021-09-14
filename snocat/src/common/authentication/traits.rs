@@ -11,6 +11,7 @@ use futures::{future::BoxFuture, FutureExt, TryStreamExt};
 use std::{
   fmt::Debug,
   marker::{PhantomData, Unpin},
+  sync::Arc,
 };
 
 #[derive(Debug, Clone)]
@@ -121,6 +122,12 @@ impl<TInner> AuthenticationError<TInner> {
     TInner: Into<TNew>,
   {
     self.map_err(Into::into)
+  }
+}
+
+impl<TInner> From<std::convert::Infallible> for AuthenticationError<TInner> {
+  fn from(_: std::convert::Infallible) -> Self {
+    unreachable!()
   }
 }
 
@@ -235,7 +242,24 @@ pub trait AuthenticationHandlerExt: AuthenticationHandler {
   }
 }
 
+impl<T: AuthenticationHandler> AuthenticationHandlerExt for T {}
+
 impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
+  type Error = T::Error;
+
+  fn authenticate<'a>(
+    &'a self,
+    channel: Box<dyn TunnelStream + Send + Unpin>,
+    tunnel_info: TunnelInfo,
+    shutdown_notifier: &'a CancellationListener,
+  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+    self
+      .as_ref()
+      .authenticate(channel, tunnel_info, shutdown_notifier)
+  }
+}
+
+impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Arc<T> {
   type Error = T::Error;
 
   fn authenticate<'a>(
