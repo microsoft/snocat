@@ -283,7 +283,9 @@ pub trait TunnelControlPerChannel: TunnelControl {
 ///
 /// Lifetimes of the baggage and its children are bound to that of the parent
 pub trait Baggage {
-  type Bag<'a>;
+  type Bag<'a>
+  where
+    Self: 'a;
 
   fn bag<'a>(&'a self) -> Self::Bag<'a>;
 }

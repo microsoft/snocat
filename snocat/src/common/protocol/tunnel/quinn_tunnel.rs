@@ -225,7 +225,11 @@ impl<S, B> Baggage for QuinnTunnel<S, B>
 where
   S: quinn::crypto::Session,
 {
-  type Bag<'a> = Arc<B>;
+  type Bag<'a>
+  where
+    B: 'a,
+    S: 'a,
+  = Arc<B>;
 
   fn bag<'a>(&'a self) -> Self::Bag<'a> {
     self.baggage.clone()
