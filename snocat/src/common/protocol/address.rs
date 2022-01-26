@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 
-use std::{convert::TryFrom, iter::FromIterator, str::FromStr};
+use std::{iter::FromIterator, str::FromStr};
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Hash)]
 #[repr(transparent)]

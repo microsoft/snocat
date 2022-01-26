@@ -2,7 +2,7 @@
 // Licensed under the MIT license OR Apache 2.0
 
 use crate::services::{demand_proxy::DemandProxyClient, PresetServiceRegistry};
-use anyhow::{Context as AnyhowContext, Error as AnyErr, Result};
+use anyhow::{Context as AnyhowContext, Result};
 use futures::{future::*, *};
 use snocat::{
   common::{
@@ -21,7 +21,7 @@ use snocat::{
     },
     tunnel_source::DynamicConnectionSet,
   },
-  util::{self, tunnel_stream::WrappedStream},
+  util::tunnel_stream::WrappedStream,
 };
 use std::{
   path::PathBuf,
@@ -122,31 +122,41 @@ where
 
 pub async fn client_main(config: ClientArgs) -> Result<()> {
   let config = Arc::new(config);
-  let authority = match &config.authority_cert {
-    Some(authority_cert_path) => {
-      let cert_pem =
-        std::fs::read(authority_cert_path).context("Failed reading authority cert file")?;
-      let authority = quinn::CertificateChain::from_pem(&cert_pem)?;
-      let authority = quinn::Certificate::from(
-        authority
-          .iter()
-          .nth(0)
-          .cloned()
-          .ok_or_else(|| AnyErr::msg("No root authority"))?,
-      );
-      Some(authority)
+  let mut root_authorities = rustls::RootCertStore::empty();
+  if let Some(authority_cert_path) = &config.authority_cert {
+    let authority_cert_pem =
+      std::fs::read(authority_cert_path).context("Failed reading authority cert file")?;
+    let authority_cert_chain =
+      rustls_pemfile::certs(&mut std::io::Cursor::new(&authority_cert_pem))
+        .context("Quinn .pem parsing of authority certificate(s) failed")?;
+
+    // Register all authority certificates with Rustls' root store
+    for authority in authority_cert_chain {
+      root_authorities
+        .add(&rustls::Certificate(authority))
+        .context("Failed to add root authority")?;
     }
-    None => None,
   };
-  let quinn_config = {
-    let mut qc = quinn::ClientConfigBuilder::default();
-    qc.enable_keylog();
-    if let Some(authority) = authority {
-      qc.add_certificate_authority(authority)?;
-    }
-    qc.protocols(util::ALPN_QUIC_HTTP);
-    qc.build()
-  };
+
+  let native_root_certs =
+    rustls_native_certs::load_native_certs().context("Failed loading native certs")?;
+  root_authorities.add_parsable_certificates(
+    &native_root_certs
+      .into_iter()
+      .map(|c| c.0)
+      .collect::<Vec<_>>(),
+  );
+  let mut crypto_config = rustls::ClientConfig::builder()
+    .with_safe_default_cipher_suites()
+    .with_safe_default_kx_groups()
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_root_certificates(root_authorities)
+    .with_no_client_auth();
+
+  crypto_config.alpn_protocols = vec![crate::util::ALPN_MS_SNOCAT_1.to_vec()];
+  crypto_config.key_log = Arc::new(rustls::KeyLogFile::new());
+
+  let quinn_config = quinn::ClientConfig::new(Arc::new(crypto_config));
 
   let (shutdown, sigint_handler_task) = {
     let shutdown = CancellationToken::new();
@@ -189,17 +199,13 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     tunnel_id_generator,
   ));
 
-  let (endpoint, _incoming) = {
-    let mut response_endpoint = quinn::Endpoint::builder();
-    response_endpoint.default_client_config(quinn_config);
-    response_endpoint.bind(&"[::]:0".parse()?)? // Should this be IPv4 if the server is?
-  };
+  let endpoint = quinn::Endpoint::client("[::]:0".parse()?)?; // Should this be IPv4 if the server is?
 
   let (mut add_new_connection, connections_handle) = {
     let mut current_connection_id = 0u32;
     let connections = DynamicConnectionSet::<u32, _>::new();
     let connections_handle = connections.handle();
-    let add_new_connection = move |tunnel: (quinn::generic::NewConnection<_>, _, _)| -> u32 {
+    let add_new_connection = move |tunnel: (quinn::NewConnection, _, _)| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
       assert!(
@@ -215,7 +221,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
 
   {
     let connecting: Result<_, _> = endpoint
-      .connect(&config.driver_host, &config.driver_san)
+      .connect_with(quinn_config, config.driver_host, &config.driver_san)
       .context("Connecting to server")?
       .await;
     let connection = connecting.context("Finalizing connection to server...")?;

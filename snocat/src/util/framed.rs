@@ -120,15 +120,11 @@ pub async fn write_framed_json<TStream: tokio::io::AsyncWrite + Unpin, TInput: s
 mod tests {
   use std::assert_matches::assert_matches;
 
-  use crate::util::framed::{read_frame, read_framed_json, write_frame, write_framed_json};
-
-  use super::JsonWriteError;
+  use super::{read_framed_json, write_framed_json, JsonWriteError};
 
   #[tokio::test]
   async fn stream_framed_roundtrip() {
     use super::{read_frame, write_frame};
-    use ::std::io::Seek;
-    use ::tokio::io::{AsyncReadExt, AsyncWriteExt};
     const TEST_BLOB_LENGTH: usize = 1234;
     let mut buffer: Vec<u8> = Vec::with_capacity(TEST_BLOB_LENGTH + std::mem::size_of::<u32>());
     {

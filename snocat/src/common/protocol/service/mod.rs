@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 //! High-level protocol services with bidirectional streaming communications
-use downcast_rs::{impl_downcast, Downcast, DowncastSync};
+
 use futures::{
-  future::{AndThen, BoxFuture, LocalBoxFuture, Then},
+  future::{BoxFuture, Then},
   Future, FutureExt, TryFutureExt,
 };
-use std::{any::Any, fmt::Debug, marker::PhantomData, process::Output};
+use std::{any::Any, fmt::Debug, marker::PhantomData};
 
 use crate::util::tunnel_stream::TunnelStream;
 
@@ -473,8 +473,6 @@ pub trait Router {
 
 #[cfg(test)]
 mod tests {
-  use super::ClientExt;
-
   /// This is a static test- it does not need run to test its behaviour, just compiled
   fn static_test_boxed_client_is_object_safe<'a, 'result, Stream, C>(
     _unboxed: C,

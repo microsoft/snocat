@@ -1,19 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use futures::{
-  future::*,
-  io::{AsyncRead, AsyncWrite},
-  stream::{self, SelectAll, Stream, StreamExt},
-  AsyncReadExt,
-};
-use std::{
-  boxed::Box,
-  error::Error,
-  net::SocketAddr,
-  path::Path,
-  sync::Arc,
-  task::{Context, Poll},
-};
+use futures::stream::{self, Stream, StreamExt};
+use std::{boxed::Box, task::Poll};
 
 pub fn merge_streams<'a, T: 'a>(
   source: impl futures::stream::Stream<Item = stream::BoxStream<'a, T>> + 'a + std::marker::Send,
@@ -64,14 +52,13 @@ pub fn merge_streams<'a, T: 'a>(
 #[cfg(test)]
 mod tests {
   use crate::util::merge_streams::merge_streams;
-  use futures::{AsyncReadExt, StreamExt};
   use tokio_util::sync::CancellationToken;
 
   #[tokio::test]
   async fn test_stream_merging() {
     use futures::{
       future::FutureExt,
-      stream::{self, Stream, StreamExt},
+      stream::{self, StreamExt},
     };
 
     let x = stream::unfold(1i32, async move |state| {
@@ -207,8 +194,8 @@ mod tests {
   #[tokio::test]
   async fn merge_sequential_wake() {
     use futures::{
-      future::{self, FutureExt},
-      stream::{self, Stream, StreamExt},
+      future,
+      stream::{self, StreamExt},
     };
     use tokio::time::timeout;
 

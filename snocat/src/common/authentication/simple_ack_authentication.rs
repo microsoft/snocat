@@ -1,16 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use super::traits::*;
-#[warn(unused_imports)]
+use super::{AuthenticationError, AuthenticationHandler, TunnelInfo};
 use crate::{
-  common::protocol::tunnel::{TunnelName, TunnelSide},
+  common::{
+    authentication::RemoteAuthenticationError,
+    protocol::tunnel::{TunnelName, TunnelSide},
+  },
   util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
 };
-use anyhow::{Context, Error as AnyErr, Result};
+use futures::FutureExt;
 use futures::{future::BoxFuture, TryFutureExt};
-use futures::{AsyncWriteExt, FutureExt, StreamExt};
 use std::marker::Unpin;
-use tokio_util::sync::CancellationToken;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -134,12 +134,10 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
 
 #[cfg(test)]
 mod tests {
-  use tokio_util::sync::CancellationToken;
-
   use super::SimpleAckAuthenticationHandler;
   use crate::{
     common::{
-      authentication::{perform_authentication, AuthenticationHandler, TunnelInfo},
+      authentication::perform_authentication,
       protocol::tunnel::{
         duplex::{channel as duplex, EntangledTunnels},
         TunnelName,
@@ -147,7 +145,6 @@ mod tests {
     },
     util::cancellation::CancellationListener,
   };
-  use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
   #[tokio::test]
   async fn run_auth() {

@@ -1,14 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 use anyhow::{Error as AnyErr, Result};
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
-};
-use std::boxed::Box;
+use std::net::SocketAddr;
 use std::path::Path;
-use std::task::{Context, Poll};
-use std::{net::SocketAddr, sync::Arc};
 
 pub fn validate_existing_file(v: String) -> Result<(), String> {
   if !Path::new(&v).exists() {
@@ -19,8 +13,7 @@ pub fn validate_existing_file(v: String) -> Result<(), String> {
 }
 
 pub fn parse_socketaddr(v: &str) -> Result<SocketAddr> {
-  use std::convert::TryFrom;
-  use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+  use std::net::ToSocketAddrs;
   ToSocketAddrs::to_socket_addrs(v)
     .map_err(|e| e.into())
     .and_then(|mut items| {
@@ -32,8 +25,7 @@ pub fn parse_socketaddr(v: &str) -> Result<SocketAddr> {
 }
 
 pub fn parse_ipaddr(v: &str) -> Result<std::net::IpAddr> {
-  use std::convert::TryFrom;
-  use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+  use std::net::{Ipv4Addr, Ipv6Addr};
   match v.parse::<Ipv4Addr>() {
     Ok(addr) => Ok(addr.into()),
     Err(_) => match v.parse::<Ipv6Addr>() {
@@ -46,7 +38,6 @@ pub fn parse_ipaddr(v: &str) -> Result<std::net::IpAddr> {
 }
 
 pub fn parse_port_range(v: &str) -> Result<std::ops::RangeInclusive<u16>> {
-  use std::convert::TryFrom;
   match v.split_once(':') {
     None => Err(AnyErr::msg("Could not match ':' in port range string")),
     Some((start, end)) => {

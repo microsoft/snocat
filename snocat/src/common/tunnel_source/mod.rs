@@ -14,43 +14,35 @@ use std::{
 
 use tokio_stream::StreamMap;
 
-use crate::common::protocol::tunnel::{
-  quinn_tunnel::{from_quinn_connection_with_baggage, QuinnTunnel},
-  BoxedTunnel, TunnelSide,
-};
+use crate::common::protocol::tunnel::{BoxedTunnel, TunnelSide};
 
-use super::protocol::tunnel::{AssignTunnelId, Tunnel, TunnelId, WithTunnelId};
-
-pub struct QuinnListenEndpoint<Session: quinn::crypto::Session, Baggage> {
+pub struct QuinnListenEndpoint<Baggage> {
   bind_addr: SocketAddr,
-  quinn_config: quinn::generic::ServerConfig<Session>,
-  endpoint: quinn::generic::Endpoint<Session>,
-  incoming: BoxStream<'static, quinn::generic::NewConnection<Session>>,
-  baggage_constructor:
-    Box<dyn (Fn(&quinn::generic::NewConnection<Session>) -> Baggage) + Send + Sync>,
+  quinn_config: quinn::ServerConfig,
+  endpoint: quinn::Endpoint,
+  incoming: BoxStream<'static, quinn::NewConnection>,
+  baggage_constructor: Box<dyn (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync>,
 }
 
-impl<Session: quinn::crypto::Session + 'static> QuinnListenEndpoint<Session, ()> {
+impl QuinnListenEndpoint<()> {
   pub fn bind(
     bind_addr: SocketAddr,
-    quinn_config: quinn::generic::ServerConfig<Session>,
-  ) -> Result<Self, quinn::EndpointError> {
+    quinn_config: quinn::ServerConfig,
+  ) -> Result<Self, std::io::Error> {
     Self::bind_with_baggage(bind_addr, quinn_config, |_| ())
   }
 }
 
-impl<Session: quinn::crypto::Session + 'static, Baggage> QuinnListenEndpoint<Session, Baggage> {
+impl<Baggage> QuinnListenEndpoint<Baggage> {
   pub fn bind_with_baggage<F>(
     bind_addr: SocketAddr,
-    quinn_config: quinn::generic::ServerConfig<Session>,
+    quinn_config: quinn::ServerConfig,
     create_baggage: F,
-  ) -> Result<Self, quinn::EndpointError>
+  ) -> Result<Self, std::io::Error>
   where
-    F: (Fn(&quinn::generic::NewConnection<Session>) -> Baggage) + Send + Sync + 'static,
+    F: (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync + 'static,
   {
-    let mut builder = quinn::generic::Endpoint::builder();
-    builder.listen(quinn_config.clone());
-    let (endpoint, incoming) = builder.bind(&bind_addr)?;
+    let (endpoint, incoming) = quinn::Endpoint::server(quinn_config.clone(), bind_addr)?;
     let incoming = incoming
       .filter_map(|connecting| async move { connecting.await.ok() })
       .boxed();
@@ -64,12 +56,11 @@ impl<Session: quinn::crypto::Session + 'static, Baggage> QuinnListenEndpoint<Ses
   }
 }
 
-impl<Session, Baggage> Stream for QuinnListenEndpoint<Session, Baggage>
+impl<Baggage> Stream for QuinnListenEndpoint<Baggage>
 where
-  Session: quinn::crypto::Session + Send + 'static,
   Self: Send + Unpin,
 {
-  type Item = (quinn::generic::NewConnection<Session>, TunnelSide, Baggage);
+  type Item = (quinn::NewConnection, TunnelSide, Baggage);
 
   fn poll_next(
     mut self: std::pin::Pin<&mut Self>,
@@ -263,23 +254,21 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::{DynamicStreamSet, NamedBoxedStream, QuinnListenEndpoint};
+  use super::{DynamicStreamSet, QuinnListenEndpoint};
   use crate::common::protocol::tunnel::quinn_tunnel::QuinnTunnel;
-  use crate::common::protocol::tunnel::{AssignTunnelId, BoxedTunnel};
-  use futures::task::Context;
-  use futures::{future, stream, FutureExt, Stream, StreamExt};
+  use crate::common::protocol::tunnel::AssignTunnelId;
+
+  use futures::{stream, FutureExt, StreamExt};
   use std::collections::HashSet;
   use std::iter::FromIterator;
-  use std::pin::Pin;
 
   /// Enforce that the content of the endpoint is a valid tunnel assignment content stream
-  fn static_test_endpoint_items_assign_tunnel_id<Session: quinn::crypto::Session, Baggage>(
-    mut endpoint: QuinnListenEndpoint<Session, Baggage>,
-  ) -> Option<impl AssignTunnelId<QuinnTunnel<Session, Baggage>>>
+  fn static_test_endpoint_items_assign_tunnel_id<Baggage>(
+    mut endpoint: QuinnListenEndpoint<Baggage>,
+  ) -> Option<impl AssignTunnelId<QuinnTunnel<Baggage>>>
   where
-    Session: quinn::crypto::Session + Send + Unpin + 'static,
     Baggage: Send + Sync + 'static,
-    QuinnListenEndpoint<Session, Baggage>: Send + Unpin + 'static,
+    QuinnListenEndpoint<Baggage>: Send + Unpin + 'static,
   {
     endpoint.next().now_or_never().flatten()
   }

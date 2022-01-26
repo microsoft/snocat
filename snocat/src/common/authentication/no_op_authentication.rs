@@ -1,14 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use super::traits::*;
-use crate::common::protocol::tunnel::TunnelName;
-use crate::util::cancellation::CancellationListener;
-#[warn(unused_imports)]
-use crate::util::tunnel_stream::TunnelStream;
-use anyhow::{Context, Error as AnyErr, Result};
 use futures::future::BoxFuture;
-use futures::{AsyncWriteExt, FutureExt, StreamExt};
-use tokio_util::sync::CancellationToken;
+use futures::FutureExt;
+
+use super::{AuthenticationError, AuthenticationHandler, TunnelInfo};
+use crate::{
+  common::protocol::tunnel::TunnelName,
+  util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
+};
 
 pub struct NoOpAuthenticationHandler {}
 

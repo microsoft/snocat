@@ -1,24 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use crate::util::tunnel_stream::{TunnelStream, WrappedStream};
-use downcast_rs::{impl_downcast, Downcast, DowncastSync};
+use crate::util::tunnel_stream::TunnelStream;
 use futures::{
   future::{BoxFuture, FutureExt},
   TryFutureExt,
 };
-use std::{
-  any::Any,
-  backtrace::Backtrace,
-  collections::BTreeMap,
-  fmt::{Debug, Display},
-  sync::{Arc, Weak},
-};
+use std::{backtrace::Backtrace, fmt::Debug, sync::Arc};
 
-use super::{
-  tunnel::{registry::TunnelRegistry, Tunnel, TunnelId, TunnelName},
-  RouteAddress,
-};
-use crate::common::protocol::tunnel::TunnelError;
+use super::{tunnel::TunnelId, RouteAddress};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ServiceError<InternalError> {

@@ -13,9 +13,7 @@ use tracing::Instrument;
 
 use crate::{
   common::{
-    authentication::{
-      self, AuthenticationError, AuthenticationHandler, AuthenticationHandlingError,
-    },
+    authentication::{self, AuthenticationError, AuthenticationHandler},
     protocol::{
       negotiation::{self, NegotiationError, NegotiationService},
       tunnel::{

@@ -1,19 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#[warn(unused_imports)]
 #[allow(dead_code)]
 use anyhow::Result;
 use futures::future::*;
-use futures::stream::{self, SelectAll, Stream, StreamExt};
-use futures::AsyncReadExt;
-use quinn::{
-  Certificate, CertificateChain, ClientConfig, ClientConfigBuilder, Endpoint, Incoming, PrivateKey,
-  ServerConfig, ServerConfigBuilder, TransportConfig,
-};
 use std::boxed::Box;
-use std::path::Path;
-use std::task::{Context, Poll};
-use std::{net::SocketAddr, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -24,8 +14,10 @@ pub(crate) mod merge_streams;
 pub mod tunnel_stream;
 pub mod validators;
 
-// HTTP protocol constant from quinn/examples/common
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+// ALPN protocol names and prefixes for snocat variations
+pub const ALPN_PREFIX_MS: &[u8] = b"ms-";
+pub const ALPN_PREFIX_MS_SNOCAT: &[u8] = b"ms-snocat-";
+pub const ALPN_MS_SNOCAT_1: &[u8] = b"ms-snocat-1";
 
 pub async fn proxy_tokio_stream<
   Send: tokio::io::AsyncWrite + Unpin,
@@ -34,7 +26,6 @@ pub async fn proxy_tokio_stream<
   recv: &mut Recv,
   send: &mut Send,
 ) -> Result<u64> {
-  use tokio::io::AsyncWriteExt;
   tokio::io::copy(
     &mut tokio::io::BufReader::with_capacity(1024 * 32, recv),
     send,

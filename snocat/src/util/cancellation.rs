@@ -1,8 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::ops::Deref;
-
-use futures::future::Future;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 /// A [CancellationToken] that cannot be triggered by its recipient

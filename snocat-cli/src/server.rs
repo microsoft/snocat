@@ -1,12 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use crate::{
-  services::{demand_proxy::DemandProxyService, PresetServiceRegistry},
-  util,
-};
+use crate::services::{demand_proxy::DemandProxyService, PresetServiceRegistry};
 use anyhow::{Context as AnyhowContext, Result};
 use futures::future::{BoxFuture, FutureExt, TryFutureExt};
-use quinn::TransportConfig;
+use quinn::{TransportConfig, VarInt};
 use snocat::{
   common::{
     authentication::SimpleAckAuthenticationHandler,
@@ -27,6 +24,7 @@ use snocat::{
   util::tunnel_stream::WrappedStream,
 };
 use std::{
+  convert::TryInto,
   net::{IpAddr, Ipv4Addr, Ipv6Addr},
   path::PathBuf,
   sync::{Arc, Weak},
@@ -191,25 +189,43 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   let cert_pem = std::fs::read(&config.cert).context("Failed reading cert file")?;
   let priv_pem = std::fs::read(&config.key).context("Failed reading private key file")?;
-  let priv_key =
-    quinn::PrivateKey::from_pem(&priv_pem).context("Quinn .pem parsing of private key failed")?;
-  let mut config = quinn::ServerConfigBuilder::default();
-  config.use_stateless_retry(true);
+  let priv_key = {
+    let priv_key = rustls_pemfile::pkcs8_private_keys(&mut std::io::Cursor::new(&priv_pem))
+      .context("Quinn .pem parsing of private key failed")?;
+
+    // TODO: We check at least one private key; check at most one as well
+    let priv_key = priv_key
+      .into_iter()
+      .next()
+      .context("Quinn private key .pem must contain exactly one private key")?;
+
+    // Encapsulate the parsed key into rustls's wrapper type
+    rustls::PrivateKey(priv_key)
+  };
+  let cert_chain: Vec<rustls::Certificate> = {
+    let cert_chain = rustls_pemfile::certs(&mut std::io::Cursor::new(&cert_pem))
+      .context("Quinn .pem parsing of certificates failed")?;
+
+    // Map all certificates in the chain to rustls's wrapper type and construct a vector
+    cert_chain.into_iter().map(rustls::Certificate).collect()
+  };
+  let mut crypto_config = rustls::ServerConfig::builder()
+    .with_safe_default_cipher_suites()
+    .with_safe_default_kx_groups()
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_no_client_auth()
+    .with_single_cert(cert_chain, priv_key)?;
+  crypto_config.alpn_protocols = vec![crate::util::ALPN_MS_SNOCAT_1.to_vec()];
+  crypto_config.key_log = Arc::new(rustls::KeyLogFile::new());
   let mut transport_config = TransportConfig::default();
   transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-  transport_config.receive_window(512 * 1024 * 1024)?;
+  transport_config.receive_window(VarInt::from_u32(512 * 1024 * 1024));
   transport_config.send_window(512 * 1024 * 1024);
-  transport_config.stream_receive_window(512 * 1024 * 1024 / 8)?;
-  transport_config
-    .max_idle_timeout(Some(std::time::Duration::from_secs(30)))
-    .unwrap();
-  let mut server_config = quinn::ServerConfig::default();
+  transport_config.stream_receive_window(VarInt::from_u32(512 * 1024 * 1024 / 8));
+  transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
+  let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto_config));
+  server_config.use_retry(true);
   server_config.transport = Arc::new(transport_config);
   server_config.migration(true);
-  let mut cfg_builder = quinn::ServerConfigBuilder::new(server_config);
-  cfg_builder.protocols(util::ALPN_QUIC_HTTP);
-  cfg_builder.enable_keylog();
-  let cert_chain = quinn::CertificateChain::from_pem(&cert_pem)?;
-  cfg_builder.certificate(cert_chain, priv_key)?;
-  Ok(cfg_builder.build())
+  Ok(server_config)
 }

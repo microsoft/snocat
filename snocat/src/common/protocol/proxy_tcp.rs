@@ -1,27 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use futures::{
-  future::{BoxFuture, FutureExt},
-  AsyncReadExt,
-};
+use futures::future::{BoxFuture, FutureExt};
 use std::{
   convert::{Infallible, TryFrom, TryInto},
   fmt::Display,
-  marker::PhantomData,
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
   str::FromStr,
-  sync::Weak,
 };
 use tokio::{
   io::{AsyncRead, AsyncWrite},
-  net::{TcpStream, ToSocketAddrs},
+  net::TcpStream,
 };
 use tracing_futures::Instrument;
 
 use super::{
   address::RouteAddressParseError,
-  service::{Client, ClientError, ClientResult, ProtocolInfo, ResultTypeOf, RouteAddressBuilder},
-  tunnel::{registry::TunnelRegistry, Tunnel, TunnelId},
+  service::{Client, ClientResult, ProtocolInfo, RouteAddressBuilder},
+  tunnel::TunnelId,
   RouteAddress, Service, ServiceError,
 };
 use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
@@ -261,7 +256,6 @@ impl TryFrom<&RouteAddress> for TcpStreamTarget {
 /// Format a [RouteAddress] from a [TcpStreamTarget]
 impl Display for TcpStreamTarget {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    use std::net::{SocketAddrV4, SocketAddrV6};
     match self {
       TcpStreamTarget::Port(port) => write!(f, "/tcp/{}", port),
       TcpStreamTarget::SocketAddr(SocketAddr::V4(s)) => {
@@ -415,7 +409,6 @@ impl Service for TcpStreamService {
     stream: Box<dyn TunnelStream + Send + 'static>,
     _tunnel_id: TunnelId,
   ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>> {
-    use futures::future::Either;
     tracing::debug!(
       "TCP proxy connection received for {}; building span...",
       addr
@@ -463,10 +456,7 @@ impl Service for TcpStreamService {
 mod tests {
   use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-  use crate::common::protocol::{
-    proxy_tcp::{DnsTarget, TcpStreamTarget},
-    RouteAddress,
-  };
+  use crate::common::protocol::proxy_tcp::{DnsTarget, TcpStreamTarget};
 
   #[test]
   fn target_parsing() {
