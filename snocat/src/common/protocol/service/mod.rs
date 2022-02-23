@@ -473,7 +473,9 @@ pub trait Router {
 
 #[cfg(test)]
 mod tests {
-  /// This is a static test- it does not need run to test its behaviour, just compiled
+  /// Enforce that the BoxedClient trait is object safe
+  #[allow(dead_code)]
+  // Static tests are type assertions, and only need compiled
   fn static_test_boxed_client_is_object_safe<'a, 'result, Stream, C>(
     _unboxed: C,
   ) -> Option<

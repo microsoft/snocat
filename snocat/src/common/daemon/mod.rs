@@ -197,10 +197,7 @@ where
       None,
       |(tunnel, this, shutdown_request_listener)| async move {
         let tunnel = Arc::new(tunnel);
-        if let Err(e) = this
-          .tunnel_lifecycle(tunnel, shutdown_request_listener)
-          .await
-        {
+        if let Err(e) = Self::tunnel_lifecycle(this, tunnel, shutdown_request_listener).await {
           tracing::debug!(error=?e, "tunnel lifetime exited with error");
         }
       },
@@ -337,7 +334,7 @@ where
       Some((tunnel_name, _tunnel_dyn)) => tunnel_name,
       None => {
         let _ = serialized_tunnel_registry.deregister_tunnel(id).await;
-        return Ok(());
+        return Err(TunnelLifecycleError::AuthenticationRefused);
       }
     };
 

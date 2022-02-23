@@ -17,9 +17,9 @@ use tokio_stream::StreamMap;
 use crate::common::protocol::tunnel::{BoxedTunnel, TunnelSide};
 
 pub struct QuinnListenEndpoint<Baggage> {
-  bind_addr: SocketAddr,
-  quinn_config: quinn::ServerConfig,
-  endpoint: quinn::Endpoint,
+  bind_address: SocketAddr,
+  _quinn_config: quinn::ServerConfig,
+  _endpoint: quinn::Endpoint,
   incoming: BoxStream<'static, quinn::NewConnection>,
   baggage_constructor: Box<dyn (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync>,
 }
@@ -31,25 +31,30 @@ impl QuinnListenEndpoint<()> {
   ) -> Result<Self, std::io::Error> {
     Self::bind_with_baggage(bind_addr, quinn_config, |_| ())
   }
+
+  /// Get the quinn listen endpoint's bind address.
+  pub fn bind_address(&self) -> SocketAddr {
+    self.bind_address
+  }
 }
 
 impl<Baggage> QuinnListenEndpoint<Baggage> {
   pub fn bind_with_baggage<F>(
-    bind_addr: SocketAddr,
+    bind_address: SocketAddr,
     quinn_config: quinn::ServerConfig,
     create_baggage: F,
   ) -> Result<Self, std::io::Error>
   where
     F: (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync + 'static,
   {
-    let (endpoint, incoming) = quinn::Endpoint::server(quinn_config.clone(), bind_addr)?;
+    let (endpoint, incoming) = quinn::Endpoint::server(quinn_config.clone(), bind_address)?;
     let incoming = incoming
       .filter_map(|connecting| async move { connecting.await.ok() })
       .boxed();
     Ok(Self {
-      bind_addr,
-      quinn_config,
-      endpoint,
+      bind_address,
+      _quinn_config: quinn_config,
+      _endpoint: endpoint,
       incoming,
       baggage_constructor: Box::new(create_baggage),
     })
@@ -263,6 +268,8 @@ mod tests {
   use std::iter::FromIterator;
 
   /// Enforce that the content of the endpoint is a valid tunnel assignment content stream
+  #[allow(dead_code)]
+  // Static tests are type assertions, and only need compiled
   fn static_test_endpoint_items_assign_tunnel_id<Baggage>(
     mut endpoint: QuinnListenEndpoint<Baggage>,
   ) -> Option<impl AssignTunnelId<QuinnTunnel<Baggage>>>
