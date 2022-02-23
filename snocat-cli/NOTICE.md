@@ -22,15 +22,15 @@ their own copyright notices and license terms:
 * [chrono v0.4.19](https://github.com/chronotope/chrono) - MIT/Apache-2.0
 * [clap v2.33.3](https://github.com/clap-rs/clap) - MIT
 * [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
-* [futures-channel v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-core v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-executor v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-io v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-macro v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-sink v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-task v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures-util v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
-* [futures v0.3.17](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-channel v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-core v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-executor v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-io v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-macro v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-sink v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-task v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures-util v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+* [futures v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [fxhash v0.2.1](https://github.com/cbreeden/fxhash) - Apache-2.0/MIT
 * [gen-z v0.1.0](https://github.com/Dessix/gen-z-rs) - MIT OR Apache-2.0
 * [getrandom v0.2.3](https://github.com/rust-random/getrandom) - MIT OR Apache-2.0
@@ -53,8 +53,6 @@ their own copyright notices and license terms:
 * [pin-utils v0.1.0](https://github.com/rust-lang-nursery/pin-utils) - MIT OR Apache-2.0
 * [ppv-lite86 v0.2.10](https://github.com/cryptocorrosion/cryptocorrosion) - MIT/Apache-2.0
 * [proc-macro2 v1.0.29](https://github.com/alexcrichton/proc-macro2) - MIT OR Apache-2.0
-* [proc-macro-hack v0.5.19](https://github.com/dtolnay/proc-macro-hack) - MIT OR Apache-2.0
-* [proc-macro-nested v0.1.7](https://github.com/dtolnay/proc-macro-hack) - MIT OR Apache-2.0
 * [quinn-proto v0.8.0](https://github.com/quinn-rs/quinn) - MIT OR Apache-2.0
 * [quinn-udp v0.1.0](https://github.com/quinn-rs/quinn) - MIT OR Apache-2.0
 * [quinn v0.8.0](https://github.com/quinn-rs/quinn) - MIT OR Apache-2.0
