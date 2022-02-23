@@ -3,7 +3,6 @@
 #![feature(nll)]
 #![feature(async_closure)]
 #![feature(backtrace)]
-#![allow(dead_code)]
 #![warn(unused_imports)]
 
 use anyhow::Result;
