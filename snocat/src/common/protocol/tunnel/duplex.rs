@@ -221,7 +221,7 @@ mod tests {
           let (mut incoming_downlink, _incoming_uplink) = tokio::io::split(stream);
           let (_outgoing_downlink, mut outgoing_uplink) =
             tokio::io::split(server_ref.open_link().await.unwrap());
-          crate::util::proxy_tokio_stream(&mut incoming_downlink, &mut outgoing_uplink)
+          tokio::io::copy(&mut incoming_downlink, &mut outgoing_uplink)
             .await
             .unwrap();
           Ok(())

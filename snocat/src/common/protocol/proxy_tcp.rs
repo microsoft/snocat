@@ -19,7 +19,10 @@ use super::{
   tunnel::TunnelId,
   RouteAddress, Service, ServiceError,
 };
-use crate::util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream};
+use crate::{
+  common::protocol::service::ClientError,
+  util::{proxy_generic_tokio_streams, tunnel_stream::TunnelStream},
+};
 
 #[derive(Debug, Clone)]
 pub struct TcpStreamClient<Reader, Writer> {
@@ -73,10 +76,9 @@ where
   Writer: AsyncWrite + Send + Unpin + 'stream,
   TStream: TunnelStream + Send + 'stream,
 {
-  // TODO: make Response the number of bytes forwarded by the client
-  type Response = ();
+  type Response = (u64, u64);
 
-  type Error = ();
+  type Error = std::io::Error;
 
   type Future = BoxFuture<'stream, ClientResult<'stream, Self, TStream>>;
 
@@ -86,9 +88,28 @@ where
       // TODO: Send protocol version here, allow other side to refuse if unsupported
       // If a confirmation of support is received by the reading side, resume as supported version
       let (mut tunr, mut tunw) = tokio::io::split(tunnel);
-      proxy_generic_tokio_streams((&mut self.send, &mut self.recv), (&mut tunw, &mut tunr)).await;
-      tracing::info!(target = "proxy_tcp_close", "Closing stream");
-      Ok(())
+      match proxy_generic_tokio_streams((&mut self.send, &mut self.recv), (&mut tunw, &mut tunr))
+        .await
+      {
+        Ok((tcp_to_tunnel_bytes, tunnel_to_tcp_bytes)) => {
+          tracing::info!(
+            target = "proxy_tcp_close",
+            tcp_to_tunnel = tcp_to_tunnel_bytes,
+            tunnel_to_tcp = tunnel_to_tcp_bytes,
+            "Closing stream",
+          );
+          Ok((tcp_to_tunnel_bytes, tunnel_to_tcp_bytes))
+        }
+        Err(e) => {
+          tracing::error!(
+            target = "proxy_tcp_error",
+            error = ?e,
+            "TCP proxy IO error: {:#?}",
+            e,
+          );
+          Err(ClientError::IllegalResponse(e))
+        }
+      }
     };
     fut.fuse().boxed()
   }
@@ -443,9 +464,26 @@ impl Service for TcpStreamService {
       let (mut tcpr, mut tcpw) = connection.split();
       let (mut tunr, mut tunw) = tokio::io::split(stream);
 
-      proxy_generic_tokio_streams((&mut tcpw, &mut tcpr), (&mut tunw, &mut tunr)).await;
-      tracing::info!(target = "proxy_tcp_close", "Closing stream");
-      Ok(())
+      match proxy_generic_tokio_streams((&mut tcpw, &mut tcpr), (&mut tunw, &mut tunr)).await {
+        Ok((tcp_to_tunnel_bytes, tunnel_to_tcp_bytes)) => {
+          tracing::info!(
+            target = "proxy_tcp_close",
+            tcp_to_tunnel = tcp_to_tunnel_bytes,
+            tunnel_to_tcp = tunnel_to_tcp_bytes,
+            "Closing stream",
+          );
+          Ok(())
+        }
+        Err(e) => {
+          tracing::error!(
+            target = "proxy_tcp_error",
+            error = ?e,
+            "TCP proxy IO error: {:#?}",
+            e,
+          );
+          Err(ServiceError::InternalError(e.into()))
+        }
+      }
     };
 
     fut.instrument(span).boxed()

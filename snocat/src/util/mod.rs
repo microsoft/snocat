@@ -3,8 +3,7 @@
 #[allow(dead_code)]
 use anyhow::Result;
 use futures::future::*;
-use std::boxed::Box;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 pub mod cancellation;
@@ -18,14 +17,18 @@ pub const ALPN_PREFIX_MS: &[u8] = b"ms-";
 pub const ALPN_PREFIX_MS_SNOCAT: &[u8] = b"ms-snocat-";
 pub const ALPN_MS_SNOCAT_1: &[u8] = b"ms-snocat-1";
 
+#[deprecated(
+  since = "0.4.0",
+  note = "Use tokio::io::copy or tokio::io::copy_buf instead"
+)]
 pub async fn proxy_tokio_stream<
   Send: tokio::io::AsyncWrite + Unpin,
   Recv: tokio::io::AsyncRead + Unpin,
 >(
   recv: &mut Recv,
   send: &mut Send,
-) -> Result<u64> {
-  tokio::io::copy(
+) -> Result<u64, std::io::Error> {
+  tokio::io::copy_buf(
     &mut tokio::io::BufReader::with_capacity(1024 * 32, recv),
     send,
   )
@@ -33,6 +36,7 @@ pub async fn proxy_tokio_stream<
   .map_err(Into::into)
 }
 
+#[tracing::instrument(level = "trace", err, skip(a, b))]
 pub async fn proxy_generic_tokio_streams<
   SenderA: tokio::io::AsyncWrite + Unpin,
   ReaderA: tokio::io::AsyncRead + Unpin,
@@ -41,98 +45,46 @@ pub async fn proxy_generic_tokio_streams<
 >(
   a: (&mut SenderA, &mut ReaderA),
   b: (&mut SenderB, &mut ReaderB),
-) -> Either<(), ()> {
+) -> Result<(u64, u64), std::io::Error> {
+  const PROXY_BUFFER_CAPACITY: usize = 1024 * 32;
   let (sender_a, reader_a) = a;
   let (sender_b, reader_b) = b;
-  let proxy_a2b = Box::pin(proxy_tokio_stream(reader_a, sender_b).fuse());
-  let proxy_b2a = Box::pin(proxy_tokio_stream(reader_b, sender_a).fuse());
+  let mut reader_a = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_a);
+  let mut reader_b = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_b);
+  let proxy_a2b = tokio::io::copy_buf(&mut reader_a, sender_b).fuse();
+  let proxy_b2a = tokio::io::copy_buf(&mut reader_b, sender_a).fuse();
   tracing::trace!("polling");
-  let res: Either<(), ()> = match futures::future::try_select(proxy_a2b, proxy_b2a).await {
-    Ok(Either::Left((_i2o, resume_o2i))) => {
-      tracing::debug!("Source connection closed gracefully, shutting down proxy");
-      std::mem::drop(resume_o2i); // Kill the copier, allowing us to send end-of-connection
-      Either::Right(())
-    }
-    Ok(Either::Right((_o2i, resume_i2o))) => {
-      tracing::debug!("Proxy connection closed gracefully, shutting down source");
-      std::mem::drop(resume_i2o); // Kill the copier, allowing us to send end-of-connection
-      Either::Left(())
-    }
-    Err(Either::Left((e_i2o, resume_o2i))) => {
-      tracing::debug!(
-        "Source connection died with error {:#?}, shutting down proxy connection",
-        e_i2o
-      );
-      std::mem::drop(resume_o2i); // Kill the copier, allowing us to send end-of-connection
-      Either::Right(())
-    }
-    Err(Either::Right((e_o2i, resume_i2o))) => {
-      tracing::debug!(
-        "Proxy connection died with error {:#?}, shutting down source connection",
-        e_o2i
-      );
-      std::mem::drop(resume_i2o); // Kill the copier, allowing us to send end-of-connection
-      Either::Left(())
-    }
-  };
-  res
-}
-
-pub async fn proxy_tcp_streams(mut source: TcpStream, mut proxy: TcpStream) -> Result<()> {
-  let res: Either<_, _> = {
-    let (mut reader, mut writer) = (&mut source).split();
-    let (mut proxy_reader, mut proxy_writer) = (&mut proxy).split();
-    proxy_generic_tokio_streams(
-      (&mut writer, &mut reader),
-      (&mut proxy_writer, &mut proxy_reader),
-    )
-    .await
-  };
-  match res {
-    Either::Left(_) => {
-      if let Err(shutdown_failure) = source.shutdown().await {
-        tracing::error!(
-          "Failed to shut down source connection with error:\n{:#?}",
-          shutdown_failure
-        );
-      }
-    }
-    Either::Right(_) => {
-      if let Err(shutdown_failure) = proxy.shutdown().await {
-        tracing::error!(
-          "Failed to shut down proxy connection with error:\n{:#?}",
-          shutdown_failure
-        );
-      }
+  match futures::future::try_join(proxy_a2b, proxy_b2a).await {
+    Ok((a_to_b, b_to_a)) => Ok((a_to_b, b_to_a)),
+    Err(e) => {
+      tracing::debug!(error = ?e, "Proxy connection copy with error {:#?}", e);
+      Err(e)
     }
   }
-  Ok(())
 }
 
+#[deprecated(since = "0.4.0", note = "Use tokio::io::copy_bidirectional")]
+#[tracing::instrument(level = "trace", err)]
+pub async fn proxy_tcp_streams(
+  mut source: TcpStream,
+  mut proxy: TcpStream,
+) -> Result<(u64, u64), std::io::Error> {
+  tokio::io::copy_bidirectional(&mut source, &mut proxy).await
+}
+
+#[deprecated(since = "0.4.0", note = "Use tokio::io::copy or tokio::io::copy_buf")]
 pub async fn proxy_from_tcp_stream<Sender: AsyncWrite + Unpin, Reader: AsyncRead + Unpin>(
   mut source: TcpStream,
   proxy: (&mut Sender, &mut Reader),
-) -> Result<()> {
-  let res: Either<_, _> = {
-    let (mut reader, mut writer) = (&mut source).split();
-    proxy_generic_tokio_streams((&mut writer, &mut reader), proxy).await
-  };
-  match res {
-    Either::Left(_) => {
-      if let Err(shutdown_failure) = source.shutdown().await {
-        tracing::error!(
-          "Failed to shut down source connection with error:\n{:#?}",
-          shutdown_failure
-        );
-      }
-    }
-    Either::Right(_) => {
-      // Close proxy connection somehow?
-    }
-  }
-  Ok(())
+) -> Result<(u64, u64), std::io::Error> {
+  let (mut reader, mut writer) = (&mut source).split();
+  Ok(proxy_generic_tokio_streams((&mut writer, &mut reader), proxy).await?)
 }
 
+#[deprecated(
+  since = "0.4.0",
+  note = "Use snocat::util::dropkick for async finalizers or #![feature(try_blocks)]"
+)]
 /// Run a block, then, regardless of success/failure, run another block, with access to the results.
 /// Exceptions from the first block are preferred, then from the finally block, then successes
 pub async fn finally_async<
