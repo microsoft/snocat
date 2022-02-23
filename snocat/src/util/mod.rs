@@ -10,7 +10,6 @@ use tokio::net::TcpStream;
 pub mod cancellation;
 pub mod dropkick;
 pub mod framed;
-pub(crate) mod merge_streams;
 pub mod tunnel_stream;
 pub mod validators;
 
