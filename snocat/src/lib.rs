@@ -4,7 +4,6 @@
 #![feature(async_closure)]
 #![feature(backtrace)]
 #![feature(generic_associated_types)]
-#![feature(label_break_value)]
 #![feature(never_type)]
 #![feature(try_blocks)]
 #![feature(type_ascription)]
