@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #![cfg_attr(test, feature(assert_matches))]
-#![feature(async_closure)]
 #![feature(backtrace)]
 #![feature(generic_associated_types)]
 #![feature(never_type)]

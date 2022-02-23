@@ -168,17 +168,11 @@ mod tests {
       let (a_inc, b_inc) = futures::future::join(a_tun.downlink(), b_tun.downlink()).await;
       let (mut a_inc, mut b_inc) = (a_inc.unwrap(), b_inc.unwrap());
       drop(a_tun); // Dropping the A tunnel ends the incoming streams for B
-      let count_of_b: u32 = b_inc
-        .as_stream()
-        .fold(0, async move |memo, _stream| memo + 1)
-        .await;
+      let count_of_b: usize = b_inc.as_stream().count().await;
       assert_eq!(count_of_b, 1);
       b_tun.open_link().await.unwrap();
       drop(b_tun); // Dropping the B tunnel ends the incoming streams for A
-      let count_of_a: u32 = a_inc
-        .as_stream()
-        .fold(0, async move |memo, _stream| memo + 1)
-        .await;
+      let count_of_a: usize = a_inc.as_stream().count().await;
       assert_eq!(count_of_a, 1);
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), fut)
@@ -217,7 +211,7 @@ mod tests {
             TunnelIncomingType::BiStream(stream) => Ok(Some(stream)),
           })
         })
-        .try_for_each_concurrent(None, async move |stream: WrappedStream| {
+        .try_for_each_concurrent(None, |stream: WrappedStream| async move {
           let (mut incoming_downlink, _incoming_uplink) = tokio::io::split(stream);
           let (_outgoing_downlink, mut outgoing_uplink) =
             tokio::io::split(server_ref.open_link().await.unwrap());
