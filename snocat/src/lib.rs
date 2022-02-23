@@ -3,7 +3,6 @@
 #![cfg_attr(test, feature(assert_matches))]
 #![feature(async_closure)]
 #![feature(backtrace)]
-#![feature(drain_filter)]
 #![feature(generic_associated_types)]
 #![feature(label_break_value)]
 #![feature(never_type)]

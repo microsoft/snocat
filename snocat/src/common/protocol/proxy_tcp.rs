@@ -120,16 +120,23 @@ pub struct TcpStreamService {
   pub local_only: bool,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(thiserror::Error, Debug)]
 enum TcpConnectError {
+  #[error("Service failed to connect to remote TCP target")]
   ConnectionFailed,
+  #[error(
+    "No addresses provided for target connection fulfilled loopback requirements in local mode"
+  )]
   NoLoopbackAddressesFound,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum TargetResolutionError {
   #[error("DNS resolution failure")]
-  IOError(#[from] std::io::Error, std::backtrace::Backtrace),
+  IOError(
+    #[from] std::io::Error,
+    #[backtrace] std::backtrace::Backtrace,
+  ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,7 +378,11 @@ impl TcpStreamService {
         return Err(TcpConnectError::ConnectionFailed);
       }
       if local_only {
-        addrs.drain_filter(|x| !x.ip().is_loopback()).last();
+        // Retain only loopback connections
+        // This is simpler than may be necessary, but a custom service
+        // implementation could be provided to fulfill more complex logic
+        addrs.retain(|x| x.ip().is_loopback());
+        // When in local mode,
         if addrs.is_empty() {
           return Err(TcpConnectError::NoLoopbackAddressesFound);
         }
