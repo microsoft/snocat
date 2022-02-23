@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#![feature(nll)]
 #![feature(async_closure)]
 #![feature(backtrace)]
 #![warn(unused_imports)]
