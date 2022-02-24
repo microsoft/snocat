@@ -119,32 +119,90 @@ mod tests {
 
   use crate::common::protocol::{address::RouteAddressParseError, RouteAddress};
 
+  const TRIVIAL_CASE: &str = "/hello/world";
+  const TRIVIAL_CASE_SEGMENTS: &[&str] = &["hello", "world"];
+  const MISSING_LEADING_SLASH: &str = "hello/world";
+
   #[test]
-  fn general_parsing() {
-    let a = "/hello/world".parse::<RouteAddress>().unwrap();
-    assert_eq!(a.to_string(), "/hello/world");
-    assert_eq!(&a.iter_segments().collect::<Vec<_>>(), &["hello", "world"]);
-    let a = "/hello/world/".parse::<RouteAddress>().unwrap();
-    assert_eq!(a.to_string(), "/hello/world/");
+  fn from_segments_trivial() {
+    let addr = TRIVIAL_CASE.parse::<RouteAddress>().unwrap();
     assert_eq!(
-      &a.iter_segments().collect::<Vec<_>>(),
-      &["hello", "world", ""]
+      &addr.iter_segments().collect::<Vec<_>>(),
+      TRIVIAL_CASE_SEGMENTS
     );
+  }
+
+  #[test]
+  fn display_round_trip_trivial() {
+    let addr = TRIVIAL_CASE.parse::<RouteAddress>().unwrap();
+    assert_eq!(addr.to_string(), TRIVIAL_CASE);
+  }
+
+  #[test]
+  fn error_on_missing_leading_slash() {
     assert_matches!(
-      "hello/world".parse::<RouteAddress>().unwrap_err(),
+      MISSING_LEADING_SLASH.parse::<RouteAddress>().unwrap_err(),
       RouteAddressParseError::InvalidPrefix,
       "A missing leading slash must fail with an invalid prefix error"
     );
-    let empty_address = "".parse::<RouteAddress>().unwrap();
+  }
+
+  #[test]
+  fn from_segments_zero_length_root() {
+    let addr = "/".parse::<RouteAddress>().unwrap();
     assert_eq!(
-      empty_address.to_string(),
-      "",
-      "Empty addresses must round-trip"
+      &addr.iter_segments().collect::<Vec<_>>(),
+      &[""],
+      "Zero-Length-Root addresses must contain empty-strings in the respective segments"
     );
+  }
+
+  #[test]
+  fn display_round_trip_zero_length_root() {
+    let addr = "/".parse::<RouteAddress>().unwrap();
     assert_eq!(
-      &empty_address.iter_segments().collect::<Vec<_>>(),
-      &[] as &[&str],
+      addr.to_string(),
+      "/",
+      "Zero-Length-Root addresses must round-trip through display"
+    );
+  }
+
+  #[test]
+  fn from_segments_zero_length_root_multi() {
+    let addr = "//".parse::<RouteAddress>().unwrap();
+    assert_eq!(
+      &addr.iter_segments().collect::<Vec<_>>(),
+      &["", ""],
+      "Zero-Length-Root addresses must contain empty-strings in the respective segments"
+    );
+  }
+
+  #[test]
+  fn display_round_trip_zero_length_root_multi() {
+    let addr = "//".parse::<RouteAddress>().unwrap();
+    assert_eq!(
+      addr.to_string(),
+      "//",
+      "Zero-Length-Root addresses must round-trip through display"
+    );
+  }
+
+  #[test]
+  fn from_segments_empty() {
+    let addr = "".parse::<RouteAddress>().unwrap();
+    assert!(
+      &addr.iter_segments().collect::<Vec<_>>().is_empty(),
       "Empty addresses must have no segments"
+    );
+  }
+
+  #[test]
+  fn display_round_trip_empty() {
+    let addr = "".parse::<RouteAddress>().unwrap();
+    assert_eq!(
+      addr.to_string(),
+      "",
+      "Empty addresses must round-trip through display"
     );
   }
 }
