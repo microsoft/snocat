@@ -276,4 +276,33 @@ mod tests {
       "Escaped addresses must round-trip with the appropriate escapes in place"
     );
   }
+
+  #[test]
+  fn error_on_bad_escape_sequences() {
+    assert_matches!(
+      "\\".parse::<RouteAddress>().unwrap_err(),
+      RouteAddressParseError::InvalidPrefix,
+      "Trailing escapes not count as Zero-Length-Root addresses"
+    );
+    assert_matches!(
+      "\\/".parse::<RouteAddress>().unwrap_err(),
+      RouteAddressParseError::InvalidPrefix,
+      "An escaped slash must not suffice as a Zero-Length-Root address prefix"
+    );
+    assert_matches!(
+      "/\\".parse::<RouteAddress>().unwrap_err(),
+      RouteAddressParseError::InvalidEscapeSequence,
+      "Trailing escapes after a segment start must be marked invalid"
+    );
+    assert_matches!(
+      "/foo\\".parse::<RouteAddress>().unwrap_err(),
+      RouteAddressParseError::InvalidEscapeSequence,
+      "Trailing escapes segment content must be marked invalid"
+    );
+    assert_matches!(
+      "/hello\\x".parse::<RouteAddress>().unwrap_err(),
+      RouteAddressParseError::InvalidEscapeSequence,
+      "Escaped letters must be marked invalid"
+    );
+  }
 }
