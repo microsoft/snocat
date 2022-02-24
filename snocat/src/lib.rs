@@ -3,7 +3,6 @@
 #![cfg_attr(test, feature(assert_matches))]
 #![feature(backtrace)]
 #![feature(generic_associated_types)]
-#![feature(never_type)]
 #![feature(try_blocks)]
 #![feature(type_ascription)]
 // Some of these are incorrect with regards to exposed behaviour, especially around
