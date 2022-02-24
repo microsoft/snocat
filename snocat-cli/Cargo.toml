@@ -14,7 +14,7 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 snocat = { version= "^0.4.0-alpha.2" }
 anyhow = "~1.0.43"
 downcast-rs = "1.2"
-clap = "~2.33.3"
+clap = "3.1"
 futures = "0.3.21"
 gen-z = "0.1"
 log = "0.4"

@@ -4,7 +4,7 @@ use anyhow::{Error as AnyErr, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 
-pub fn validate_existing_file(v: String) -> Result<(), String> {
+pub fn validate_existing_file(v: &str) -> Result<(), String> {
   if !Path::new(&v).exists() {
     Err(String::from("A file must exist at the given path"))
   } else {
@@ -52,14 +52,14 @@ pub fn parse_port_range(v: &str) -> Result<std::ops::RangeInclusive<u16>> {
   }
 }
 
-pub fn validate_socketaddr(v: String) -> Result<(), String> {
+pub fn validate_socketaddr(v: &str) -> Result<(), String> {
   parse_socketaddr(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
-pub fn validate_ipaddr(v: String) -> Result<(), String> {
+pub fn validate_ipaddr(v: &str) -> Result<(), String> {
   parse_ipaddr(&v).map(|_| ()).map_err(|e| e.to_string())
 }
 
-pub fn validate_port_range(v: String) -> Result<(), String> {
+pub fn validate_port_range(v: &str) -> Result<(), String> {
   parse_port_range(&v).map(|_| ()).map_err(|e| e.to_string())
 }

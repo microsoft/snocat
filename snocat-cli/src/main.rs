@@ -4,7 +4,7 @@
 #![warn(unused_imports)]
 
 use anyhow::Result;
-use clap::{App, Arg, SubCommand};
+use clap::{Arg, ArgMatches, Command};
 use snocat::util;
 use std::{
   path::{Path, PathBuf},
@@ -35,90 +35,90 @@ fn main() {
     // .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
     .finish();
   tracing::subscriber::set_global_default(collector).expect("Logger init must succeed");
-  let app = App::new(env!("CARGO_BIN_NAME"))
+  let app = Command::new(env!("CARGO_BIN_NAME"))
     .version(env!("CARGO_PKG_VERSION"))
     .about(env!("CARGO_PKG_DESCRIPTION"))
     .subcommand(
-      SubCommand::with_name("client")
+      Command::new("client")
         .alias("-c")
         .about("Bind a local port to a remote server")
-        // .arg(Arg::with_name("client-cert").long("client-cert").short("c").validator(validate_existing_file).takes_value(true))
+        // .arg(Arg::new("client-cert").long("client-cert").short('c').validator(validate_existing_file).takes_value(true))
         .arg(
-          Arg::with_name("authority")
+          Arg::new("authority")
             .long("authority")
-            .short("a")
+            .short('a')
             .validator(validate_existing_file)
             .takes_value(true)
             .required(false),
         )
         .arg(
-          Arg::with_name("driver")
+          Arg::new("driver")
             .long("driver")
-            .short("d")
+            .short('d')
             .validator(validate_socketaddr)
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("driver-san")
+          Arg::new("driver-san")
             .long("driver-san")
             .visible_alias("san")
-            .short("s")
+            .short('s')
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("target")
+          Arg::new("target")
             .long("target")
-            .short("t")
+            .short('t')
             .validator(validate_socketaddr)
             .takes_value(true)
             .required(true),
         ),
     )
     .subcommand(
-      SubCommand::with_name("server")
+      Command::new("server")
         .alias("-s")
         .about("Run in server mode, supporting connections from multiple clients")
         .arg(
-          Arg::with_name("cert")
+          Arg::new("cert")
             .long("cert")
-            .short("c")
+            .short('c')
             .validator(validate_existing_file)
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("key")
+          Arg::new("key")
             .long("key")
-            .short("k")
+            .short('k')
             .validator(validate_existing_file)
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("tcp")
+          Arg::new("tcp")
             .long("bindip")
-            .short("i")
+            .short('i')
             .validator(validate_ipaddr)
             .default_value("127.0.0.1")
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("bind_range")
+          Arg::new("bind_range")
             .long("ports")
-            .short("p")
+            .short('p')
             .validator(validate_port_range)
             .default_value("8080")
             .takes_value(true)
             .required(true),
         )
         .arg(
-          Arg::with_name("quic")
+          Arg::new("quic")
             .help("Port that will accept tunneling clients to receive forwarded connections")
             .long("quic")
-            .short("q")
+            .short('q')
             .validator(validate_socketaddr)
             .default_value("127.0.0.1:9090")
             .takes_value(true)
@@ -126,18 +126,19 @@ fn main() {
         ),
     )
     .subcommand(
-      SubCommand::with_name("cert")
+      Command::new("cert")
         .about("Generate self-signed certificates for local usage")
-        .arg(Arg::with_name("path").takes_value(true).required(true))
+        .arg(Arg::new("path").takes_value(true).required(true))
         .arg(
-          Arg::with_name("san")
+          Arg::new("san")
             .long("san")
             .takes_value(true)
             .required(false)
             .default_value("localhost"),
         ),
     )
-    .setting(clap::AppSettings::SubcommandRequiredElseHelp);
+    .subcommand_required(true)
+    .arg_required_else_help(true);
   let matches = app.get_matches();
   let mode = matches.subcommand_name().unwrap_or("<No subcommand?>");
   let handler = main_args_handler(&matches);
@@ -154,7 +155,7 @@ fn main() {
   }
 }
 
-pub async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<client::ClientArgs> {
+pub async fn client_arg_handling(args: &'_ ArgMatches) -> Result<client::ClientArgs> {
   let authority_cert_path = args
     .value_of("authority")
     .map(|path| PathBuf::from_str(path))
@@ -168,7 +169,7 @@ pub async fn client_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<clien
   })
 }
 
-pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<server::ServerArgs> {
+pub async fn server_arg_handling(args: &'_ ArgMatches) -> Result<server::ServerArgs> {
   let cert_path = Path::new(args.value_of("cert").unwrap()).to_path_buf();
   let key_path = Path::new(args.value_of("key").unwrap()).to_path_buf();
 
@@ -181,19 +182,22 @@ pub async fn server_arg_handling(args: &'_ clap::ArgMatches<'_>) -> Result<serve
   })
 }
 
-async fn main_args_handler(matches: &'_ clap::ArgMatches<'_>) -> Result<()> {
-  match matches.subcommand() {
-    ("server", Some(opts)) => {
+async fn main_args_handler(matches: &'_ ArgMatches) -> Result<()> {
+  match matches
+    .subcommand()
+    .expect("Subcommand is marked as required")
+  {
+    ("server", opts) => {
       let config = server_arg_handling(opts).await?;
       tracing::info!("Running as server with config {:#?}", config);
       server::server_main(config).await
     }
-    ("client", Some(opts)) => {
+    ("client", opts) => {
       let config = client_arg_handling(opts).await?;
       tracing::info!("Running as client with config {:#?}", config);
       client::client_main(config).await
     }
-    ("cert", Some(opts)) => {
+    ("cert", opts) => {
       tracing::info!("Generating certs...");
       let path_raw = opts.value_of("path").expect("Path argument is required");
       let san = opts.value_of("san").expect("SAN argument must exist");
