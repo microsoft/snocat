@@ -88,7 +88,7 @@ impl AsyncRead for QuinnTunnelRefStream<'_> {
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
     buf: &mut tokio::io::ReadBuf<'_>,
-  ) -> Poll<futures_io::Result<()>> {
+  ) -> Poll<futures::io::Result<()>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
     AsyncRead::poll_read(Pin::new(&mut ref_stream), cx, buf)
@@ -100,7 +100,7 @@ impl AsyncRead for QuinnTunnelStream {
     mut self: Pin<&mut Self>,
     cx: &mut Context<'_>,
     buf: &mut tokio::io::ReadBuf<'_>,
-  ) -> Poll<futures_io::Result<()>> {
+  ) -> Poll<futures::io::Result<()>> {
     let mut parent_ref = self.as_mut();
     AsyncRead::poll_read(Pin::new(&mut parent_ref.1), cx, buf)
   }
@@ -249,7 +249,7 @@ impl AsyncRead for WrappedStream {
     self: Pin<&mut Self>,
     cx: &mut Context<'_>,
     buf: &mut tokio::io::ReadBuf<'_>,
-  ) -> Poll<futures_io::Result<()>> {
+  ) -> Poll<futures::io::Result<()>> {
     match self.get_mut() {
       WrappedStream::Quinn(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),
       WrappedStream::QuinnRef(ref mut s) => AsyncRead::poll_read(Pin::new(&mut s.1), cx, buf),

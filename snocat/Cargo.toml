@@ -14,7 +14,6 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 anyhow = "~1.0.43"
 downcast-rs = "^1.2.0"
 futures = "0.3.21"
-futures-io = "0.3.21"
 gen-z = "~0.1.0"
 log = "~0.4.13"
 quinn = "0.8.0"
