@@ -3,25 +3,14 @@
 
 use std::{iter::FromIterator, str::FromStr};
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Hash)]
-#[repr(transparent)]
-pub struct RouteAddress(String);
+#[derive(Clone, PartialEq, PartialOrd, Eq, Hash, Default)]
+pub struct RouteAddress {
+  segments: Vec<String>,
+}
 
 impl RouteAddress {
   pub fn iter_segments<'a>(&'a self) -> impl Iterator<Item = &'a str> {
-    // If segment content contains a slash, it's its responsibility to
-    // handle escaping internally to that value; we split on all slashes
-    let s = self.0.as_str();
-    if s.is_empty() {
-      return Box::new(std::iter::empty()) as Box<_>;
-    }
-    // Now we know the string isn't empty- the first character must be a slash
-    // Skip the initial slash or error if there wasn't one
-    let s = s
-      .strip_prefix('/')
-      .expect("Route-addresses must internally still have a leading slash");
-    // TODO: Escape sequence processing
-    Box::new(s.split('/')) as Box<dyn Iterator<Item = &'a str> + Send + Sync>
+    self.segments.iter().map(|s| s.as_str())
   }
 
   pub fn strip_segment_prefix<
@@ -42,43 +31,84 @@ impl RouteAddress {
     Some(actual_segments)
   }
 
+  fn estimate_rendered_segment_upper_length_bound(segment: &str) -> usize {
+    const LENGTH_OF_SLASH: usize = "\\".len();
+    const LENGTH_OF_ESCAPE: usize = "/".len();
+    // String byte length
+    segment.len()
+      // Each segment gets a slash
+      + LENGTH_OF_SLASH
+      // Each escaped character gets one escape's worth of byte-length
+      + LENGTH_OF_ESCAPE * segment.chars().filter(|c| Self::needs_escaped(*c)).count()
+  }
+
+  fn needs_escaped(c: char) -> bool {
+    std::matches!(c, '/' | '\\')
+  }
+
+  // TODO: Cache immutable view to improve perf (Requires manual trait impls to ignore cache for PartialEq, PartialOrd, Hash)
+  fn rendered<'a>(&'a self) -> std::borrow::Cow<'a, str> {
+    if self.segments.is_empty() {
+      return std::borrow::Cow::Borrowed("");
+    }
+    let upper_length_bound = self
+      .iter_segments()
+      .map(Self::estimate_rendered_segment_upper_length_bound)
+      .sum();
+    let mut rendered = String::with_capacity(upper_length_bound);
+    for segment in self.iter_segments() {
+      rendered.push('/');
+      for c in segment.chars() {
+        if Self::needs_escaped(c) {
+          rendered.push('\\');
+        }
+        rendered.push(c);
+      }
+    }
+    debug_assert!(
+      rendered.len() <= upper_length_bound,
+      "Upper length bound {} must be accurate to ensure minimal resizing; actual length was {}",
+      upper_length_bound,
+      rendered.len(),
+    );
+    std::borrow::Cow::Owned(rendered)
+  }
+
   pub fn into_bytes(self) -> Vec<u8> {
-    self.0.into_bytes()
+    Vec::from(self.rendered().as_ref().as_bytes())
   }
 }
 
 impl From<&RouteAddress> for String {
   fn from(a: &RouteAddress) -> Self {
-    a.0.to_owned()
+    a.rendered().into_owned()
   }
 }
 
 impl From<RouteAddress> for String {
   fn from(a: RouteAddress) -> Self {
-    a.0
+    // If/when this becomes cached, we can skip the clone and return the cached value if present
+    a.rendered().into_owned()
   }
 }
 
 impl<'a, TIntoStr: Into<&'a str>> FromIterator<TIntoStr> for RouteAddress {
   fn from_iter<T: IntoIterator<Item = TIntoStr>>(iter: T) -> Self {
-    let mut buffer = String::new();
-    for item in iter {
-      buffer.push('/');
-      buffer.push_str(item.into());
+    RouteAddress {
+      segments: iter.into_iter().map(|s| s.into().to_owned()).collect(),
     }
-    RouteAddress(buffer)
   }
 }
 
 impl std::fmt::Debug for RouteAddress {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str(self.0.as_str())
+    f.write_str(self.rendered().as_ref())
   }
 }
 
 impl std::fmt::Display for RouteAddress {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str(self.0.as_str())
+    f.write_str(self.rendered().as_ref())
   }
 }
 
@@ -95,15 +125,34 @@ impl FromStr for RouteAddress {
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     if s.is_empty() {
-      return Ok(Self(String::with_capacity(0)));
+      return Ok(Default::default());
     }
-    // Now we know the string isn't empty- the first character must be a slash
-    // Skip the initial slash or error if there wasn't one
-    let s = s
-      .strip_prefix('/')
-      .ok_or(RouteAddressParseError::InvalidPrefix)?;
-    // TODO: Escape sequence processing
-    Ok(s.split('/').collect())
+    let mut segments = Vec::new();
+    let mut cs = s.chars();
+    // Ensure we start with a '/' before we move into the stateless machine
+    if cs.next() != Some('/') {
+      return Err(RouteAddressParseError::InvalidPrefix);
+    }
+    let mut current_segment = String::new();
+    while let Some(c) = cs.next() {
+      match c {
+        // Segment markers finish the current segment and begin the next
+        '/' => {
+          let finished_segment = current_segment.clone();
+          current_segment.clear();
+          segments.push(finished_segment);
+        }
+        '\\' => match cs.next() {
+          Some(c @ ('\\' | '/')) => current_segment.push(c),
+          None | _ => return Err(RouteAddressParseError::InvalidEscapeSequence),
+        },
+        other => current_segment.push(other),
+      }
+    }
+    // Reaching the end finishes the current segment
+    // we always have one due to the early-out on s.is_empty()
+    segments.push(current_segment);
+    Ok(Self { segments })
   }
 }
 
@@ -121,6 +170,8 @@ mod tests {
 
   const TRIVIAL_CASE: &str = "/hello/world";
   const TRIVIAL_CASE_SEGMENTS: &[&str] = &["hello", "world"];
+  const ESCAPED_CASE: &str = "/\\\\foo\\/bar//\\\\/baz\\/";
+  const ESCAPED_CASE_SEGMENTS: &[&str] = &["\\foo/bar", "", "\\", "baz/"];
   const MISSING_LEADING_SLASH: &str = "hello/world";
 
   #[test]
@@ -203,6 +254,26 @@ mod tests {
       addr.to_string(),
       "",
       "Empty addresses must round-trip through display"
+    );
+  }
+
+  #[test]
+  fn from_segments_escaped() {
+    let addr = ESCAPED_CASE.parse::<RouteAddress>().unwrap();
+    assert_eq!(
+      &addr.iter_segments().collect::<Vec<_>>(),
+      ESCAPED_CASE_SEGMENTS,
+      "Escaped addresses must contain the escaped characters at the appropriate locations raw when viewed as segments"
+    );
+  }
+
+  #[test]
+  fn display_round_trip_escaped() {
+    let addr = ESCAPED_CASE.parse::<RouteAddress>().unwrap();
+    assert_eq!(
+      addr.to_string(),
+      ESCAPED_CASE,
+      "Escaped addresses must round-trip with the appropriate escapes in place"
     );
   }
 }
