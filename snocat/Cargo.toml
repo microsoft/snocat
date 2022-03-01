@@ -26,7 +26,7 @@ tracing = "0.1.31"
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.9", features=["env-filter"] }
 tokio = { version = "1.17", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
-tokio-stream = { version = "0.1.7", features=["net", "io-util", "sync"] }
+tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
 
 [lib]
