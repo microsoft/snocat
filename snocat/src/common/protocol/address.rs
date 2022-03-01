@@ -13,6 +13,56 @@ impl RouteAddress {
     self.segments.iter().map(|s| s.as_str())
   }
 
+  pub fn into_suffixed<
+    'a,
+    SuffixSegments: IntoIterator<Item = SuffixSegment>,
+    SuffixSegment: AsRef<str> + 'a,
+  >(
+    mut self,
+    added_suffix: SuffixSegments,
+  ) -> Self {
+    let added_suffix = added_suffix.into_iter().map(|e| e.as_ref().to_owned());
+    self.segments.extend(added_suffix);
+    self
+  }
+
+  pub fn with_suffix<
+    'a,
+    SuffixSegments: IntoIterator<Item = SuffixSegment>,
+    SuffixSegment: AsRef<str> + 'a,
+  >(
+    &self,
+    added_suffix: SuffixSegments,
+  ) -> Self {
+    self.clone().into_suffixed(added_suffix)
+  }
+
+  pub fn with_prefix<
+    'a,
+    PrefixSegments: IntoIterator<Item = PrefixSegment>,
+    PrefixSegment: AsRef<str> + 'a,
+  >(
+    &self,
+    added_prefix: PrefixSegments,
+  ) -> Self {
+    let added_prefix = added_prefix.into_iter();
+    // use the size_hint to reduce allocations since we need to account for two iter-extends in sequence
+    let prefix_length_hint = added_prefix.size_hint().0;
+    // if the prefix hint is absurdly large, just settle for reallocating if needed
+    // this prevents a potential buggy iterator from OOMing us
+    let prefix_length_hint = if prefix_length_hint < (128 + self.segments.len()) {
+      prefix_length_hint
+    } else {
+      self.segments.len()
+    };
+    let mut new_segments = Vec::with_capacity(self.segments.len() + prefix_length_hint);
+    new_segments.extend(added_prefix.into_iter().map(|e| e.as_ref().to_owned()));
+    new_segments.extend(self.segments.iter().cloned());
+    Self {
+      segments: new_segments,
+    }
+  }
+
   pub fn strip_segment_prefix<
     'a,
     Segments: IntoIterator<Item = Segment>,

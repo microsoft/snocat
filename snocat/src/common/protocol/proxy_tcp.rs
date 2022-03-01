@@ -141,9 +141,19 @@ pub enum TargetResolutionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DnsTarget {
-  PreferHigher { host: String, port: u16 },
-  Dns4 { host: String, port: u16 },
-  Dns6 { host: String, port: u16 },
+  /// "PreferHigher" is encoded as `dns`, specifying that the highest IP stack available should be used
+  PreferHigher {
+    host: String,
+    port: u16,
+  },
+  Dns4 {
+    host: String,
+    port: u16,
+  },
+  Dns6 {
+    host: String,
+    port: u16,
+  },
 }
 
 impl DnsTarget {
@@ -218,15 +228,40 @@ pub enum TcpStreamTarget {
   Dns(DnsTarget),
 }
 
+// Uses the Display for TcpStreamTarget implementation to create the second portion of the route address
+impl From<&TcpStreamTarget> for RouteAddress {
+  fn from(target: &TcpStreamTarget) -> Self {
+    let base_addr = RouteAddress::from_iter([TcpStreamService::protocol_name()]);
+    match target {
+      TcpStreamTarget::Port(port) => base_addr.into_suffixed(["tcp", port.to_string().as_str()]),
+      TcpStreamTarget::SocketAddr(SocketAddr::V4(s)) => base_addr.into_suffixed([
+        "ip4",
+        s.ip().to_string().as_str(),
+        "tcp",
+        s.port().to_string().as_str(),
+      ]),
+      TcpStreamTarget::SocketAddr(SocketAddr::V6(s)) => base_addr.into_suffixed([
+        "ip6",
+        s.ip().to_string().as_str(),
+        "tcp",
+        s.port().to_string().as_str(),
+      ]),
+      TcpStreamTarget::Dns(DnsTarget::PreferHigher { host, port }) => {
+        base_addr.into_suffixed(["dns", host.as_str(), "tcp", port.to_string().as_str()])
+      }
+      TcpStreamTarget::Dns(DnsTarget::Dns4 { host, port }) => {
+        base_addr.into_suffixed(["dns4", host.as_str(), "tcp", port.to_string().as_str()])
+      }
+      TcpStreamTarget::Dns(DnsTarget::Dns6 { host, port }) => {
+        base_addr.into_suffixed(["dns6", host.as_str(), "tcp", port.to_string().as_str()])
+      }
+    }
+  }
+}
+
 impl From<TcpStreamTarget> for RouteAddress {
   fn from(target: TcpStreamTarget) -> Self {
-    format!(
-      "/{}{}",
-      TcpStreamService::protocol_name(),
-      target.to_string(),
-    )
-    .parse()
-    .expect("TcpStreamTarget Display must always produce a valid RouteAddress")
+    (&target).into()
   }
 }
 
@@ -255,18 +290,26 @@ impl TryFrom<&RouteAddress> for TcpStreamTarget {
       .ok_or(TcpStreamTargetFormatError::TooFewSegments)?;
     let port: u16 = port.parse()?;
     match parts {
+      // `/tcp/$PORT`
+      // Implies IPv4 on localhost at the given $Port
       ["tcp"] => Ok(TcpStreamTarget::SocketAddr(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         port,
       ))),
+      // `/ip4/$IPv4HostAddr/tcp/$PORT`
+      // IPv4 on $IPv4HostAddr at the given $Port
       ["ip4", addr, "tcp"] => addr
         .parse::<Ipv4Addr>()
         .map_err(Into::into)
         .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V4(addr), port))),
+      // `/ip6/$IPv6Addr/tcp/$Port`
+      // IPv6 on $IPv6HostAddr at the given $Port
       ["ip6", addr, "tcp"] => addr
         .parse::<Ipv6Addr>()
         .map_err(Into::into)
         .map(|addr| TcpStreamTarget::SocketAddr(SocketAddr::new(IpAddr::V6(addr), port))),
+      // `/dns[46]?/$SAN/tcp/$Port`
+      // DNS mode, resolved using the specified IP stack preference, at the given $Port on that preferred stack
       [dns_class @ ("dns" | "dns4" | "dns6"), host, "tcp"] => {
         let host = host.to_string();
         Ok(TcpStreamTarget::Dns(match *dns_class {
@@ -284,24 +327,8 @@ impl TryFrom<&RouteAddress> for TcpStreamTarget {
 /// Format a [RouteAddress] from a [TcpStreamTarget]
 impl Display for TcpStreamTarget {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      TcpStreamTarget::Port(port) => write!(f, "/tcp/{}", port),
-      TcpStreamTarget::SocketAddr(SocketAddr::V4(s)) => {
-        write!(f, "/ip4/{}/tcp/{}", s.ip(), s.port())
-      }
-      TcpStreamTarget::SocketAddr(SocketAddr::V6(s)) => {
-        write!(f, "/ip6/{}/tcp/{}", s.ip(), s.port())
-      }
-      TcpStreamTarget::Dns(DnsTarget::PreferHigher { host, port }) => {
-        write!(f, "/dns/{}/tcp/{}", host, port)
-      }
-      TcpStreamTarget::Dns(DnsTarget::Dns4 { host, port }) => {
-        write!(f, "/dns4/{}/tcp/{}", host, port)
-      }
-      TcpStreamTarget::Dns(DnsTarget::Dns6 { host, port }) => {
-        write!(f, "/dns6/{}/tcp/{}", host, port)
-      }
-    }
+    let route_address: RouteAddress = self.into();
+    Display::fmt(&route_address, f)
   }
 }
 
@@ -506,6 +533,100 @@ mod tests {
   use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
   use crate::common::protocol::proxy_tcp::{DnsTarget, TcpStreamTarget};
+
+  #[test]
+  fn test_dns_name_parsing() {
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &TcpStreamTarget::Dns(DnsTarget::Dns4 {
+          host: "127.0.0.1".to_string(),
+          port: 0,
+        })
+        .into()
+      )
+      .unwrap(),
+      TcpStreamTarget::Dns(DnsTarget::Dns4 {
+        host: "127.0.0.1".to_string(),
+        port: 0
+      })
+    );
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &TcpStreamTarget::Dns(DnsTarget::Dns4 {
+          host: "example.com".to_string(),
+          port: 0,
+        })
+        .into()
+      )
+      .unwrap(),
+      TcpStreamTarget::Dns(DnsTarget::Dns4 {
+        host: "example.com".to_string(),
+        port: 0
+      })
+    );
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &(TcpStreamTarget::Dns(DnsTarget::Dns6 {
+          host: "example.com".to_string(),
+          port: 65535,
+        }))
+        .into()
+      )
+      .unwrap(),
+      (TcpStreamTarget::Dns(DnsTarget::Dns6 {
+        host: "example.com".to_string(),
+        port: 65535
+      }))
+    );
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &(TcpStreamTarget::Dns(DnsTarget::PreferHigher {
+          host: "example.com".to_string(),
+          port: 443,
+        }))
+        .into()
+      )
+      .unwrap(),
+      (TcpStreamTarget::Dns(DnsTarget::PreferHigher {
+        host: "example.com".to_string(),
+        port: 443
+      }))
+    );
+    // This test should actually fail, by all rights- but we don't parse the DNS name for reasonable formatting.
+    // We should probably use the same formatting as https://doc.rust-lang.org/std/net/struct.SocketAddrV6.html
+    // once we use DNSName handling instead of `String` for hosts.
+    //
+    // The standing question is: Should we support un-square-bracketed IPv6 addresses and coerce them to
+    // bracketed form, or require a bracketed form for it to parse at all?
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &(TcpStreamTarget::Dns(DnsTarget::Dns6 {
+          host: "::1".to_string(),
+          port: 8080,
+        }))
+        .into()
+      )
+      .unwrap(),
+      (TcpStreamTarget::Dns(DnsTarget::Dns6 {
+        host: "::1".to_string(),
+        port: 8080
+      }))
+    );
+    assert_eq!(
+      TcpStreamTarget::try_from(
+        &(TcpStreamTarget::Dns(DnsTarget::Dns6 {
+          host: "[::1]".to_string(),
+          port: 8080,
+        }))
+        .into()
+      )
+      .unwrap(),
+      (TcpStreamTarget::Dns(DnsTarget::Dns6 {
+        host: "[::1]".to_string(),
+        port: 8080
+      }))
+    );
+  }
 
   #[test]
   fn target_parsing() {
