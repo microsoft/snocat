@@ -106,3 +106,105 @@ pub async fn finally_async<
     },
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+  use std::time::Duration;
+
+  use futures::FutureExt;
+  use tokio::io::duplex;
+  use tokio::io::AsyncReadExt;
+  use tokio::io::AsyncWriteExt;
+  use tokio::sync::Barrier;
+
+  // Given input to one side terminating, ensure that a source stream closing also closes its output
+  // TODO: There has to be a simpler way to assert this
+  #[tokio::test]
+  async fn independent_directional_closure() {
+    let (near, far) = duplex(2048);
+
+    let request_input = Vec::from(*b"request").repeat(128);
+    let response_input = Vec::from(*b"response").repeat(128);
+    let (mut input_r, mut input_w) = tokio::io::duplex(2048);
+    let (mut near_r, mut near_w) = tokio::io::split(near);
+    let (mut far_r, mut far_w) = tokio::io::split(far);
+
+    // Uses read-to-end to determine that a stream has closed
+    // By ordering these calls, we can determine that one stream closes after another
+
+    let all_proxying_ready = Arc::new(Barrier::new(3));
+    let all_proxy_exit = Arc::new(Barrier::new(3));
+
+    let a = tokio::task::spawn({
+      let all_proxying_ready = all_proxying_ready.clone();
+      let all_proxy_exit = all_proxy_exit.clone();
+      async move {
+        println!("A initializing");
+        all_proxying_ready.wait().await;
+        println!("A writing");
+        input_w.write_all(&request_input).await.unwrap();
+        println!("A shutting down");
+        input_w.shutdown().await.unwrap();
+        println!("A dropping");
+        drop(input_w);
+        println!("A dropped");
+        let mut buf = Vec::new();
+        far_r.read_to_end(&mut buf).await.unwrap();
+        println!("A read far_r");
+        all_proxy_exit.wait().await;
+        println!("A finished");
+      }
+    });
+
+    let b = tokio::task::spawn({
+      let all_proxying_ready = all_proxying_ready.clone();
+      let all_proxy_exit = all_proxy_exit.clone();
+      async move {
+        println!("B initializing");
+        all_proxying_ready.wait().await;
+        println!("B reading");
+        let mut buf = Vec::new();
+        near_r.read_to_end(&mut buf).await.unwrap();
+        println!("B read complete");
+        drop(near_r);
+        println!("B dropped");
+        all_proxy_exit.wait().await;
+        println!("B finished");
+      }
+    });
+
+    let proxy = tokio::task::spawn({
+      let all_proxying_ready = all_proxying_ready.clone();
+      let all_proxy_exit = all_proxy_exit.clone();
+      async move {
+        // Send content written by A from `input` to `far`, then have `far` echo its stream to `near`, which will be read by B
+        println!("Proxying initializing");
+        let mut response_cursor = std::io::Cursor::new(response_input);
+        let proxy_future = super::proxy_generic_tokio_streams(
+          (&mut near_w, &mut input_r),
+          (&mut far_w, &mut response_cursor),
+        );
+        all_proxying_ready.wait().await;
+        println!("Proxying started");
+        proxy_future.await.unwrap();
+        println!("Proxying complete");
+        all_proxy_exit.wait().await;
+      }
+    });
+
+    use futures::future::Either;
+    match futures::future::select(
+      futures::future::try_join3(a, b, proxy).boxed(),
+      tokio::time::sleep(Duration::from_secs(10)).map(Ok).boxed(),
+    )
+    .await
+    {
+      Either::Left((Ok(_), _)) => {}
+      Either::Right((Ok(_), _)) => panic!("Timeout reached running async test"),
+      Either::Left((Err(e), _)) | Either::Right((Err(e), _)) => {
+        panic!("Error running unit test: {:#?}", e)
+      }
+    }
+  }
+}
