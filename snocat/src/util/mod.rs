@@ -1,9 +1,13 @@
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #[allow(dead_code)]
 use anyhow::Result;
 use futures::future::*;
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::io::Error as IOError;
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 pub mod cancellation;
@@ -36,6 +40,80 @@ pub async fn proxy_tokio_stream<
   .map_err(Into::into)
 }
 
+/// Merge two disparate IOStreams into one AsyncRead+AsyncWrite
+struct Unsplit<W, R> {
+  w: W,
+  r: R,
+}
+
+impl<W, R> AsyncRead for Unsplit<W, R>
+where
+  R: AsyncRead + Unpin,
+  W: Unpin,
+{
+  fn poll_read(
+    mut self: std::pin::Pin<&mut Self>,
+    cx: &mut std::task::Context<'_>,
+    buf: &mut tokio::io::ReadBuf<'_>,
+  ) -> std::task::Poll<std::io::Result<()>> {
+    AsyncRead::poll_read(Pin::new(&mut self.r), cx, buf)
+  }
+}
+
+impl<W, R> AsyncBufRead for Unsplit<W, R>
+where
+  R: AsyncBufRead + Unpin,
+  W: Unpin,
+{
+  fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
+    let inner = Pin::into_inner(self);
+    AsyncBufRead::poll_fill_buf(Pin::new(&mut inner.r), cx)
+  }
+
+  fn consume(self: Pin<&mut Self>, amt: usize) {
+    let inner = Pin::into_inner(self);
+    AsyncBufRead::consume(Pin::new(&mut inner.r), amt)
+  }
+}
+
+impl<W, R> AsyncWrite for Unsplit<W, R>
+where
+  R: Unpin,
+  W: AsyncWrite + Unpin,
+{
+  fn poll_write(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+    buf: &[u8],
+  ) -> Poll<Result<usize, IOError>> {
+    let parent_ref = Pin::into_inner(self);
+    AsyncWrite::poll_write(Pin::new(&mut parent_ref.w), cx, buf)
+  }
+
+  fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+    let parent_ref = Pin::into_inner(self);
+    AsyncWrite::poll_flush(Pin::new(&mut parent_ref.w), cx)
+  }
+
+  fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
+    let parent_ref = Pin::into_inner(self);
+    AsyncWrite::poll_shutdown(Pin::new(&mut parent_ref.w), cx)
+  }
+
+  fn poll_write_vectored(
+    self: Pin<&mut Self>,
+    cx: &mut std::task::Context<'_>,
+    bufs: &[std::io::IoSlice<'_>],
+  ) -> std::task::Poll<Result<usize, std::io::Error>> {
+    let parent_ref = Pin::into_inner(self);
+    AsyncWrite::poll_write_vectored(Pin::new(&mut parent_ref.w), cx, bufs)
+  }
+
+  fn is_write_vectored(&self) -> bool {
+    AsyncWrite::is_write_vectored(&self.w)
+  }
+}
+
 #[tracing::instrument(level = "trace", err, skip(a, b))]
 pub async fn proxy_generic_tokio_streams<
   SenderA: tokio::io::AsyncWrite + Unpin,
@@ -43,18 +121,25 @@ pub async fn proxy_generic_tokio_streams<
   SenderB: tokio::io::AsyncWrite + Unpin,
   ReaderB: tokio::io::AsyncRead + Unpin,
 >(
-  a: (&mut SenderA, &mut ReaderA),
-  b: (&mut SenderB, &mut ReaderB),
+  a: (SenderA, ReaderA),
+  b: (SenderB, ReaderB),
 ) -> Result<(u64, u64), std::io::Error> {
   const PROXY_BUFFER_CAPACITY: usize = 1024 * 32;
   let (sender_a, reader_a) = a;
   let (sender_b, reader_b) = b;
-  let mut reader_a = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_a);
-  let mut reader_b = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_b);
-  let proxy_a2b = tokio::io::copy_buf(&mut reader_a, sender_b).fuse();
-  let proxy_b2a = tokio::io::copy_buf(&mut reader_b, sender_a).fuse();
+  let reader_a = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_a);
+  let reader_b = tokio::io::BufReader::with_capacity(PROXY_BUFFER_CAPACITY, reader_b);
+
+  let mut a = Unsplit {
+    r: reader_a,
+    w: sender_a,
+  };
+  let mut b = Unsplit {
+    r: reader_b,
+    w: sender_b,
+  };
   tracing::trace!("polling");
-  match futures::future::try_join(proxy_a2b, proxy_b2a).await {
+  match tokio::io::copy_bidirectional(&mut a, &mut b).await {
     Ok((a_to_b, b_to_a)) => Ok((a_to_b, b_to_a)),
     Err(e) => {
       tracing::debug!(error = ?e, "Proxy connection copy with error {:#?}", e);
