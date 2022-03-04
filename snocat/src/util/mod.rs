@@ -1,12 +1,11 @@
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#[allow(dead_code)]
+
 use anyhow::Result;
 use futures::future::*;
 use std::io::Error as IOError;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
