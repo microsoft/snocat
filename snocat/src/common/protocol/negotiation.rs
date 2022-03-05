@@ -365,36 +365,38 @@ mod tests {
       .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
       .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
       .finish();
-    tracing::subscriber::set_global_default(collector).expect("Logger init must succeed");
-    const TEST_ADDR: &str = "/test/addr";
-    let service_registry = TestServiceRegistry {
-      services: vec![Arc::new(NoOpServiceAcceptAll)],
-    };
-    let service = NegotiationService::new(Arc::new(service_registry));
-    let client = NegotiationClient::new();
-    use crate::util::tunnel_stream::WrappedStream;
-    let (client_stream, server_stream) = WrappedStream::duplex(8192);
+    tracing::subscriber::with_default(collector, || async move {
+      const TEST_ADDR: &str = "/test/addr";
+      let service_registry = TestServiceRegistry {
+        services: vec![Arc::new(NoOpServiceAcceptAll)],
+      };
+      let service = NegotiationService::new(Arc::new(service_registry));
+      let client = NegotiationClient::new();
+      use crate::util::tunnel_stream::WrappedStream;
+      let (client_stream, server_stream) = WrappedStream::duplex(8192);
 
-    let client_future = async move {
-      let _stream = client
-        .negotiate(
-          TEST_ADDR.parse().expect("Illegal test address"),
-          client_stream,
-        )
-        .await?;
-      Result::<_, NegotiationError<anyhow::Error>>::Ok(())
-    };
+      let client_future = async move {
+        let _stream = client
+          .negotiate(
+            TEST_ADDR.parse().expect("Illegal test address"),
+            client_stream,
+          )
+          .await?;
+        Result::<_, NegotiationError<anyhow::Error>>::Ok(())
+      };
 
-    let server_future = async move {
-      // server
-      let (_stream, addr, service) = service
-        .negotiate(server_stream, TunnelId::new(1u64))
-        .await?;
-      Result::<_, NegotiationError<anyhow::Error>>::Ok((addr, service))
-    };
-    let fut = futures::future::try_join(client_future, server_future);
-    let fut = timeout(Duration::from_secs(5), fut);
-    let ((), (addr, _service)) = fut.await.expect("Must not time out").unwrap();
-    assert_eq!(&addr.to_string(), TEST_ADDR);
+      let server_future = async move {
+        // server
+        let (_stream, addr, service) = service
+          .negotiate(server_stream, TunnelId::new(1u64))
+          .await?;
+        Result::<_, NegotiationError<anyhow::Error>>::Ok((addr, service))
+      };
+      let fut = futures::future::try_join(client_future, server_future);
+      let fut = timeout(Duration::from_secs(5), fut);
+      let ((), (addr, _service)) = fut.await.expect("Must not time out").unwrap();
+      assert_eq!(&addr.to_string(), TEST_ADDR);
+    })
+    .await;
   }
 }
