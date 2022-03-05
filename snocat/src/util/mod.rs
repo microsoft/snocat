@@ -193,102 +193,242 @@ pub async fn finally_async<
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
   use std::time::Duration;
 
-  use futures::FutureExt;
-  use tokio::io::duplex;
-  use tokio::io::AsyncReadExt;
+  use futures::future::{self, BoxFuture, FutureExt, TryFuture, TryFutureExt};
+  use futures::{pin_mut, Future};
   use tokio::io::AsyncWriteExt;
-  use tokio::sync::Barrier;
+  use tokio::io::DuplexStream;
+  use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
-  // Given input to one side terminating, ensure that a source stream closing also closes its output
-  // TODO: There has to be a simpler way to assert this
-  #[tokio::test]
-  async fn independent_directional_closure() {
-    let (near, far) = duplex(2048);
+  use crate::util::proxy_generic_tokio_streams;
 
-    let request_input = Vec::from(*b"request").repeat(128);
-    let response_input = Vec::from(*b"response").repeat(128);
-    let (mut input_r, mut input_w) = tokio::io::duplex(2048);
-    let (mut near_r, mut near_w) = tokio::io::split(near);
-    let (mut far_r, mut far_w) = tokio::io::split(far);
-
-    // Uses read-to-end to determine that a stream has closed
-    // By ordering these calls, we can determine that one stream closes after another
-
-    let all_proxying_ready = Arc::new(Barrier::new(3));
-    let all_proxy_exit = Arc::new(Barrier::new(3));
-
-    let a = tokio::task::spawn({
-      let all_proxying_ready = all_proxying_ready.clone();
-      let all_proxy_exit = all_proxy_exit.clone();
-      async move {
-        println!("A initializing");
-        all_proxying_ready.wait().await;
-        println!("A writing");
-        input_w.write_all(&request_input).await.unwrap();
-        println!("A shutting down");
-        input_w.shutdown().await.unwrap();
-        println!("A dropping");
-        drop(input_w);
-        println!("A dropped");
-        let mut buf = Vec::new();
-        far_r.read_to_end(&mut buf).await.unwrap();
-        println!("A read far_r");
-        all_proxy_exit.wait().await;
-        println!("A finished");
-      }
-    });
-
-    let b = tokio::task::spawn({
-      let all_proxying_ready = all_proxying_ready.clone();
-      let all_proxy_exit = all_proxy_exit.clone();
-      async move {
-        println!("B initializing");
-        all_proxying_ready.wait().await;
-        println!("B reading");
-        let mut buf = Vec::new();
-        near_r.read_to_end(&mut buf).await.unwrap();
-        println!("B read complete");
-        drop(near_r);
-        println!("B dropped");
-        all_proxy_exit.wait().await;
-        println!("B finished");
-      }
-    });
-
-    let proxy = tokio::task::spawn({
-      let all_proxying_ready = all_proxying_ready.clone();
-      let all_proxy_exit = all_proxy_exit.clone();
-      async move {
-        // Send content written by A from `input` to `far`, then have `far` echo its stream to `near`, which will be read by B
-        println!("Proxying initializing");
-        let mut response_cursor = std::io::Cursor::new(response_input);
-        let proxy_future = super::proxy_generic_tokio_streams(
-          (&mut near_w, &mut input_r),
-          (&mut far_w, &mut response_cursor),
-        );
-        all_proxying_ready.wait().await;
-        println!("Proxying started");
-        proxy_future.await.unwrap();
-        println!("Proxying complete");
-        all_proxy_exit.wait().await;
-      }
-    });
-
-    use futures::future::Either;
-    match futures::future::select(
-      futures::future::try_join3(a, b, proxy).boxed(),
-      tokio::time::sleep(Duration::from_secs(10)).map(Ok).boxed(),
-    )
-    .await
-    {
-      Either::Left((Ok(_), _)) => {}
-      Either::Right((Ok(_), _)) => panic!("Timeout reached running async test"),
+  /// Panics if an async test takes "too long" (more than a few seconds)
+  ///
+  /// Use this only for near-instantaneous behaviours. This helper gives
+  /// extra time for cases of a CPU-overloaded build/test machine,
+  /// but tests should not contain a time component.
+  #[track_caller]
+  async fn async_test_timeout_panic<Fut: TryFuture>(fut: Fut) -> Fut::Ok
+  where
+    Fut::Error: std::fmt::Debug + 'static,
+  {
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    let fut = fut.map_ok(|s| s);
+    pin_mut!(fut);
+    use future::Either;
+    match future::select(fut, tokio::time::sleep(TIMEOUT).map(Ok).boxed()).await {
+      Either::Left((Ok(success), _)) => success,
+      Either::Right((Ok(_), _)) => panic!("Timeout reached running async unit test"),
       Either::Left((Err(e), _)) | Either::Right((Err(e), _)) => {
-        panic!("Error running unit test: {:#?}", e)
+        panic!("Error running async unit test: {:#?}", e);
       }
     }
+  }
+
+  /// Simply swaps the order of a tuple
+  ///
+  /// Reduces boilerplate from the non-standardized order of (Send, Receive) / (Read, Write) stream splitting
+  fn swap_tuple<A, B>((a, b): (A, B)) -> (B, A) {
+    (b, a)
+  }
+
+  #[track_caller]
+  fn create_sendrec_asserter(
+    name: &'static str,
+    channel: DuplexStream,
+    message_to_send: &'static [u8],
+    expected_to_receive: &'static [u8],
+    send_cue: BoxFuture<'static, ()>,
+    after_sent: impl FnOnce() -> (),
+  ) -> impl Future<Output = Result<(), std::io::Error>> {
+    async move {
+      let (mut recv, mut send) = tokio::io::split(channel);
+      future::try_join(
+        async move {
+          let mut buf = Vec::new();
+          println!("{} RECV reading", name);
+          recv.read_to_end(&mut buf).await?;
+          println!("{} RECV asserting", name);
+          assert_eq!(&buf, expected_to_receive);
+          println!("{} RECV dropping", name);
+          drop(recv);
+          println!("{} RECV complete", name);
+          Ok(())
+        },
+        async move {
+          println!("{} SEND waiting", name);
+          send_cue.await;
+          println!("{} SEND writing", name);
+          send.write_all(message_to_send).await?;
+          println!("{} SEND shutting down", name);
+          // Without this, we apparently hang forever, due to nuances of DuplexTunnel lifespan and tokio::io::split.
+          // This does not occur with TCP streams, thankfully, unless timeouts are disabled or extraordinarily long.
+          send.shutdown().await?;
+          println!("{} SEND dropping", name);
+          drop(send);
+          println!("{} SEND triggering notifier", name);
+          after_sent();
+          println!("{} SEND complete", name);
+          Ok(())
+        },
+      )
+      .map_ok(|_| ())
+      .await
+    }
+  }
+
+  /// Test that both sides reaching completion ends the proxying task
+  #[tokio::test]
+  async fn proxy_completion_on_end() {
+    const MESSAGE_FROM_A: &[u8] = b"Hello world from A!";
+    const MESSAGE_FROM_B: &[u8] = b"Hello world from B!";
+    let (a_to_p, p_to_a) = tokio::io::duplex(64);
+    let (p_to_b, b_to_p) = tokio::io::duplex(64);
+
+    let a = create_sendrec_asserter(
+      "A->P",
+      a_to_p,
+      MESSAGE_FROM_A,
+      MESSAGE_FROM_B,
+      future::ready(()).boxed(),
+      || (),
+    );
+    let b = create_sendrec_asserter(
+      "B->P",
+      b_to_p,
+      MESSAGE_FROM_B,
+      MESSAGE_FROM_A,
+      future::ready(()).boxed(),
+      || (),
+    );
+    let proxy = async move {
+      println!("Proxy starting...");
+      let p_to_a = swap_tuple(tokio::io::split(p_to_a));
+      let p_to_b = swap_tuple(tokio::io::split(p_to_b));
+      proxy_generic_tokio_streams(p_to_a, p_to_b).await?;
+      println!("Proxy complete.");
+      Ok(())
+    };
+    async_test_timeout_panic(future::try_join3(a, b, proxy)).await;
+  }
+
+  /// Test that one side successfully completing does not end the proxying stream immediately for the other side
+  #[tokio::test]
+  async fn proxy_independent_stream_completion() {
+    const MESSAGE_FROM_A: &[u8] = b"Hello world from A!";
+    const MESSAGE_FROM_B: &[u8] = b"Hello world from B!";
+    let (a_to_p, p_to_a) = tokio::io::duplex(64);
+    let (p_to_b, b_to_p) = tokio::io::duplex(64);
+
+    let (notify_a_completed, a_completion_receiver) = futures::channel::oneshot::channel();
+
+    let a = create_sendrec_asserter(
+      "A->P",
+      a_to_p,
+      MESSAGE_FROM_A,
+      MESSAGE_FROM_B,
+      future::ready(()).boxed(),
+      || notify_a_completed.send(()).unwrap(),
+    );
+    let b = create_sendrec_asserter(
+      "B->P",
+      b_to_p,
+      MESSAGE_FROM_B,
+      MESSAGE_FROM_A,
+      a_completion_receiver.map(|x| x.unwrap()).boxed(),
+      || (),
+    );
+    let proxy = async move {
+      println!("Proxy starting...");
+      let p_to_a = swap_tuple(tokio::io::split(p_to_a));
+      let p_to_b = swap_tuple(tokio::io::split(p_to_b));
+      proxy_generic_tokio_streams(p_to_a, p_to_b).await?;
+      println!("Proxy complete.");
+      Ok(())
+    };
+    async_test_timeout_panic(future::try_join3(a, b, proxy)).await;
+  }
+
+  /// Test that one side erroring ends the stream immediately for the other side, and returns the error from the proxying task
+  #[tokio::test]
+  async fn proxy_completion_on_any_error() {
+    use std::{
+      pin::Pin,
+      task::{Context, Poll},
+    };
+    struct ErroringStream;
+    impl AsyncWrite for ErroringStream {
+      fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+      ) -> Poll<Result<usize, std::io::Error>> {
+        Poll::Ready(Ok(buf.len()))
+      }
+
+      fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+      ) -> Poll<Result<(), std::io::Error>> {
+        Poll::Ready(Ok(()))
+      }
+
+      fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+      ) -> Poll<Result<(), std::io::Error>> {
+        Poll::Ready(Ok(()))
+      }
+    }
+
+    impl AsyncRead for ErroringStream {
+      fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut tokio::io::ReadBuf<'_>,
+      ) -> Poll<std::io::Result<()>> {
+        let e = std::io::Error::new(
+          std::io::ErrorKind::NotConnected,
+          "Placeholder failure generator for tests",
+        );
+        Poll::Ready(Err(e))
+      }
+    }
+
+    let p_to_a = ErroringStream;
+    let (p_to_b, b_to_p) = tokio::io::duplex(64);
+
+    let b = create_sendrec_asserter(
+      "B->P",
+      b_to_p,
+      b"Hello /dev/null!",
+      // Nothing received, stream closes immediately.
+      //
+      // In a networked context, this read would error instead of being empty,
+      // we just get this behaviour due to how DuplexStream handles "shutdown"
+      // as a graceful end of stream under all contexts.
+      b"",
+      future::ready(()).boxed(),
+      || (),
+    );
+    let proxy = async move {
+      println!("Proxy starting...");
+      let p_to_a = swap_tuple(tokio::io::split(p_to_a));
+      let p_to_b = swap_tuple(tokio::io::split(p_to_b));
+      match proxy_generic_tokio_streams(p_to_a, p_to_b).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotConnected => {
+          println!("Proxy failed with the expected error.");
+          Ok(())
+        }
+        other => {
+          panic!(
+            "Proxy exited before the expected failure with value {:#?}",
+            other
+          );
+        }
+      }
+    };
+    async_test_timeout_panic(future::try_join(b, proxy)).await;
   }
 }
