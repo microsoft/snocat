@@ -15,6 +15,7 @@
 #![allow(clippy::unused_unit)]
 
 pub mod common;
+pub mod ext;
 pub mod util;
 
 pub mod client;
