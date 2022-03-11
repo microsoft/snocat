@@ -5,10 +5,10 @@
 
 use std::{borrow::BorrowMut, net::SocketAddr, ops::Deref, sync::Arc};
 
-use futures::{future::BoxFuture, stream::BoxStream, FutureExt, StreamExt};
+use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use serde::{Deserializer, Serializer};
 
-use crate::util::tunnel_stream::WrappedStream;
+use crate::{ext::stream::StreamExtExt, util::tunnel_stream::WrappedStream};
 
 pub mod duplex;
 pub mod id;
@@ -194,78 +194,29 @@ pub trait TunnelActivityMonitoring {
   /// Track the number of activee streams in the session, on uplink and downlink
   fn on_active_stream_count_changed<'a>(&'a self) -> BoxStream<'a, usize> {
     use tokio::sync::watch;
-    // Yes- this looks redundant- but it keeps the math simple with baseline of 1
-    let counter_holder = Arc::new(Arc::new(()));
-    let baseline_count = 1; // strong_count is the number of counters present when true count is zero
-    let update_current_count = move |notifier: &watch::Sender<usize>, counter: &Arc<()>| {
-      let current_count = Arc::strong_count(&counter) - baseline_count;
-      let _ = notifier.send(current_count);
-    };
-    let (send, recv) = watch::channel(0);
-    let send = Arc::new(send);
-
+    let (send, recv) = watch::channel(0usize);
     // Future which produces updates when subscribed to incoming stream notifications; resolves when stream ends
-    let counter_incoming = {
-      let send = Arc::clone(&send);
-      let counter_holder = Arc::clone(&counter_holder);
-      let mut source_filtered_empty = self
-        .on_new_incoming_stream()
-        .map(move |on_close| {
-          (
-            Arc::clone(&counter_holder),
-            Arc::clone(counter_holder.as_ref()),
-            on_close,
-          )
-        })
-        .then(move |(activity_counter_ref, counter_handle, on_close)| {
-          let send = Arc::clone(&send);
-          update_current_count(send.as_ref(), &*activity_counter_ref);
-          async move {
-            let _close_result = on_close.await;
-            drop(counter_handle);
-            update_current_count(send.as_ref(), &*activity_counter_ref);
-            ()
-          }
-        })
-        .filter(|_| futures::future::ready(false))
-        .boxed();
-
-      async move { source_filtered_empty.next().await }.boxed()
-    };
-
+    let incoming = self.on_new_incoming_stream().boxed();
     // Future which produces updates when subscribed to outgoing stream notifications; resolves when stream ends
-    let counter_outgoing = {
-      let send = Arc::clone(&send);
-      let counter_holder = Arc::clone(&counter_holder);
-      let mut source_filtered_empty = self
-        .on_new_outgoing_stream()
-        .map(move |on_close| {
-          (
-            Arc::clone(&counter_holder),
-            Arc::clone(counter_holder.as_ref()),
-            on_close,
-          )
-        })
-        .then(move |(activity_counter_ref, counter_handle, on_close)| {
-          let send = Arc::clone(&send);
-          update_current_count(send.as_ref(), &*activity_counter_ref);
-          async move {
-            let _close_result = on_close.await;
-            drop(counter_handle);
-            update_current_count(send.as_ref(), &*activity_counter_ref);
-            ()
-          }
-        })
-        .filter(|_| futures::future::ready(false))
-        .boxed();
-
-      async move { source_filtered_empty.next().await }.boxed()
-    };
-
-    drop(counter_holder);
+    let outgoing = self.on_new_outgoing_stream().boxed();
+    // `StreamExtExt::try_for_each_concurrent_monitored` cannot (currently) share
+    // counters, so we combine the streams to create a shared count instead.
+    // Merge both streams, and map them with Ok(item) to make them a TryStream, to fit try_for_each* signatures
+    let combined = futures::stream::select(incoming, outgoing)
+      .map(|item| Result::<_, ()>::Ok(item))
+      .boxed();
+    // The callback is simply a way to ignore failures, since we actually don't care about the streams' success/failure state
+    let sender = combined.try_for_each_concurrent_monitored(
+      None,
+      send,
+      |f: BoxFuture<'_, Result<(), ()>>| async move {
+        tokio::task::spawn(f).await.ok();
+        Ok(())
+      },
+    );
 
     tokio_stream::wrappers::WatchStream::new(recv)
-      .take_until(futures::future::join(counter_incoming, counter_outgoing))
+      .take_until(sender) // Run the updater that pushes to `send` as long as `recv` is watched
       .boxed()
   }
 }
