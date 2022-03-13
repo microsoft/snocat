@@ -3,7 +3,12 @@
 
 #![warn(unused_imports, dead_code, unused_variables)]
 
-use std::{borrow::BorrowMut, net::SocketAddr, ops::Deref, sync::Arc};
+use std::{
+  borrow::BorrowMut,
+  net::SocketAddr,
+  ops::{Deref, DerefMut},
+  sync::Arc,
+};
 
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use serde::{Deserializer, Serializer};
@@ -233,6 +238,7 @@ pub trait TunnelControlPerChannel: TunnelControl {
 /// Provides access to a shared data structure bound to the object
 ///
 /// Lifetimes of the baggage and its children are bound to that of the parent
+// TODO: Get rid of this, now that tunnels will be handle-tracking-based
 pub trait Baggage {
   type Bag<'a>
   where
@@ -289,8 +295,9 @@ pub trait TunnelDownlink: WithTunnelId + Sided {
   fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>>;
 }
 
-impl<TDownlink: std::ops::Deref + std::ops::DerefMut> TunnelDownlink for TDownlink
+impl<TDownlink> TunnelDownlink for TDownlink
 where
+  TDownlink: Deref + DerefMut,
   TDownlink::Target: TunnelDownlink,
 {
   fn as_stream<'a>(&'a mut self) -> BoxStream<'a, Result<TunnelIncomingType, TunnelError>> {

@@ -7,7 +7,10 @@ use futures::{
 };
 use std::{backtrace::Backtrace, fmt::Debug, sync::Arc};
 
-use super::{tunnel::TunnelId, RouteAddress};
+use super::{
+  tunnel::{ArcTunnel, Tunnel, TunnelId},
+  RouteAddress,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ServiceError<InternalError> {
@@ -64,7 +67,7 @@ pub trait Service {
     &'a self,
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
-    tunnel_id: TunnelId,
+    tunnel: ArcTunnel,
   ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>>;
 }
 
@@ -76,7 +79,7 @@ pub trait MappedService<TIntoError: std::fmt::Debug + std::fmt::Display> {
     &'a self,
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
-    tunnel_id: TunnelId,
+    tunnel: ArcTunnel,
   ) -> BoxFuture<'a, Result<(), ServiceError<TIntoError>>>;
 }
 
@@ -93,9 +96,9 @@ where
     &'a self,
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
-    tunnel_id: TunnelId,
+    tunnel: ArcTunnel,
   ) -> BoxFuture<'a, Result<(), ServiceError<TIntoError>>> {
-    Service::handle(self, addr, stream, tunnel_id)
+    Service::handle(self, addr, stream, tunnel)
       .map_err(|e| ServiceError::err_into(e))
       .boxed()
   }

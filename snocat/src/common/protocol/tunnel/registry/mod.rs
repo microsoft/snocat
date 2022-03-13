@@ -1,340 +1,119 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#![allow(clippy::type_complexity)]
 
 use downcast_rs::{impl_downcast, Downcast, DowncastSync};
-use futures::{
-  future::{BoxFuture, FutureExt},
-  TryFutureExt,
-};
+use futures::future::BoxFuture;
 use std::{
   fmt::{Debug, Display},
-  sync::Arc,
+  hash::Hash,
 };
 
-use crate::common::protocol::tunnel::{TunnelId, TunnelName};
+use crate::common::protocol::tunnel::TunnelName;
 
-pub mod local;
-pub mod serialized;
+// pub mod local;
+// pub mod serialized;
 
-#[derive(PartialEq, Eq, Hash)]
-pub struct TunnelRecord<TTunnel: ?Sized, TMetadata> {
-  pub id: TunnelId,
-  pub name: Option<TunnelName>,
-  pub tunnel: Option<Arc<TTunnel>>,
-  pub metadata: TMetadata,
-}
-
-impl<TTunnel: ?Sized, TMetadata> Clone for TunnelRecord<TTunnel, TMetadata>
-where
-  TMetadata: Clone,
-{
-  fn clone(&self) -> Self {
-    Self {
-      id: self.id,
-      name: self.name.clone(),
-      tunnel: self.tunnel.clone(),
-      metadata: self.metadata.clone(),
-    }
-  }
-}
-
-impl<TTunnel: ?Sized, TMetadata> TunnelRecord<TTunnel, TMetadata> {
-  pub fn map_metadata<TOutputMetadata, F: FnOnce(TMetadata) -> TOutputMetadata>(
-    self,
-    f: F,
-  ) -> TunnelRecord<TTunnel, TOutputMetadata> {
-    TunnelRecord {
-      id: self.id,
-      name: self.name,
-      tunnel: self.tunnel,
-      metadata: f(self.metadata),
-    }
-  }
-
-  // I'd use Into/From but apparently this clashes because you can't assert that TMetadata != TOutputMetadata
-  pub fn convert_metadata<TOutputMetadata>(self) -> TunnelRecord<TTunnel, TOutputMetadata>
-  where
-    TOutputMetadata: From<TMetadata>,
-  {
-    self.map_metadata(From::from)
-  }
-}
-
-impl<TTunnel: ?Sized, TMetadata> Debug for TunnelRecord<TTunnel, TMetadata> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct(stringify!(TunnelRecord))
-      .field("id", &self.id)
-      .field("name", &self.name)
-      .finish_non_exhaustive()
-  }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum TunnelRegistrationError<ApplicationError> {
-  #[error("Tunnel ID was already occupied")]
-  IdOccupied(TunnelId),
-  #[error("Application error in tunnel registration")]
-  ApplicationError(ApplicationError),
-}
-
-impl<ApplicationError: Debug + Display> From<ApplicationError>
-  for TunnelRegistrationError<ApplicationError>
-{
-  fn from(e: ApplicationError) -> Self {
-    TunnelRegistrationError::ApplicationError(e)
-  }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum TunnelNamingError<ApplicationError> {
-  #[error("The tunnel to be named was not found")]
-  TunnelNotRegistered(TunnelId),
-  #[error("Application error in tunnel naming")]
-  ApplicationError(ApplicationError),
-}
-
-impl<ApplicationError: Debug + Display> From<ApplicationError>
-  for TunnelNamingError<ApplicationError>
-{
-  fn from(e: ApplicationError) -> Self {
-    TunnelNamingError::ApplicationError(e)
-  }
-}
-
-pub trait TunnelRegistry<TTunnel: ?Sized>: Downcast + DowncastSync {
-  /// Metadata attached to each registered tunnel, uniquely per tunnel
+/// An eventually-consistent mapping of [`TunnelName`]/Tunnel associations
+///
+/// This guarantees only eventual consistency, and that tunnel records are safe to cache; as
+/// such, this function is allowed to return tunnels which are no longer present in the set
+/// represented here- or which have been mutated. Such mutations are allowed to signal this
+/// implementation for deletion mechanisms such as tombstone placement.
+pub trait TunnelRegistry: Downcast + DowncastSync {
+  /// A value returned that uniquely addresses a registered association,
+  /// such that it can be cleared without complex queries or lookup.
   ///
-  /// Created at registration time, and readable by all record holders. Not guaranteed to be
-  /// the same instance for all readers. Any edit to this object via internal mutability is not
-  /// guaranteed to propagate back, except when the implementor is notified via a side channel.
-  type Metadata;
+  /// Note that Identifiers may be irreversible to their inputs.
+  type Identifier: Send + Sync + Debug + Display + Clone + Hash + 'static;
 
-  // Requires std::fmt::Debug constraint thanks to https://github.com/dtolnay/thiserror/issues/79
+  /// An instance of a tunnel record, with any associated data
+  type Record: Send + Debug + Display;
+
+  /// Implementation-specific errors from the registry
+  type Error: Send + Debug + Display + 'static;
+
+  /// Looks up a tunnel by name, taking the registry's chosen most-important value
+  fn lookup<'a>(
+    &'a self,
+    tunnel_name: &'a TunnelName,
+  ) -> BoxFuture<'a, Result<Option<(Self::Identifier, Self::Record)>, Self::Error>>;
+
+  /// Creates a registration of a tunnel name / record association within this registry's write-namespace
+  /// The returned identifier allows reference to the entry created by the registry mechanism.
+  ///
+  /// May overwrite an existing registration, be overwritten by another,
+  /// or exist simultaneously with another, depending upon the specific
+  /// implementation's consistency model.
+  fn register<'a>(
+    &'a self,
+    record: &'a Self::Record,
+  ) -> BoxFuture<'a, Result<Self::Identifier, Self::Error>>;
+
+  /// Deregisters any registration of a tunnel name / record under this registry's write-namespace
+  /// Note that this means that implementations will generally not allow deletion of an entry created
+  /// by another origin's instances; This is purely for explicit cleanup of those it created.
+  fn deregister<'a>(
+    &'a self,
+    tunnel_name: &'a TunnelName,
+  ) -> BoxFuture<'a, Result<Option<Self::Record>, Self::Error>>;
+
+  /// Deregisters a tunnel registration by its direct, opaque identifier.
+  fn deregister_identifier<'a>(
+    &'a self,
+    identifier: Self::Identifier,
+  ) -> BoxFuture<'a, Result<Option<Self::Record>, Self::Error>>;
+}
+impl_downcast!(sync TunnelRegistry assoc Identifier, Record, Error);
+
+/// Provides a means of access for a value of a specified type, for use in [Attribute Registries](trait@SharedAttributeRegistry)
+pub trait AttributeValue<T> {
+  /// Type stored internally for the given input
+  type Stored;
+
+  fn unpack(stored: &Self::Stored) -> T;
+
+  fn pack(input: T) -> Self::Stored;
+}
+
+/// A [`Sync`] registry of attributes retrievable [by value](trait@AttributeValue) through string keys
+pub trait SharedAttributeRegistry: Downcast + DowncastSync {
+  /// A value returned that uniquely addresses a registered key,
+  /// such that it can be cleared without complex queries or lookup.
+  ///
+  /// Note that Identifiers may be irreversible to their inputs.
+  type Identifier: Debug + Display + Clone + Hash;
+
+  /// Implementation-specific errors from the registry
   type Error: Debug + Display;
 
-  /// Looks up a tunnel by ID
+  /// Looks up a key by name in the target's key-space
   ///
-  /// Note that if a TunnelRecord contains None for the tunnel reference, that does not mean that
-  /// the same will hold true for other readers; The tunnel may be scoped to within that context.
-  fn lookup_by_id(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>>;
+  /// Keys are shared between accessors, so an Identifier
+  /// which can be used for deletion is returned.
+  fn lookup_attr<'a, V>(
+    &'a self,
+    key: &'a str,
+  ) -> BoxFuture<'a, Result<Option<(Self::Identifier, V)>, Self::Error>>;
 
-  /// Looks up a tunnel by Name
+  /// Registers an attribute to a key within the target's key-space
   ///
-  /// Note that if a TunnelRecord contains None for the tunnel reference, that does not mean that
-  /// the same will hold true for other readers; The tunnel may be scoped to within that context.
-  fn lookup_by_name(
-    &self,
-    tunnel_name: TunnelName,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>>;
+  /// May overwrite an existing key or be overwritten by another,
+  /// depending upon the implementation's consistency model.
+  fn register_attr<'a, V>(
+    &'a self,
+    key: &'a str,
+    value: &'a V,
+  ) -> BoxFuture<'a, Result<Self::Identifier, Self::Error>>;
 
-  /// Called prior to authentication, a tunnel is not yet trusted and has no name,
-  /// but the ID is guaranteed to remain stable throughout its lifetime.
-  ///
-  /// Upon disconnection, [Self::deregister_tunnel] will be called with the given [TunnelId].
-  ///
-  /// Returns Some(Metadata) if a tunnel was created with that ID, otherwise it had a conflict.
-  fn register_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    tunnel: Arc<TTunnel>,
-  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>>;
+  /// Deregisters an attribute by its key within the target's key-space
+  fn deregister_attr<'a>(
+    &'a self,
+    key: &'a str,
+  ) -> BoxFuture<'a, Result<Option<Self::Identifier>, Self::Error>>;
 
-  /// Called after authentication, when a tunnel is given an official designation
-  /// May also be called later to allow a reconnecting tunnel to replace its old
-  /// record until that record is removed.
-  ///
-  /// Returns Some if a tunnel by that ID existed and was renamed.
-  fn name_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    name: Option<TunnelName>,
-  ) -> BoxFuture<Result<(), TunnelNamingError<Self::Error>>>;
-
-  /// Called to remove a tunnel from the registry after it is disconnected.
-  /// Does not immediately destroy the Tunnel; previous consumers can hold
-  /// an Arc containing the Tunnel instance, which will extend its lifetime.
-  ///
-  /// Completion of deregistration implies that lookups may no longer
-  /// produce a tunnel record, but this may occur after a delay.
-  fn deregister_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>>;
-}
-impl_downcast!(sync TunnelRegistry<TTunnel> assoc Metadata, Error);
-
-/// An extension to the Registry trait which allows registration of unowned tunnels.
-/// Intended to allow mirroring of another registry across processes or hosts.
-pub trait TunnelRegistryMirroring<TTunnel: ?Sized>: TunnelRegistry<TTunnel> {
-  /// A superset of functionality over TunnelRegistry::register_tunnel
-  /// in that it also allows passing unowned tunnels / "None", and can
-  /// specify the exact metadata used in the remote tunnel record.
-  fn register_tunnel_mirror(
-    &self,
-    tunnel_id: TunnelId,
-    tunnel: Option<Arc<TTunnel>>,
-    metadata: Self::Metadata,
-  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>>;
-}
-
-impl<T, TTunnel: ?Sized> TunnelRegistry<TTunnel> for Arc<T>
-where
-  T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
-  TTunnel: Send + Sync + 'static,
-{
-  type Metadata = <T as TunnelRegistry<TTunnel>>::Metadata;
-
-  type Error = <T as TunnelRegistry<TTunnel>>::Error;
-
-  fn lookup_by_id(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<'_, Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self.as_ref().lookup_by_id(tunnel_id)
-  }
-
-  fn lookup_by_name(
-    &self,
-    tunnel_name: TunnelName,
-  ) -> BoxFuture<'_, Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self.as_ref().lookup_by_name(tunnel_name)
-  }
-
-  fn register_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    tunnel: Arc<TTunnel>,
-  ) -> BoxFuture<'_, Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
-    self.as_ref().register_tunnel(tunnel_id, tunnel)
-  }
-
-  fn name_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    name: Option<TunnelName>,
-  ) -> BoxFuture<'_, Result<(), TunnelNamingError<Self::Error>>> {
-    self.as_ref().name_tunnel(tunnel_id, name)
-  }
-
-  fn deregister_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<'_, Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self.as_ref().deregister_tunnel(tunnel_id)
-  }
-}
-
-pub trait AnyError: std::any::Any + std::fmt::Display + std::fmt::Debug {}
-
-impl<T> AnyError for T where T: std::any::Any + std::fmt::Display + std::fmt::Debug {}
-
-/// Any/Boxed/Opaque tunnel registry wrapper which translates outputs to std::any::Any
-#[repr(transparent)]
-pub struct BoxedTunnelRegistryInner<TTunnelRegistry>(TTunnelRegistry);
-
-impl<T, TTunnel: ?Sized> TunnelRegistry<TTunnel> for BoxedTunnelRegistryInner<T>
-where
-  T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
-  TTunnel: Send + Sync + 'static,
-{
-  type Metadata = Box<dyn std::any::Any + 'static>;
-  type Error = Box<dyn AnyError + 'static>;
-
-  fn lookup_by_id(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self
-      .0
-      .lookup_by_id(tunnel_id)
-      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
-      .map_err(|e| Box::new(e) as _)
-      .boxed()
-  }
-
-  fn lookup_by_name(
-    &self,
-    tunnel_name: TunnelName,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self
-      .0
-      .lookup_by_name(tunnel_name)
-      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
-      .map_err(|e| Box::new(e) as _)
-      .boxed()
-  }
-
-  fn register_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    tunnel: Arc<TTunnel>,
-  ) -> BoxFuture<Result<Self::Metadata, TunnelRegistrationError<Self::Error>>> {
-    self
-      .0
-      .register_tunnel(tunnel_id, tunnel)
-      .map_ok(|metadata| Box::new(metadata) as _)
-      .map_err(|e| match e {
-        TunnelRegistrationError::IdOccupied(id) => TunnelRegistrationError::IdOccupied(id),
-        TunnelRegistrationError::ApplicationError(e) => {
-          TunnelRegistrationError::ApplicationError(Box::new(e) as _)
-        }
-      })
-      .boxed()
-  }
-
-  fn name_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-    name: Option<TunnelName>,
-  ) -> BoxFuture<Result<(), TunnelNamingError<Self::Error>>> {
-    self
-      .0
-      .name_tunnel(tunnel_id, name)
-      .map_err(|e| match e {
-        TunnelNamingError::TunnelNotRegistered(id) => TunnelNamingError::TunnelNotRegistered(id),
-        TunnelNamingError::ApplicationError(e) => {
-          TunnelNamingError::ApplicationError(Box::new(e) as _)
-        }
-      })
-      .boxed()
-  }
-
-  fn deregister_tunnel(
-    &self,
-    tunnel_id: TunnelId,
-  ) -> BoxFuture<Result<Option<TunnelRecord<TTunnel, Self::Metadata>>, Self::Error>> {
-    self
-      .0
-      .deregister_tunnel(tunnel_id)
-      .map_ok(|ok| ok.map(|tr| tr.map_metadata(|metadata| Box::new(metadata) as _)))
-      .map_err(|e| Box::new(e) as _)
-      .boxed()
-  }
-}
-
-#[repr(transparent)]
-pub struct BoxedTunnelRegistry<TTunnel: ?Sized>(
-  Box<
-    dyn TunnelRegistry<
-        TTunnel,
-        Metadata = Box<dyn std::any::Any + 'static>,
-        Error = Box<dyn AnyError + 'static>,
-      > + 'static,
-  >,
-);
-
-impl<TTunnel: ?Sized> BoxedTunnelRegistry<TTunnel> {
-  pub fn into_box<T>(inner: T) -> Self
-  where
-    TTunnel: Send + Sync + 'static,
-    T: TunnelRegistry<TTunnel> + Send + Sync + 'static,
-    T::Error: AnyError,
-    T::Metadata: std::any::Any,
-  {
-    Self(Box::new(BoxedTunnelRegistryInner(inner)) as Box<_>)
-  }
+  /// Deregisters an attribute registration by its direct, opaque identifier.
+  fn deregister_attr_identifier<'a>(
+    &'a self,
+    identifier: Self::Identifier,
+  ) -> BoxFuture<'a, Result<Option<Self::Identifier>, Self::Error>>;
 }

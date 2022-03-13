@@ -13,7 +13,7 @@ use crate::util::tunnel_stream::TunnelStream;
 
 use super::{
   traits::{MappedService, ServiceRegistry},
-  tunnel::TunnelId,
+  tunnel::{Tunnel, TunnelId},
   RouteAddress, ServiceError,
 };
 
@@ -227,10 +227,10 @@ where
   /// In scenarios involving an owned stream, this will drop the stream, otherwise the
   /// other end of the stream may be at an unknown point in the protocol. As such, any
   /// timeout mechanism here must not expect to resume the stream after a ref drop.
-  pub fn negotiate<'stream, S>(
+  pub fn negotiate<'stream, S, TTunnel>(
     &self,
     mut link: S,
-    tunnel_id: TunnelId,
+    tunnel: TTunnel,
   ) -> BoxFuture<
     'stream,
     Result<
@@ -242,9 +242,11 @@ where
     R: 'stream,
     S: TunnelStream + Send + 'stream,
     for<'a> &'a mut S: TunnelStream + Send + 'a,
+    TTunnel: Tunnel + 'static,
   {
     const CURRENT_PROTOCOL_VERSION: u8 = 0u8;
     let service_registry = Arc::clone(&self.service_registry);
+    let tunnel_id = *tunnel.id();
     async move {
       tracing::trace!("performing negotiation protocol handshake");
       let remote_version = protocol_magic(&mut link, CURRENT_PROTOCOL_VERSION).await?;
@@ -300,14 +302,17 @@ where
 
 #[cfg(test)]
 mod tests {
-  use futures::FutureExt;
+  use futures::{FutureExt, TryStreamExt};
   use std::{sync::Arc, time::Duration};
   use tokio::time::timeout;
 
   use super::{ArcService, NegotiationClient, NegotiationError, NegotiationService};
   use crate::common::protocol::{
     traits::{MappedService, ServiceRegistry},
-    tunnel::TunnelId,
+    tunnel::{
+      duplex::EntangledTunnels, ArcTunnel, Tunnel, TunnelDownlink, TunnelId, TunnelIncomingType,
+      TunnelUplink,
+    },
     Service,
   };
 
@@ -348,7 +353,7 @@ mod tests {
       &'_ self,
       _addr: crate::common::protocol::RouteAddress,
       _stream: Box<dyn crate::util::tunnel_stream::TunnelStream + Send + 'static>,
-      _tunnel_id: TunnelId,
+      _tunnel: ArcTunnel,
     ) -> futures::future::BoxFuture<
       '_,
       Result<(), crate::common::protocol::ServiceError<Self::Error>>,
@@ -370,12 +375,19 @@ mod tests {
       let service_registry = TestServiceRegistry {
         services: vec![Arc::new(NoOpServiceAcceptAll)],
       };
+      let EntangledTunnels {
+        connector,
+        listener,
+      } = super::super::tunnel::duplex::channel();
+
       let service = NegotiationService::new(Arc::new(service_registry));
       let client = NegotiationClient::new();
-      use crate::util::tunnel_stream::WrappedStream;
-      let (client_stream, server_stream) = WrappedStream::duplex(8192);
 
       let client_future = async move {
+        let client_stream = connector
+          .open_link()
+          .await
+          .expect("Must open client stream");
         let _stream = client
           .negotiate(
             TEST_ADDR.parse().expect("Illegal test address"),
@@ -387,9 +399,20 @@ mod tests {
 
       let server_future = async move {
         // server
-        let (_stream, addr, service) = service
-          .negotiate(server_stream, TunnelId::new(1u64))
-          .await?;
+        let server_stream = listener
+          .downlink()
+          .await
+          .expect("Must successfully fetch server downlink")
+          .as_stream()
+          .try_next()
+          .await
+          .expect("Must fetch next connection");
+        let server_stream = match server_stream {
+          Some(TunnelIncomingType::BiStream(s)) => s,
+          Some(other) => panic!("Non-bistream opened to the test server"),
+          None => panic!("No stream was opened to the test server"),
+        };
+        let (_stream, addr, service) = service.negotiate(server_stream, listener).await?;
         Result::<_, NegotiationError<anyhow::Error>>::Ok((addr, service))
       };
       let fut = futures::future::try_join(client_future, server_future);

@@ -403,11 +403,23 @@ pub enum RoutingError<RouterError> {
   #[error("Invalid tunnel address format")]
   InvalidAddress,
   #[error("The tunnel failed to provide a link")]
-  LinkOpenFailure(#[from] super::tunnel::TunnelError),
+  LinkOpenFailure(
+    #[from]
+    #[backtrace]
+    super::tunnel::TunnelError,
+  ),
   #[error("{0}")]
-  NegotiationError(NegotiationError<RouterError>),
+  NegotiationError(
+    #[source]
+    #[backtrace]
+    NegotiationError<RouterError>,
+  ),
   #[error("Routing error: {0:?}")]
-  RouterError(RouterError),
+  RouterError(
+    #[source]
+    #[backtrace]
+    RouterError,
+  ),
 }
 
 impl<RouterError> RoutingError<RouterError> {

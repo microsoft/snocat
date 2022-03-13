@@ -16,7 +16,7 @@ use tracing_futures::Instrument;
 use super::{
   address::RouteAddressParseError,
   service::{Client, ClientResult, ProtocolInfo, RouteAddressBuilder},
-  tunnel::TunnelId,
+  tunnel::{ArcTunnel, TunnelId},
   RouteAddress, Service, ServiceError,
 };
 use crate::{
@@ -466,7 +466,7 @@ impl Service for TcpStreamService {
     &'a self,
     addr: RouteAddress,
     stream: Box<dyn TunnelStream + Send + 'static>,
-    _tunnel_id: TunnelId,
+    _tunnel_id: ArcTunnel,
   ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>> {
     tracing::debug!(
       "TCP proxy connection received for {}; building span...",
