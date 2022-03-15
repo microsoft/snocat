@@ -12,6 +12,7 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
 anyhow = "~1.0.43"
+dashmap = "5.1"
 downcast-rs = "1.2"
 futures = "0.3.21"
 gen-z = "0.1"
