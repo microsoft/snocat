@@ -70,7 +70,7 @@ impl<TTunnel> Clone for RegisteredTunnel<TTunnel> {
 
 impl<TTunnel> RegisteredTunnel<TTunnel> {
   pub fn new<TRegistry: ?Sized, TRecordIdent>(
-    tunnel: TTunnel,
+    tunnel: Arc<TTunnel>,
     registry: Arc<TRegistry>,
     record_identifier: TRecordIdent,
   ) -> Self
@@ -82,7 +82,7 @@ impl<TTunnel> RegisteredTunnel<TTunnel> {
       record_identifier,
     };
     Self {
-      tunnel: Arc::new(tunnel),
+      tunnel: tunnel,
       deregistration_callback: Arc::new(inner.into_deregistration_dropkick()),
     }
   }
@@ -115,12 +115,19 @@ impl<TTunnel> std::ops::Deref for RegisteredTunnel<TTunnel> {
   }
 }
 
-#[derive(Debug)]
-pub struct TunnelConnectedEvent<TTunnel> {
-  pub tunnel: Arc<TTunnel>,
+pub struct TunnelConnectedEvent {
+  pub tunnel: Arc<dyn Tunnel + 'static>,
 }
 
-impl<TTunnel> Clone for TunnelConnectedEvent<TTunnel> {
+impl Debug for TunnelConnectedEvent {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct(std::any::type_name::<TunnelConnectedEvent>())
+      .field("id", self.tunnel.id())
+      .finish()
+  }
+}
+
+impl Clone for TunnelConnectedEvent {
   fn clone(&self) -> Self {
     Self {
       tunnel: self.tunnel.clone(),
@@ -128,18 +135,17 @@ impl<TTunnel> Clone for TunnelConnectedEvent<TTunnel> {
   }
 }
 
-#[derive(Debug)]
-pub struct TunnelAuthenticatedEvent<TTunnel> {
-  pub tunnel: Arc<TTunnel>,
+#[derive(Clone)]
+pub struct TunnelAuthenticatedEvent {
+  pub tunnel: Arc<dyn Tunnel + 'static>,
   pub name: TunnelName,
 }
 
-impl<TTunnel> Clone for TunnelAuthenticatedEvent<TTunnel> {
-  fn clone(&self) -> Self {
-    Self {
-      tunnel: self.tunnel.clone(),
-      name: self.name.clone(),
-    }
+impl Debug for TunnelAuthenticatedEvent {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct(std::any::type_name::<TunnelAuthenticatedEvent>())
+      .field("id", self.tunnel.id())
+      .finish()
   }
 }
 
@@ -150,7 +156,6 @@ pub struct TunnelDisconnectedEvent {
 }
 
 pub struct ModularDaemon<
-  TTunnel,
   TTunnelRegistry: ?Sized,
   TServiceRegistry: ?Sized,
   TRouter: ?Sized,
@@ -164,18 +169,17 @@ pub struct ModularDaemon<
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
 
   // event hooks
-  pub tunnel_connected: Broadcaster<TunnelConnectedEvent<TTunnel>>,
-  pub tunnel_authenticated: Broadcaster<TunnelAuthenticatedEvent<TTunnel>>,
+  pub tunnel_connected: Broadcaster<TunnelConnectedEvent>,
+  pub tunnel_authenticated: Broadcaster<TunnelAuthenticatedEvent>,
   pub tunnel_disconnected: Broadcaster<TunnelDisconnectedEvent>,
 }
 
 impl<
-    TTunnel,
     TTunnelRegistry: ?Sized,
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 {
   pub fn router<'a>(&'a self) -> &Arc<TRouter> {
     &self.router
@@ -183,18 +187,16 @@ impl<
 }
 
 impl<
-    TTunnel,
     TTunnelRegistry: ?Sized,
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
-  TTunnel: Tunnel + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + 'static,
   TAuthenticationHandler::Error: std::fmt::Debug,
 {
-  fn authenticate_tunnel<'a>(
+  fn authenticate_tunnel<'a, TTunnel: Tunnel + 'a>(
     self: &Arc<Self>,
     tunnel: &'a TTunnel,
     shutdown: CancellationListener,
@@ -285,15 +287,13 @@ impl<
 }
 
 impl<
-    TTunnel,
     TTunnelRegistry: ?Sized,
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
   Self: 'static,
-  TTunnel: Tunnel + 'static,
   TTunnelRegistry: TunnelRegistry + Send + Sync + 'static,
   TTunnelRegistry::Record: 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
@@ -324,11 +324,12 @@ where
   }
 
   /// Convert a source of tunnel progenitors into tunnels by assigning IDs from the daemon's ID generator
-  pub fn assign_tunnel_ids<TunnelSource, TIntoTunnel>(
+  pub fn assign_tunnel_ids<TTunnel, TunnelSource, TIntoTunnel>(
     &self,
     tunnel_source: TunnelSource,
   ) -> impl Stream<Item = TTunnel> + Send + 'static
   where
+    TTunnel: Tunnel + 'static,
     TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
     TIntoTunnel: AssignTunnelId<TTunnel> + 'static,
   {
@@ -340,12 +341,13 @@ where
   ///
   /// This can be performed concurrently against multiple sources, with a shared server instance.
   /// The implementation assumes that shutdown_request_listener will also halt the tunnel_source.
-  pub fn run<TunnelSource>(
+  pub fn run<TTunnel, TunnelSource>(
     self: Arc<Self>,
     tunnels: TunnelSource,
     shutdown_request_listener: CancellationListener,
   ) -> tokio::task::JoinHandle<()>
   where
+    TTunnel: Tunnel + 'static,
     TunnelSource: Stream<Item = TTunnel> + Send + 'static,
   {
     // Stop accepting new Tunnels when asked to shutdown
@@ -385,14 +387,12 @@ where
 }
 
 impl<
-    TTunnel,
     TTunnelRegistry: ?Sized,
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
 where
-  TTunnel: Tunnel + 'static,
   TTunnelRegistry: TunnelRegistry + Send + Sync + 'static,
   TTunnelRegistry::Record: 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
@@ -401,13 +401,13 @@ where
   TAuthenticationHandler::Error: std::fmt::Debug,
 {
   // Sends tunnel_connected event when a tunnel begins being processed by the daemon pipeline
-  fn fire_tunnel_connected(&self, ev: TunnelConnectedEvent<TTunnel>) {
+  fn fire_tunnel_connected(&self, ev: TunnelConnectedEvent) {
     // Send; Ignore errors produced when no receivers exist to read the event
     let _ = self.tunnel_connected.send(ev);
   }
 
   // Sends tunnel_authenticated event when a tunnel has received its name and has been successfully registered
-  fn fire_tunnel_authenticated(&self, ev: TunnelAuthenticatedEvent<TTunnel>) {
+  fn fire_tunnel_authenticated(&self, ev: TunnelAuthenticatedEvent) {
     // Send; Ignore errors produced when no receivers exist to read the event
     let _ = self.tunnel_authenticated.send(ev);
   }
@@ -419,14 +419,17 @@ where
   }
 
   #[tracing::instrument(err, skip(self, tunnel, shutdown), fields(id=?tunnel.id()))]
-  async fn tunnel_lifecycle(
+  async fn tunnel_lifecycle<TTunnel>(
     self: Arc<Self>,
     tunnel: Arc<TTunnel>,
     shutdown: CancellationListener,
-  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>> {
+  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>>
+  where
+    TTunnel: Tunnel + 'static,
+  {
     // Send tunnel_connected event once the tunnel is successfully registered to its ID
     self.fire_tunnel_connected(TunnelConnectedEvent {
-      tunnel: tunnel.clone(),
+      tunnel: tunnel.clone() as Arc<_>,
     });
 
     // Authenticate connections - Each connection will be piped into the authenticator,
@@ -442,20 +445,16 @@ where
       })?;
 
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
-    let tunnel = {
-      Self::name_tunnel(
-        *tunnel.id(),
-        tunnel_name.clone(),
-        self.tunnel_registry.clone(),
-      )
-      .instrument(tracing::debug_span!("naming"))
+    let tunnel: RegisteredTunnel<TTunnel> = {
+      Self::name_tunnel(tunnel, tunnel_name.clone(), self.tunnel_registry.clone())
+        .instrument(tracing::debug_span!("naming"))
     }
     .await
     .map_err(TunnelLifecycleError::RegistrationError)?;
 
     // Send tunnel_authenticated event for the newly-named tunnel, once the registry is aware of it
     self.fire_tunnel_authenticated(TunnelAuthenticatedEvent {
-      tunnel: tunnel.inner().clone(),
+      tunnel: tunnel.inner().clone() as Arc<_>,
       name: tunnel_name.clone(),
     });
 
@@ -468,12 +467,15 @@ where
   }
 
   #[tracing::instrument(err, skip(self, tunnel, shutdown), fields(name=?tunnel_name, id=?tunnel.id()))]
-  async fn registered_tunnel_lifecycle(
+  async fn registered_tunnel_lifecycle<TTunnel>(
     self: Arc<Self>,
     tunnel: RegisteredTunnel<TTunnel>,
     tunnel_name: TunnelName,
     shutdown: CancellationListener,
-  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>> {
+  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>>
+  where
+    TTunnel: Tunnel + 'static,
+  {
     // Process incoming requests until the incoming channel is closed.
     {
       let service_registry = Arc::clone(&self.service_registry);
@@ -501,14 +503,15 @@ where
   // The request handler for this side should be configured to send a close request for
   // the tunnel with the given ID when it sees a request fail due to tunnel closure.
   // TODO: configure request handler (?) to do that using a std::sync::Weak<ModularDaemon>.
-  async fn handle_incoming_requests<TTunnelWrapper, TDownlink: TunnelDownlink>(
-    tunnel: TTunnelWrapper, // TODO: Pass a (weak?) tunnel handle instead of an ID
-    mut incoming: TDownlink,
+  async fn handle_incoming_requests<TTunnel, TTunnelDownlink>(
+    tunnel: TTunnel,
+    mut incoming: TTunnelDownlink,
     service_registry: Arc<TServiceRegistry>,
     shutdown: CancellationListener,
   ) -> Result<(), RequestProcessingError<anyhow::Error>>
   where
-    TTunnelWrapper: Tunnel + Clone + 'static,
+    TTunnel: Tunnel + Clone + 'static,
+    TTunnelDownlink: TunnelDownlink + Send + Unpin + 'static,
   {
     let negotiator = Arc::new(NegotiationService::new(service_registry));
 
@@ -529,14 +532,14 @@ where
     Ok(())
   }
 
-  async fn handle_incoming_request<TTunnelWrapper, Services>(
-    tunnel: TTunnelWrapper,
+  async fn handle_incoming_request<TTunnel, Services>(
+    tunnel: TTunnel,
     link: TunnelIncomingType,
     negotiator: Arc<NegotiationService<Services>>,
     shutdown: CancellationListener,
   ) -> Result<(), RequestProcessingError<anyhow::Error>>
   where
-    TTunnelWrapper: Tunnel + Clone + 'static,
+    TTunnel: Tunnel + Clone + 'static,
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
   {
     match link {
@@ -546,15 +549,15 @@ where
     }
   }
 
-  async fn handle_incoming_request_bistream<TTunnelWrapper, Services>(
-    tunnel: TTunnelWrapper, // TODO: Pass a (weak?) tunnel handle instead of an ID
+  async fn handle_incoming_request_bistream<TTunnel, Services>(
+    tunnel: TTunnel,
     link: WrappedStream,
     negotiator: Arc<NegotiationService<Services>>,
     shutdown: CancellationListener, // TODO: Respond to shutdown listener requests
   ) -> Result<(), RequestProcessingError<anyhow::Error>>
   where
+    TTunnel: Tunnel + Clone + 'static,
     Services: ServiceRegistry + Send + Sync + ?Sized + 'static,
-    TTunnelWrapper: Tunnel + Clone + 'static,
   {
     match negotiator.negotiate(link, tunnel.clone()).await {
       // Tunnels established on an invalid negotiation protocol are useless; consider this fatal
@@ -619,11 +622,14 @@ where
     }
   }
 
-  async fn name_tunnel(
-    id: TunnelId,
+  async fn name_tunnel<TTunnel>(
+    tunnel: Arc<TTunnel>,
     tunnel_name: TunnelName,
     tunnel_registry: Arc<TTunnelRegistry>,
-  ) -> Result<RegisteredTunnel<TTunnel>, TTunnelRegistry::Error> {
+  ) -> Result<RegisteredTunnel<TTunnel>, TTunnelRegistry::Error>
+  where
+    TTunnel: Tunnel + 'static,
+  {
     // let naming = async move {
     //   tunnel_registry
     //     .register()
