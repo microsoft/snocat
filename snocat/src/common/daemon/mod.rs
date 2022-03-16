@@ -244,8 +244,8 @@ enum TunnelLifecycleError<ApplicationError, RegistryError> {
   ),
   #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
   AuthenticationRefused,
-  #[error("Fatal error encountered in tunnel lifecycle: {0:?}")]
-  FatalError(
+  #[error("Application error encountered in tunnel lifecycle: {0:?}")]
+  ApplicationError(
     #[source]
     #[backtrace]
     ApplicationError,
@@ -263,7 +263,7 @@ enum RequestProcessingError<ApplicationError> {
     TunnelError,
   ),
   #[error("Fatal application error")]
-  FatalError(
+  ApplicationError(
     #[source]
     #[backtrace]
     ApplicationError,
@@ -278,8 +278,8 @@ impl<
 {
   fn from(e: RequestProcessingError<ApplicationError>) -> Self {
     match e {
-      RequestProcessingError::FatalError(fatal_error) => {
-        TunnelLifecycleError::FatalError(fatal_error)
+      RequestProcessingError::ApplicationError(fatal_error) => {
+        TunnelLifecycleError::ApplicationError(fatal_error)
       }
       non_fatal => TunnelLifecycleError::RequestProcessingError(non_fatal),
     }
@@ -437,7 +437,7 @@ where
     let tunnel_name = self
       .authenticate_tunnel(tunnel.as_ref(), shutdown.clone())
       .instrument(tracing::debug_span!("authentication"))
-      .map_err(TunnelLifecycleError::FatalError)
+      .map_err(TunnelLifecycleError::ApplicationError)
       .await
       .and_then(|s| match s {
         Some(identity) => Ok(identity),
@@ -585,7 +585,7 @@ where
       }
       Err(NegotiationError::FatalError(e)) => {
         tracing::error!(err=?e, "Refused request due to fatal application error in negotiation");
-        Err(RequestProcessingError::FatalError(
+        Err(RequestProcessingError::ApplicationError(
           NegotiationError::FatalError(e).into(),
         ))
       }
