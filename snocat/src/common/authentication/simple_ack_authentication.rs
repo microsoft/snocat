@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use super::{AuthenticationError, AuthenticationHandler, TunnelInfo};
+use super::{AuthenticationAttributes, AuthenticationError, AuthenticationHandler, TunnelInfo};
 use crate::{
   common::{
     authentication::RemoteAuthenticationError,
@@ -24,8 +24,13 @@ impl SimpleAckAuthenticationHandler {
     mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<<Self as AuthenticationHandler>::Error>>>
-  {
+  ) -> BoxFuture<
+    'a,
+    Result<
+      (TunnelName, AuthenticationAttributes),
+      AuthenticationError<<Self as AuthenticationHandler>::Error>,
+    >,
+  > {
     async move {
       tracing::info!("Sending HELO...");
       let mut buffer = [0u8; 64];
@@ -59,7 +64,7 @@ impl SimpleAckAuthenticationHandler {
         })?;
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(id)
+      Ok((id, AuthenticationAttributes::default()))
     }
     .boxed()
   }
@@ -69,8 +74,13 @@ impl SimpleAckAuthenticationHandler {
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<<Self as AuthenticationHandler>::Error>>>
-  {
+  ) -> BoxFuture<
+    'a,
+    Result<
+      (TunnelName, AuthenticationAttributes),
+      AuthenticationError<<Self as AuthenticationHandler>::Error>,
+    >,
+  > {
     async move {
       let (mut recv, mut send) = tokio::io::split(channel);
       use std::io::Write;
@@ -95,7 +105,7 @@ impl SimpleAckAuthenticationHandler {
         .await?;
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(id)
+      Ok((id, AuthenticationAttributes::default()))
     }
     .map(Into::into)
     .boxed()
@@ -120,7 +130,8 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
     channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     match tunnel_info.side {
       TunnelSide::Listen => self
         .authenticate_listen_side(channel, tunnel_info, shutdown_notifier)
@@ -161,7 +172,7 @@ mod tests {
     let server_auth_task = perform_authentication(&auth_server, &listener, &never_shutdown);
 
     let (client_res, server_res) = futures::future::join(client_auth_task, server_auth_task).await;
-    assert_eq!(client_res.unwrap(), TunnelName::new("Unidentified"));
-    assert_eq!(server_res.unwrap(), TunnelName::new("Unidentified"));
+    assert_eq!(client_res.unwrap().0, TunnelName::new("Unidentified"));
+    assert_eq!(server_res.unwrap().0, TunnelName::new("Unidentified"));
   }
 }

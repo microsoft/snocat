@@ -3,7 +3,7 @@
 use futures::future::BoxFuture;
 use futures::FutureExt;
 
-use super::{AuthenticationError, AuthenticationHandler, TunnelInfo};
+use super::{AuthenticationAttributes, AuthenticationError, AuthenticationHandler, TunnelInfo};
 use crate::{
   common::protocol::tunnel::TunnelName,
   util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
@@ -35,11 +35,12 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
     _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     async move {
       let peer_addr = tunnel_info.addr;
       let id = TunnelName::new(peer_addr.to_string());
-      Ok(id)
+      Ok((id, Default::default()))
     }
     .boxed()
   }

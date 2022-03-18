@@ -6,7 +6,13 @@ use futures::{
   future::{self, TryFutureExt},
   Future, Stream, StreamExt, TryStreamExt,
 };
-use std::{fmt::Debug, sync::Arc};
+use quinn::ApplicationClose;
+use std::{
+  collections::HashMap,
+  fmt::{Debug, Display},
+  marker::PhantomData,
+  sync::Arc,
+};
 use tokio::sync::broadcast::{channel as event_channel, Sender as Broadcaster};
 use tracing::Instrument;
 
@@ -25,6 +31,8 @@ use crate::{
   },
   util::{cancellation::CancellationListener, dropkick::Dropkick, tunnel_stream::WrappedStream},
 };
+
+use super::authentication::{AuthenticationAttributes, AuthenticationHandlingError};
 
 struct RegisteredTunnelInner<TRegistry: ?Sized, TRecordIdent> {
   registry: Arc<TRegistry>,
@@ -174,69 +182,15 @@ pub struct ModularDaemon<
   pub tunnel_disconnected: Broadcaster<TunnelDisconnectedEvent>,
 }
 
-impl<
-    TTunnelRegistry: ?Sized,
-    TServiceRegistry: ?Sized,
-    TRouter: ?Sized,
-    TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-{
-  pub fn router<'a>(&'a self) -> &Arc<TRouter> {
-    &self.router
-  }
-}
-
-impl<
-    TTunnelRegistry: ?Sized,
-    TServiceRegistry: ?Sized,
-    TRouter: ?Sized,
-    TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-where
-  TAuthenticationHandler: AuthenticationHandler + 'static,
-  TAuthenticationHandler::Error: std::fmt::Debug,
-{
-  fn authenticate_tunnel<'a, TTunnel: Tunnel + 'a>(
-    self: &Arc<Self>,
-    tunnel: &'a TTunnel,
-    shutdown: CancellationListener,
-  ) -> impl Future<Output = Result<Option<tunnel::TunnelName>, anyhow::Error>> + 'a {
-    let authentication_handler = Arc::clone(&self.authentication_handler);
-
-    async move {
-      let result =
-        perform_authentication(authentication_handler.as_ref(), tunnel, &shutdown.into()).await;
-      match result {
-        Err(AuthenticationError::Handling(handling_error)) => {
-          // Non-fatal handling errors are passed to tracing and close the tunnel
-          tracing::warn!(
-            reason = ?&handling_error,
-            "Tunnel closed due to authentication handling failure"
-          );
-          Ok(None)
-        }
-        Err(AuthenticationError::Remote(remote_error)) => {
-          tracing::debug!(
-            reason = (&remote_error as &dyn std::error::Error),
-            "Tunnel closed due to remote authentication failure"
-          );
-          Ok(None)
-        }
-        Ok(tunnel_name) => Ok(Some(tunnel_name)),
-      }
-    }
-  }
-}
-
 #[derive(thiserror::Error, Debug)]
-enum TunnelLifecycleError<ApplicationError, RegistryError> {
+enum TunnelLifecycleError<ApplicationError, AuthHandlingError, RegistryError> {
   #[error("Tunnel registration error")]
   RegistrationError(
     #[source]
     #[backtrace]
     RegistryError,
   ),
-  #[error("{0}")]
+  #[error("Request Processing Error: {0}")]
   RequestProcessingError(
     #[source]
     #[backtrace]
@@ -244,6 +198,12 @@ enum TunnelLifecycleError<ApplicationError, RegistryError> {
   ),
   #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
   AuthenticationRefused,
+  #[error("Authentication Handling Error: {0}")]
+  AuthenticationHandlingError(
+    #[source]
+    #[backtrace]
+    AuthenticationHandlingError<AuthHandlingError>,
+  ),
   #[error("Application error encountered in tunnel lifecycle: {0:?}")]
   ApplicationError(
     #[source]
@@ -271,10 +231,11 @@ enum RequestProcessingError<ApplicationError> {
 }
 
 impl<
-    RegistryError: std::fmt::Debug + std::fmt::Display,
     ApplicationError: std::fmt::Debug + std::fmt::Display,
+    AuthHandlingError: std::fmt::Debug + std::fmt::Display,
+    RegistryError: std::fmt::Debug + std::fmt::Display,
   > From<RequestProcessingError<ApplicationError>>
-  for TunnelLifecycleError<ApplicationError, RegistryError>
+  for TunnelLifecycleError<ApplicationError, AuthHandlingError, RegistryError>
 {
   fn from(e: RequestProcessingError<ApplicationError>) -> Self {
     match e {
@@ -283,6 +244,19 @@ impl<
       }
       non_fatal => TunnelLifecycleError::RequestProcessingError(non_fatal),
     }
+  }
+}
+
+// Implementations with no dependencies on content
+impl<
+    TTunnelRegistry: ?Sized,
+    TServiceRegistry: ?Sized,
+    TRouter: ?Sized,
+    TAuthenticationHandler: ?Sized,
+  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
+{
+  pub fn router<'a>(&'a self) -> &Arc<TRouter> {
+    &self.router
   }
 }
 
@@ -296,10 +270,11 @@ where
   Self: 'static,
   TTunnelRegistry: TunnelRegistry + Send + Sync + 'static,
   TTunnelRegistry::Record: 'static,
+  TTunnelRegistry::Error: Debug + Display + Send + 'static,
   TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
   TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + 'static,
-  TAuthenticationHandler::Error: std::fmt::Debug,
+  TAuthenticationHandler::Error: Debug + Display + Send + 'static,
 {
   pub fn new(
     service_registry: Arc<TServiceRegistry>,
@@ -384,22 +359,46 @@ where
     // when all connections shut down and the tunnel source closes
     tokio::task::spawn(lifecycle.instrument(tracing::span!(tracing::Level::INFO, "modular_server")))
   }
-}
 
-impl<
-    TTunnelRegistry: ?Sized,
-    TServiceRegistry: ?Sized,
-    TRouter: ?Sized,
-    TAuthenticationHandler: ?Sized,
-  > ModularDaemon<TTunnelRegistry, TServiceRegistry, TRouter, TAuthenticationHandler>
-where
-  TTunnelRegistry: TunnelRegistry + Send + Sync + 'static,
-  TTunnelRegistry::Record: 'static,
-  TServiceRegistry: ServiceRegistry + Send + Sync + 'static,
-  TRouter: Router + Send + Sync + 'static,
-  TAuthenticationHandler: AuthenticationHandler + 'static,
-  TAuthenticationHandler::Error: std::fmt::Debug,
-{
+  fn authenticate_tunnel<'a, ApplicationError, TTunnel: Tunnel + 'a>(
+    self: &Arc<Self>,
+    tunnel: &'a TTunnel,
+    shutdown: CancellationListener,
+  ) -> impl Future<
+    Output = Result<
+      (tunnel::TunnelName, AuthenticationAttributes),
+      TunnelLifecycleError<ApplicationError, TAuthenticationHandler::Error, TTunnelRegistry::Error>,
+    >,
+  > + 'a {
+    let authentication_handler = Arc::clone(&self.authentication_handler);
+
+    async move {
+      let result =
+        perform_authentication(authentication_handler.as_ref(), tunnel, &shutdown.into()).await;
+      match result {
+        Err(AuthenticationError::Handling(handling_error)) => {
+          // Non-fatal handling errors are passed to tracing and close the tunnel
+          // TODO: Feed this upward as a tunnel lifecycle failure
+          tracing::warn!(
+            reason = ?&handling_error,
+            "Tunnel closed due to authentication handling failure"
+          );
+          Err(TunnelLifecycleError::AuthenticationHandlingError(
+            handling_error.err_into(),
+          ))
+        }
+        Err(AuthenticationError::Remote(remote_error)) => {
+          tracing::debug!(
+            reason = (&remote_error as &dyn std::error::Error),
+            "Tunnel closed due to remote authentication failure"
+          );
+          Err(TunnelLifecycleError::AuthenticationRefused)
+        }
+        Ok(tunnel) => Ok(tunnel),
+      }
+    }
+  }
+
   // Sends tunnel_connected event when a tunnel begins being processed by the daemon pipeline
   fn fire_tunnel_connected(&self, ev: TunnelConnectedEvent) {
     // Send; Ignore errors produced when no receivers exist to read the event
@@ -423,7 +422,10 @@ where
     self: Arc<Self>,
     tunnel: Arc<TTunnel>,
     shutdown: CancellationListener,
-  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>>
+  ) -> Result<
+    (),
+    TunnelLifecycleError<anyhow::Error, TAuthenticationHandler::Error, TTunnelRegistry::Error>,
+  >
   where
     TTunnel: Tunnel + 'static,
   {
@@ -434,19 +436,17 @@ where
 
     // Authenticate connections - Each connection will be piped into the authenticator,
     // which has the option of declining the connection, and may save additional metadata.
-    let tunnel_name = self
-      .authenticate_tunnel(tunnel.as_ref(), shutdown.clone())
-      .instrument(tracing::debug_span!("authentication"))
-      .map_err(TunnelLifecycleError::ApplicationError)
-      .await
-      .and_then(|s| match s {
-        Some(identity) => Ok(identity),
-        None => Err(TunnelLifecycleError::AuthenticationRefused),
-      })?;
+    let (tunnel_name, tunnel_attrs) = {
+      let res = self
+        .authenticate_tunnel(tunnel.as_ref(), shutdown.clone())
+        .instrument(tracing::debug_span!("authentication"))
+        .await;
+      res
+    }?;
 
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
     let tunnel: RegisteredTunnel<TTunnel> = {
-      Self::name_tunnel(tunnel, tunnel_name.clone(), self.tunnel_registry.clone())
+      Self::register_tunnel(tunnel, tunnel_name.clone(), self.tunnel_registry.clone())
         .instrument(tracing::debug_span!("naming"))
     }
     .await
@@ -472,7 +472,10 @@ where
     tunnel: RegisteredTunnel<TTunnel>,
     tunnel_name: TunnelName,
     shutdown: CancellationListener,
-  ) -> Result<(), TunnelLifecycleError<anyhow::Error, TTunnelRegistry::Error>>
+  ) -> Result<
+    (),
+    TunnelLifecycleError<anyhow::Error, TAuthenticationHandler::Error, TTunnelRegistry::Error>,
+  >
   where
     TTunnel: Tunnel + 'static,
   {
@@ -622,7 +625,7 @@ where
     }
   }
 
-  async fn name_tunnel<TTunnel>(
+  async fn register_tunnel<TTunnel>(
     tunnel: Arc<TTunnel>,
     tunnel_name: TunnelName,
     tunnel_registry: Arc<TTunnelRegistry>,

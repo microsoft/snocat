@@ -13,7 +13,7 @@ use crate::util::tunnel_stream::TunnelStream;
 
 use super::{
   traits::{MappedService, ServiceRegistry},
-  tunnel::{Tunnel, TunnelId},
+  tunnel::Tunnel,
   RouteAddress, ServiceError,
 };
 
@@ -409,7 +409,8 @@ mod tests {
           .expect("Must fetch next connection");
         let server_stream = match server_stream {
           Some(TunnelIncomingType::BiStream(s)) => s,
-          Some(other) => panic!("Non-bistream opened to the test server"),
+          #[allow(unreachable_patterns)]
+          Some(_other) => unreachable!("Non-bistream opened to the test server"),
           None => panic!("No stream was opened to the test server"),
         };
         let (_stream, addr, service) = service.negotiate(server_stream, listener).await?;

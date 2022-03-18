@@ -8,7 +8,7 @@ use futures::{
 use std::{backtrace::Backtrace, fmt::Debug, sync::Arc};
 
 use super::{
-  tunnel::{ArcTunnel, Tunnel, TunnelId},
+  tunnel::{ArcTunnel, TunnelId},
   RouteAddress,
 };
 

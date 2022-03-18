@@ -1,3 +1,4 @@
+use crate::ext::future::TryFutureExtExt;
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #[warn(unused_imports)]
@@ -7,8 +8,9 @@ use crate::{
   },
   util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
 };
-use futures::{future::BoxFuture, FutureExt, TryStreamExt};
+use futures::{future::BoxFuture, FutureExt, TryFutureExt, TryStreamExt};
 use std::{
+  collections::HashMap,
   fmt::Debug,
   marker::{PhantomData, Unpin},
   sync::Arc,
@@ -22,11 +24,18 @@ pub struct TunnelInfo {
 
 /// Some errors within the authentication layer are considered fatal to the authenticator
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum AuthenticationHandlingError<TInner> {
   #[error("Authentication dependency failure: {0} - {1}")]
   DependencyFailure(String, TInner),
   #[error(transparent)]
-  ApplicationError(#[from] TInner),
+  ApplicationError(TInner),
+  #[error("Authentication thread join failed")]
+  JoinError(
+    #[from]
+    #[backtrace]
+    tokio::task::JoinError,
+  ),
 }
 
 impl<TInner> AuthenticationHandlingError<TInner> {
@@ -39,6 +48,7 @@ impl<TInner> AuthenticationHandlingError<TInner> {
         AuthenticationHandlingError::DependencyFailure(message, f(inner))
       }
       Self::ApplicationError(inner) => AuthenticationHandlingError::ApplicationError(f(inner)),
+      Self::JoinError(e) => AuthenticationHandlingError::JoinError(e),
     }
   }
 
@@ -52,6 +62,7 @@ impl<TInner> AuthenticationHandlingError<TInner> {
 
 /// Errors explaining why authentication was refused
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum RemoteAuthenticationError {
   // The remote failed to authenticate, but followed protocol
   #[error("Remote authentication refused")]
@@ -131,6 +142,8 @@ impl<TInner> From<std::convert::Infallible> for AuthenticationError<TInner> {
   }
 }
 
+pub type AuthenticationAttributes = HashMap<String, Vec<u8>>;
+
 pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
   type Error: Send;
 
@@ -139,7 +152,7 @@ pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>>;
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>;
 }
 
 #[derive(Copy, Clone)]
@@ -172,7 +185,8 @@ where
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     self
       .inner
       .authenticate(channel, tunnel_info, shutdown_notifier)
@@ -212,7 +226,8 @@ where
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     self
       .inner
       .authenticate(channel, tunnel_info, shutdown_notifier)
@@ -252,7 +267,8 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     self
       .as_ref()
       .authenticate(channel, tunnel_info, shutdown_notifier)
@@ -267,10 +283,22 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Arc<T> {
     channel: Box<dyn TunnelStream + Send + Unpin>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
-  ) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<Self::Error>>> {
+  ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
+  {
     self
       .as_ref()
       .authenticate(channel, tunnel_info, shutdown_notifier)
+  }
+}
+
+/// Convert a [TunnelError] to its equivalent [AuthenticationError]
+fn tunnel_error_to_remote_auth_error(e: TunnelError) -> RemoteAuthenticationError {
+  match e {
+    TunnelError::ApplicationClosed => RemoteAuthenticationError::LinkClosedLocally,
+    TunnelError::LocallyClosed => RemoteAuthenticationError::LinkClosedLocally,
+    TunnelError::ConnectionClosed => RemoteAuthenticationError::LinkClosedRemotely,
+    TunnelError::TimedOut => RemoteAuthenticationError::TimedOut,
+    TunnelError::TransportError => RemoteAuthenticationError::TransportError,
   }
 }
 
@@ -278,48 +306,52 @@ pub fn perform_authentication<'a, T: AuthenticationHandler + ?Sized>(
   handler: &'a T,
   tunnel: &'a (dyn Tunnel + Send + Sync + 'a),
   shutdown_notifier: &'a CancellationListener,
-) -> BoxFuture<'a, Result<TunnelName, AuthenticationError<T::Error>>>
+) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<T::Error>>>
 where
   T::Error: std::fmt::Debug + Send,
 {
-  use tracing::{debug, span, warn, Instrument, Level};
+  use tracing::{debug, debug_span, warn, Instrument};
   let tunnel_info = TunnelInfo {
     side: tunnel.side(),
     addr: tunnel.addr(),
   };
-  let tracing_span_establishment = span!(Level::DEBUG, "establishment", side=?tunnel_info.side);
   let tracing_span_authentication =
-    span!(Level::DEBUG, "authentication", side=?tunnel_info.side, addr=?tunnel_info.addr);
+    debug_span!("authentication", side=?tunnel_info.side, addr=?tunnel_info.addr);
+
+  // Obtains a channel with the peer which will be used for authentication
   let establishment = {
     let side = tunnel_info.side;
     async move {
+      // Create a future which times out when the shutdown notifier is called; we'll use it for timeouts
+      let shutdown_notifier = async move { shutdown_notifier.clone().cancelled().await };
+      // Request an authenticator channel in the way appropriate for the current side
+      // Authenticator channels are a single stream, and must maintain stream cohesion until authentication completes
       let auth_channel: Result<_, AuthenticationError<_>> = match side {
         TunnelSide::Listen => {
-          let link: Result<_, TunnelError> = tunnel.open_link()
-            .instrument(span!(Level::DEBUG, "open_link"))
-            .await;
-          link.map_err(|e| match e {
-            TunnelError::ApplicationClosed => RemoteAuthenticationError::LinkClosedLocally,
-            TunnelError::LocallyClosed => RemoteAuthenticationError::LinkClosedLocally,
-            TunnelError::ConnectionClosed => RemoteAuthenticationError::LinkClosedRemotely,
-            TunnelError::TimedOut => RemoteAuthenticationError::TimedOut,
-            TunnelError::TransportError => RemoteAuthenticationError::TransportError,
-          }.into())
+          // Open an uplink stream to the destination or time out
+          tunnel.open_link()
+            .instrument(debug_span!("open_link"))
+            .try_poll_until_or_else(shutdown_notifier, || Err(TunnelError::TimedOut))
+            .map_err(tunnel_error_to_remote_auth_error).map_err(AuthenticationError::from)
+            .await
         },
         TunnelSide::Connect => {
-          let next: Result<Option<_>, TunnelError> = tunnel
+          // Fetch the next downlink stream and use it or time out; Downlink streams are guaranteed to arive in-order-of-request
+          tunnel
             .downlink()
             .await
             .ok_or(RemoteAuthenticationError::IncomingStreamsClosed)?
             .as_stream()
+            .map_err(tunnel_error_to_remote_auth_error)
             .try_next()
-            .instrument(span!(Level::DEBUG, "accept_link"))
-            .await;
-
-          match next {
-            Ok(Some(TunnelIncomingType::BiStream(stream))) => Ok(stream),
-            _ => Err(RemoteAuthenticationError::IncomingStreamsClosed.into()),
-          }
+            .try_poll_until_or_else(shutdown_notifier, || Err(RemoteAuthenticationError::TimedOut))
+            .instrument(debug_span!("accept_link"))
+            .and_then(|s: Option<TunnelIncomingType>| futures::future::ready(match s {
+              Some(TunnelIncomingType::BiStream(stream)) => Ok(stream),
+              _ => Err(RemoteAuthenticationError::IncomingStreamsClosed),
+            }))
+            .map_err(AuthenticationError::from)
+            .await
         }
       };
 
@@ -333,7 +365,7 @@ where
           remote_err.into()
         }
       })
-    }.instrument(tracing_span_establishment)
+    }.instrument(debug_span!("establishment"))
   };
 
   async move {
@@ -341,7 +373,7 @@ where
     let auth_channel = establishment?;
     handler
       .authenticate(Box::new(auth_channel), tunnel_info, shutdown_notifier)
-      .instrument(span!(Level::DEBUG, "authenticator"))
+      .instrument(debug_span!("authenticator"))
       .await
   }
   .instrument(tracing_span_authentication)
