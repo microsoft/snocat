@@ -10,7 +10,7 @@ use std::{
 
 use crate::common::protocol::tunnel::TunnelName;
 
-// pub mod local;
+pub mod memory;
 // pub mod serialized;
 
 /// An eventually-consistent mapping of [`TunnelName`]/Tunnel associations
@@ -24,10 +24,10 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   /// such that it can be cleared without complex queries or lookup.
   ///
   /// Note that Identifiers may be irreversible to their inputs.
-  type Identifier: Send + Sync + Debug + Display + Clone + Hash + 'static;
+  type Identifier: Send + Sync + Debug + Clone + Hash + 'static;
 
   /// An instance of a tunnel record, with any associated data
-  type Record: Send + Debug + Display;
+  type Record: Send + Debug;
 
   /// Implementation-specific errors from the registry
   type Error: Send + Debug + Display + 'static;
@@ -36,7 +36,7 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   fn lookup<'a>(
     &'a self,
     tunnel_name: &'a TunnelName,
-  ) -> BoxFuture<'a, Result<Option<(Self::Identifier, Self::Record)>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<(Self::Identifier, Self::Record)>, Self::Error>>;
 
   /// Creates a registration of a tunnel name / record association within this registry's write-namespace
   /// The returned identifier allows reference to the entry created by the registry mechanism.
@@ -48,7 +48,7 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
     &'a self,
     tunnel_name: TunnelName,
     record: &'a Self::Record,
-  ) -> BoxFuture<'a, Result<Self::Identifier, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Self::Identifier, Self::Error>>;
 
   /// Deregisters any registration of a tunnel name / record under this registry's write-namespace
   /// Note that this means that implementations will generally not allow deletion of an entry created
@@ -56,13 +56,13 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   fn deregister<'a>(
     &'a self,
     tunnel_name: &'a TunnelName,
-  ) -> BoxFuture<'a, Result<Option<Self::Record>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<Self::Record>, Self::Error>>;
 
   /// Deregisters a tunnel registration by its direct, opaque identifier.
   fn deregister_identifier<'a>(
     &'a self,
     identifier: Self::Identifier,
-  ) -> BoxFuture<'a, Result<Option<Self::Record>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<Self::Record>, Self::Error>>;
 }
 impl_downcast!(sync TunnelRegistry assoc Identifier, Record, Error);
 
@@ -82,7 +82,7 @@ pub trait SharedAttributeRegistry: Downcast + DowncastSync {
   /// such that it can be cleared without complex queries or lookup.
   ///
   /// Note that Identifiers may be irreversible to their inputs.
-  type Identifier: Debug + Display + Clone + Hash;
+  type Identifier: Send + Sync + Debug + Clone + Hash;
 
   /// Implementation-specific errors from the registry
   type Error: Debug + Display;
@@ -94,7 +94,7 @@ pub trait SharedAttributeRegistry: Downcast + DowncastSync {
   fn lookup_attr<'a, V>(
     &'a self,
     key: &'a str,
-  ) -> BoxFuture<'a, Result<Option<(Self::Identifier, V)>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<(Self::Identifier, V)>, Self::Error>>;
 
   /// Registers an attribute to a key within the target's key-space
   ///
@@ -104,17 +104,17 @@ pub trait SharedAttributeRegistry: Downcast + DowncastSync {
     &'a self,
     key: &'a str,
     value: &'a V,
-  ) -> BoxFuture<'a, Result<Self::Identifier, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Self::Identifier, Self::Error>>;
 
   /// Deregisters an attribute by its key within the target's key-space
   fn deregister_attr<'a>(
     &'a self,
     key: &'a str,
-  ) -> BoxFuture<'a, Result<Option<Self::Identifier>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<Self::Identifier>, Self::Error>>;
 
   /// Deregisters an attribute registration by its direct, opaque identifier.
   fn deregister_attr_identifier<'a>(
     &'a self,
     identifier: Self::Identifier,
-  ) -> BoxFuture<'a, Result<Option<Self::Identifier>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<Self::Identifier>, Self::Error>>;
 }
