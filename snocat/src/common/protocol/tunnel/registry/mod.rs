@@ -46,6 +46,7 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   /// implementation's consistency model.
   fn register<'a>(
     &'a self,
+    tunnel_name: TunnelName,
     record: &'a Self::Record,
   ) -> BoxFuture<'a, Result<Self::Identifier, Self::Error>>;
 
