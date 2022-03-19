@@ -20,16 +20,12 @@ pub struct InMemoryTunnelRegistry<R> {
 pub struct InMemoryTunnelRegistryIdentifier(TunnelName);
 
 impl InMemoryTunnelRegistryIdentifier {
-  fn new(tunnel_name: TunnelName) -> InMemoryTunnelRegistryIdentifier {
-    InMemoryTunnelRegistryIdentifier(tunnel_name)
-  }
-
-  fn of(tunnel_name: &TunnelName) -> InMemoryTunnelRegistryIdentifier {
-    InMemoryTunnelRegistryIdentifier(tunnel_name.clone())
+  fn of(tunnel_name: &TunnelName) -> Self {
+    Self(tunnel_name.clone())
   }
 }
 
-type MemoryIdent = InMemoryTunnelRegistryIdentifier;
+type Ident = InMemoryTunnelRegistryIdentifier;
 
 #[derive(thiserror::Error, Debug)]
 pub enum InMemoryTunnelRegistryError {
@@ -54,7 +50,7 @@ where
   fn lookup<'a>(
     &'a self,
     tunnel_name: &'a TunnelName,
-  ) -> BoxFuture<'static, Result<Option<(Self::Identifier, Self::Record)>, Self::Error>> {
+  ) -> BoxFuture<'static, Result<Option<Self::Record>, Self::Error>> {
     let tunnel_name = tunnel_name.clone();
     let tunnels = self.tunnels.clone();
     tokio::task::spawn_blocking(move || {
@@ -63,8 +59,7 @@ where
       } else {
         return Ok(None);
       };
-      let identifier = MemoryIdent::new(tunnel_name);
-      Ok(Some((identifier, item)))
+      Ok(Some(item))
     })
     .unwrap_or_else(|e| Err(InMemoryTunnelRegistryError::from(e)))
     .boxed()
@@ -78,7 +73,7 @@ where
     let tunnels = self.tunnels.clone();
     let record = record.clone();
     tokio::task::spawn_blocking(move || {
-      let identifier = MemoryIdent::of(&tunnel_name);
+      let identifier = Ident::of(&tunnel_name);
       tunnels.insert(tunnel_name, record);
       identifier
     })

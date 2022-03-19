@@ -10,6 +10,7 @@ use std::{
 
 use crate::common::protocol::tunnel::TunnelName;
 
+pub mod cache;
 pub mod memory;
 // pub mod serialized;
 
@@ -36,7 +37,7 @@ pub trait TunnelRegistry: Downcast + DowncastSync {
   fn lookup<'a>(
     &'a self,
     tunnel_name: &'a TunnelName,
-  ) -> BoxFuture<'static, Result<Option<(Self::Identifier, Self::Record)>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<Self::Record>, Self::Error>>;
 
   /// Creates a registration of a tunnel name / record association within this registry's write-namespace
   /// The returned identifier allows reference to the entry created by the registry mechanism.
@@ -94,7 +95,7 @@ pub trait SharedAttributeRegistry: Downcast + DowncastSync {
   fn lookup_attr<'a, V>(
     &'a self,
     key: &'a str,
-  ) -> BoxFuture<'static, Result<Option<(Self::Identifier, V)>, Self::Error>>;
+  ) -> BoxFuture<'static, Result<Option<V>, Self::Error>>;
 
   /// Registers an attribute to a key within the target's key-space
   ///
