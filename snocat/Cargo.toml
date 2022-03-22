@@ -29,6 +29,14 @@ tracing-subscriber = { version = "0.3.9", features=["env-filter"] }
 tokio = { version = "1.17", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
+uuid = { version = "0.8", features=["v4", "v5", "serde"] }
+
+fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
+
+# Enable mocks for redis (`fred`) for testing
+[dev-dependencies.fred]
+version="*"
+features=["mocks"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -36,5 +44,6 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = ["core"]
 core = []
+redis-store = ["fred"]
 
-full = ["core"]
+full = ["core", "redis-store"]
