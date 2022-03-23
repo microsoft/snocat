@@ -30,16 +30,16 @@ pub struct RedisRegistryConfig {
   /// it behaves as if it is null anyway.
   ///
   /// Only durations higher than seconds count
-  tunnel_id_ref_lifetime: std::time::Duration,
+  tunnel_id_ref_lifetime: Duration,
   /// Time before expiring tunnel entries at redis-unique-key locations
   ///
   /// Only durations higher than seconds count
-  tunnel_entry_lifetime: std::time::Duration,
+  tunnel_entry_lifetime: Duration,
   /// How often the background thread will attempt to refresh expiry of its items
   ///
   /// If a refresh is attempted and the target is missing, and no current target
   /// exists at the name mapping, it will attempt reregistration.
-  renewal_rate: std::time::Duration,
+  renewal_rate: Duration,
 }
 
 impl Default for RedisRegistryConfig {
@@ -60,6 +60,7 @@ pub type RegistrationMap = DashMap<String, Weak<Registration>>;
 /// Registration conflicts are handled by replacement of name ownership (Last wins)
 ///
 /// Dropping the last identifier for a key deregisters it from auto-renewal, but does not perform explicit IO.
+#[derive(Clone)]
 pub struct RedisRegistry<R> {
   config: Arc<RedisRegistryConfig>,
   pool: Arc<DynamicRedisPool>,
@@ -69,21 +70,34 @@ pub struct RedisRegistry<R> {
   core_canceller: Arc<Dropkick<CancellationToken>>,
 }
 
-impl<R> RedisRegistry<R>
+impl<R> Debug for RedisRegistry<R>
 where
-  R: 'static,
+  R: Debug,
 {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct(std::any::type_name::<RedisRegistry<R>>())
+      .field("pool_size", &self.pool.size())
+      .finish()
+  }
+}
+
+impl<R> RedisRegistry<R> {
   #[must_use]
-  pub fn new(config: RedisRegistryConfig, pool: DynamicRedisPool) -> Self {
+  pub fn new<Pool: Into<Arc<DynamicRedisPool>>>(config: RedisRegistryConfig, pool: Pool) -> Self {
     Self {
       config: Arc::new(config),
-      pool: Arc::new(pool),
+      pool: pool.into(),
       phantom_item: PhantomData,
       active_registration_map: Arc::new(RegistrationMap::default()),
       core_canceller: Arc::new(Dropkick::new(CancellationToken::new())),
     }
   }
+}
 
+impl<R> RedisRegistry<R>
+where
+  R: 'static,
+{
   fn tunnel_key_for(tunnel_name: &TunnelName) -> String {
     format!("/tunnel/id/{}", tunnel_name.raw())
   }
@@ -127,9 +141,9 @@ where
     tunnel_name: TunnelName,
     rid: String,
     entry_encoded: Vec<u8>,
-    tunnel_id_ref_lifetime: std::time::Duration,
-    tunnel_entry_lifetime: std::time::Duration,
-    renewal_rate: std::time::Duration,
+    tunnel_id_ref_lifetime: Duration,
+    tunnel_entry_lifetime: Duration,
+    renewal_rate: Duration,
   ) -> Result<(), anyhow::Error> {
     let tunnel_key = Self::tunnel_rid_key(&rid);
     let tunnel_ref_key = Self::tunnel_key_for(&tunnel_name);
@@ -137,13 +151,26 @@ where
       .as_secs()
       .try_into()
       .unwrap_or(i64::MAX);
-    // Ensure we don't smash the redis server with an absurdly-small delay; minimum is 1 second
-    let renewal_rate = renewal_rate.max(std::time::Duration::from_secs(1));
+    // Ensure we don't smash the redis server with an absurdly-small delay; minimum is 1 second in non-test envs
+    let renewal_rate = renewal_rate.max({
+      if cfg!(test) {
+        Duration::from_millis(10)
+      } else {
+        Duration::from_secs(1)
+      }
+    });
     // Run the loop until asked to exit
     // We'll be cancelled if either the core canceller is disposed *or* the entry itself is deleted
     while !canceller.is_cancelled() {
-      tokio::time::sleep(renewal_rate).await;
-      let conn = pool.next_connect(true).await;
+      futures::future::select(
+        tokio::time::sleep(renewal_rate).boxed(),
+        canceller.cancelled().boxed(),
+      )
+      .await;
+      if canceller.is_cancelled() {
+        break;
+      }
+      let conn = Self::get_pool_connection(pool.clone()).await?;
       let _ = conn
         .expire::<bool, _>(
           &tunnel_ref_key,
@@ -197,6 +224,16 @@ where
       Some(encoded_entry) => serde_json::from_slice(encoded_entry.as_slice())?,
       None => None,
     })
+  }
+
+  async fn get_pool_connection(
+    pool: Arc<DynamicRedisPool>,
+  ) -> Result<RedisClient, RedisRegistryError> {
+    // Get a connection from the pool
+    let conn = pool.next_connect(false).await;
+    // Wait for it to connect if it isn't already connected; error if failed
+    conn.wait_for_connect().await?;
+    Ok(conn)
   }
 }
 
@@ -268,10 +305,7 @@ where
     let tunnel_name = tunnel_name.clone();
     let pool = self.pool.clone();
     async move {
-      // Get a connection from the pool
-      let conn = pool.next_connect(false).await;
-      // Wait for it to connect if it isn't already connected; error if failed
-      conn.wait_for_connect().await?;
+      let conn = Self::get_pool_connection(pool).await?;
       // Read the reference key, if present, mapping tunnel-name to its RID
       let rid: Option<String> = conn.get(Self::tunnel_key_for(&tunnel_name)).await?;
       // `let-else` can't come soon enough
@@ -321,10 +355,7 @@ where
     async move {
       // Encode and save the record for use in redis calls below
       let encoded = serde_json::to_vec(&record)?;
-      // Get a connection from the pool
-      let conn = pool.next_connect(false).await;
-      // Wait for it to connect if it isn't already connected; error if failed
-      conn.wait_for_connect().await?;
+      let conn = Self::get_pool_connection(pool.clone()).await?;
       // Create-associated entry by repeating SETNX until the key is newly created, in a
       // transaction with EXPIRE to ensure that any created keys are marked for cleanup.
       let rid = {
@@ -395,10 +426,7 @@ where
     let tunnel_name = tunnel_name.clone();
     let pool = self.pool.clone();
     async move {
-      // Get a connection from the pool
-      let conn = pool.next_connect(false).await;
-      // Wait for it to connect if it isn't already connected; error if failed
-      conn.wait_for_connect().await?;
+      let conn = Self::get_pool_connection(pool).await?;
       // Read the reference key, if present, mapping tunnel-name to its RID
       let rid: Option<String> = conn.getdel(Self::tunnel_key_for(&tunnel_name)).await?;
       // `let-else` can't come soon enough
@@ -422,10 +450,7 @@ where
     let registration_map = Arc::clone(&self.active_registration_map);
     let pool = self.pool.clone();
     async move {
-      // Get a connection from the pool
-      let conn = pool.next_connect(false).await;
-      // Wait for it to connect if it isn't already connected; error if failed
-      conn.wait_for_connect().await?;
+      let conn = Self::get_pool_connection(pool).await?;
       let mut identifier = identifier;
       // Drop the identifier after getting the ID from it, in order to decrement our hold on the registration
       let rid = std::mem::replace(&mut identifier.rid, String::new());
@@ -434,5 +459,314 @@ where
       Self::deregister_by_rid(registration_map, conn, rid).await
     }
     .boxed()
+  }
+}
+
+#[cfg(all(test, feature = "integration-redis"))]
+mod integration_tests {
+  use std::{fmt::Debug, sync::Arc, time::Duration};
+
+  use fred::{
+    pool::DynamicRedisPool,
+    types::{ReconnectPolicy, RedisConfig, ServerConfig},
+  };
+  use uuid::Uuid;
+
+  use crate::{common::protocol::tunnel::TunnelName, ext::future::FutureExtExt};
+
+  use super::super::TunnelRegistry;
+  use super::{RedisRegistry, RedisRegistryConfig};
+
+  #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+  struct TestEntry {
+    name: String,
+    id: u32,
+  }
+
+  #[derive(Clone)]
+  #[non_exhaustive]
+  struct TestReg<R> {
+    pub registry: RedisRegistry<R>,
+    pub pool: Arc<DynamicRedisPool>,
+    pub config: Arc<RedisRegistryConfig>,
+  }
+
+  impl<R> Debug for TestReg<R>
+  where
+    R: Debug,
+  {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      f.debug_struct("TestReg")
+        .field("registry", &self.registry)
+        .field(
+          "pool",
+          &format!("{{{}}}", std::any::type_name::<DynamicRedisPool>()),
+        )
+        .finish_non_exhaustive()
+    }
+  }
+
+  async fn create_test_pool() -> DynamicRedisPool {
+    let policy = ReconnectPolicy::Constant {
+      attempts: 1,
+      max_attempts: 2,
+      delay: 25,
+    };
+    let pool = DynamicRedisPool::new(
+      RedisConfig {
+        server: ServerConfig::Centralized {
+          host: "127.0.0.1".to_owned(),
+          port: 6379,
+        },
+        fail_fast: true,
+        ..Default::default()
+      },
+      Some(policy),
+      1,
+      2,
+    );
+    pool.connect().await;
+    {
+      let conn = pool.next_connect(false).await;
+      conn
+        .wait_for_connect()
+        .poll_until(tokio::time::sleep(Duration::from_secs(5)))
+        .await
+        .expect("Timeout connecting to Redis for integration tests")
+        .expect("Must successfully connect to redis to run integration tests on 127.0.0.1:6379");
+      let _: () = conn.info(None).await.expect(
+        "Must fetch redis info prior to performing integration tests to confirm connectivity",
+      );
+    }
+    pool
+  }
+
+  async fn create_test_registry<R>(pool: Arc<DynamicRedisPool>) -> RedisRegistry<R> {
+    RedisRegistry::<R>::new(
+      RedisRegistryConfig {
+        renewal_rate: Duration::from_millis(500),
+        tunnel_entry_lifetime: Duration::from_secs(1),
+        tunnel_id_ref_lifetime: Duration::from_secs(2),
+        ..Default::default()
+      },
+      pool,
+    )
+  }
+
+  async fn test_items<R>() -> TestReg<R> {
+    let pool = Arc::new(create_test_pool().await);
+    let registry = create_test_registry(pool.clone()).await;
+    let config = registry.config.clone();
+    TestReg {
+      registry,
+      pool,
+      config,
+    }
+  }
+
+  #[tokio::test]
+  async fn store_and_destroy() {
+    let TestReg { registry, .. } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = registry
+      .register(foo_name, &foo)
+      .await
+      .expect("Registration must succeed");
+    let recovered = registry
+      .deregister_identifier(ident)
+      .await
+      .expect("Deregistration must succeed")
+      .expect("Must have an instance of the test entry");
+    assert_eq!(
+      foo, recovered,
+      "Deregistration by identifier must return an instance of the deregistered element"
+    );
+  }
+
+  #[tokio::test]
+  async fn expiration_refreshes() {
+    let TestReg { registry, .. } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = registry
+      .register(foo_name, &foo)
+      .await
+      .expect("Registration must succeed");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let recovered = registry
+      .deregister_identifier(ident)
+      .await
+      .expect("Deregistration must succeed")
+      .expect("Must have an instance of the test entry");
+    assert_eq!(
+      foo, recovered,
+      "Deregistration by identifier must return an instance of the deregistered element"
+    );
+  }
+
+  /// Verifies that a RID key is preserved and re-emplaced when expired/deleted
+  ///
+  /// Simulates when a RID key has been expired out from under us-
+  /// possibly due to needing to "catch up" after a long pause, or
+  /// because the database was wiped out from under us.
+  #[tokio::test]
+  async fn renewal() {
+    let TestReg { registry, pool, .. } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = registry
+      .register(foo_name, &foo)
+      .await
+      .expect("Registration must succeed");
+
+    {
+      let rid_key = RedisRegistry::<TestEntry>::tunnel_rid_key(&ident.rid);
+      let conn = pool.next_connect(true).await;
+      let deleted_count: usize = conn
+        .del(rid_key)
+        .await
+        .expect("Must successfully delete key");
+      assert!(
+        deleted_count == 1,
+        "Delete reported a non-1 value for number of keys deleted"
+      );
+    }
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let recovered = registry
+      .deregister_identifier(ident)
+      .await
+      .expect("Deregistration must succeed")
+      .expect("Must have an instance of the test entry");
+    assert_eq!(
+      foo, recovered,
+      "Deregistration by identifier must return an instance of the deregistered entry"
+    );
+  }
+
+  #[tokio::test]
+  async fn cross_registry_lookup() {
+    let TestReg {
+      registry: reg_a, ..
+    } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = reg_a
+      .register(foo_name.clone(), &foo)
+      .await
+      .expect("Registration must succeed");
+
+    let TestReg {
+      registry: reg_b, ..
+    } = test_items::<TestEntry>().await;
+
+    let found = reg_b
+      .lookup(&foo_name)
+      .await
+      .expect("Lookup must succeed")
+      .expect("Must have an instance of the test entry");
+    assert_eq!(
+      foo, found,
+      "Lookup must find an instance of the expected entry"
+    );
+
+    reg_a
+      .deregister_identifier(ident)
+      .await
+      .expect("Deregistration must succeed")
+      .expect("Must have an instance of the test entry");
+
+    let should_be_empty = reg_b
+      .lookup(&foo_name)
+      .await
+      .expect("Lookup of empty entry must succeed");
+    assert_eq!(should_be_empty, None, "Lookup of known-deleted entry should not result in an entry in a known-consistent configuration");
+  }
+
+  /// Verifies that renewal/refreshing stops after a registry instance is destroyed
+  #[tokio::test]
+  async fn registry_core_expiration() {
+    let TestReg {
+      registry: reg_a,
+      config,
+      ..
+    } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = reg_a
+      .register(foo_name.clone(), &foo)
+      .await
+      .expect("Registration must succeed");
+
+    let TestReg {
+      registry: reg_b, ..
+    } = test_items::<TestEntry>().await;
+
+    drop(reg_a);
+
+    // Note that we're still holding `ident` alive in order to ensure that core cancellation
+    // occurs even if an identifier remains alive, as core cancellation should stop all
+    // related background tasks for the [RedisRegistry].
+
+    tokio::time::sleep(config.tunnel_entry_lifetime * 2).await;
+
+    let should_be_empty = reg_b
+      .lookup(&foo_name)
+      .await
+      .expect("Lookup of empty entry must succeed");
+    assert_eq!(should_be_empty, None, "Lookup of known-deleted entry should not result in an entry in a known-consistent configuration");
+
+    // Explicitly dropping it here instead of letting a _var hold it less obviously
+    drop(ident);
+  }
+
+  /// Verifies that renewal/refreshing stops after the last identifier is removed
+  #[tokio::test]
+  async fn registry_ident_expiration() {
+    let TestReg {
+      registry: reg_a,
+      config,
+      ..
+    } = test_items::<TestEntry>().await;
+    let foo_name = TunnelName::new(Uuid::new_v4().to_string());
+    let foo = TestEntry {
+      name: foo_name.raw().to_owned(),
+      id: 12345,
+    };
+    let ident = reg_a
+      .register(foo_name.clone(), &foo)
+      .await
+      .expect("Registration must succeed");
+
+    let TestReg {
+      registry: reg_b, ..
+    } = test_items::<TestEntry>().await;
+
+    // Drop the last identifier for the entry, to stop renewal from occurring for just that key
+    drop(ident);
+
+    tokio::time::sleep(config.tunnel_entry_lifetime * 2).await;
+
+    let should_be_empty = reg_b
+      .lookup(&foo_name)
+      .await
+      .expect("Lookup of empty entry must succeed");
+    assert_eq!(should_be_empty, None, "Lookup of known-deleted entry should not result in an entry in a known-consistent configuration");
   }
 }

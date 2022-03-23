@@ -14,6 +14,7 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 anyhow = "~1.0.43"
 dashmap = "5.1"
 downcast-rs = "1.2"
+fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
 futures = "0.3.21"
 gen-z = "0.1"
 log = "0.4"
@@ -31,12 +32,13 @@ tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
 uuid = { version = "0.8", features=["v4", "v5", "serde"] }
 
-fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
-
 # Enable mocks for redis (`fred`) for testing
 [dev-dependencies.fred]
 version="*"
 features=["mocks"]
+
+[dev-dependencies]
+mockall = { version = "0.11", features=["nightly"] }
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -47,3 +49,5 @@ core = []
 redis-store = ["fred"]
 
 full = ["core", "redis-store"]
+
+integration-redis = ["redis-store"]
