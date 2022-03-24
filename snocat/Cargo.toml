@@ -32,11 +32,6 @@ tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
 uuid = { version = "0.8", features=["v4", "v5", "serde"] }
 
-# Enable mocks for redis (`fred`) for testing
-[dev-dependencies.fred]
-version="*"
-features=["mocks"]
-
 [dev-dependencies]
 mockall = { version = "0.11", features=["nightly"] }
 
