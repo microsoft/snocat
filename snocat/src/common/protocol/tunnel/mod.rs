@@ -69,54 +69,6 @@ impl std::fmt::Debug for TunnelName {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
-pub enum TunnelNameOrId {
-  Name(TunnelName),
-  Id(TunnelId),
-}
-
-impl From<&TunnelId> for TunnelNameOrId {
-  fn from(id: &TunnelId) -> Self {
-    TunnelNameOrId::Id(*id)
-  }
-}
-
-impl From<TunnelId> for TunnelNameOrId {
-  fn from(id: TunnelId) -> Self {
-    TunnelNameOrId::Id(id)
-  }
-}
-
-impl From<TunnelName> for TunnelNameOrId {
-  fn from(name: TunnelName) -> Self {
-    TunnelNameOrId::Name(name)
-  }
-}
-
-impl From<&TunnelName> for TunnelNameOrId {
-  fn from(name: &TunnelName) -> Self {
-    TunnelNameOrId::Name(name.clone())
-  }
-}
-
-impl From<TunnelNameOrId> for Option<TunnelId> {
-  fn from(name_or_id: TunnelNameOrId) -> Self {
-    match name_or_id {
-      TunnelNameOrId::Id(id) => Some(id),
-      _ => None,
-    }
-  }
-}
-
-impl From<TunnelNameOrId> for Option<TunnelName> {
-  fn from(name_or_id: TunnelNameOrId) -> Self {
-    match name_or_id {
-      TunnelNameOrId::Name(name) => Some(name),
-      _ => None,
-    }
-  }
-}
-
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum TunnelError {
   #[error("Connection closed")]
