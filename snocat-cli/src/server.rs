@@ -6,16 +6,16 @@ use futures::future::{BoxFuture, FutureExt, TryFutureExt};
 use quinn::{TransportConfig, VarInt};
 use snocat::{
   common::{
-    authentication::SimpleAckAuthenticationHandler,
-    daemon::ModularDaemon,
+    authentication::{AuthenticationAttributes, SimpleAckAuthenticationHandler},
+    daemon::{ModularDaemon, PeerTracker, PeersView},
     protocol::{
       negotiation::NegotiationClient,
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
         id::MonotonicAtomicGenerator,
         quinn_tunnel::QuinnTunnel,
-        registry::{local::InMemoryTunnelRegistry, TunnelRegistry},
-        Tunnel, TunnelNameOrId,
+        registry::{memory::InMemoryTunnelRegistry, TunnelRegistry},
+        ArcTunnel, TunnelId, TunnelName,
       },
     },
     tunnel_source::QuinnListenEndpoint,
@@ -27,7 +27,7 @@ use std::{
   convert::TryInto,
   net::{IpAddr, Ipv4Addr, Ipv6Addr},
   path::PathBuf,
-  sync::{Arc, Weak},
+  sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -41,27 +41,25 @@ pub struct ServerArgs {
   pub tcp_bind_port_range: std::ops::RangeInclusive<u16>,
 }
 
-pub struct SnocatServerRouter<TTunnel> {
-  tunnel_registry: Weak<InMemoryTunnelRegistry<TTunnel>>,
+pub struct SnocatServerRouter {
+  active_tunnels: Arc<PeersView>,
 }
 
-impl<TTunnel> SnocatServerRouter<TTunnel> {
-  pub fn new<TTunnelRegistry: Into<Weak<InMemoryTunnelRegistry<TTunnel>>>>(
-    tunnel_registry: TTunnelRegistry,
-  ) -> Self {
+impl SnocatServerRouter {
+  pub fn new(active_tunnels: PeersView) -> Self {
     Self {
-      tunnel_registry: tunnel_registry.into(),
+      active_tunnels: active_tunnels.into(),
     }
   }
 }
 
-impl<TTunnel> Router for SnocatServerRouter<TTunnel>
-where
-  TTunnel: Tunnel + Send + Sync + 'static,
-{
-  type Error = <InMemoryTunnelRegistry<TTunnel> as TunnelRegistry<TTunnel>>::Error;
+#[derive(thiserror::Error, Debug)]
+pub enum RouterError {}
+
+impl Router for SnocatServerRouter {
+  type Error = RouterError;
   type Stream = WrappedStream;
-  type LocalAddress = TunnelNameOrId;
+  type LocalAddress = TunnelName;
 
   fn route<'client, 'result, TProtocolClient, IntoLocalAddress: Into<Self::LocalAddress>>(
     &self,
@@ -73,31 +71,17 @@ where
   {
     let addr = request.address.clone();
     let local_address = local_address.into();
-    let tunnel_registry = self.tunnel_registry.clone();
+    let active_tunnels = self.active_tunnels.clone();
     let err_addr = request.address.clone();
     let err_not_found = move || RoutingError::RouteNotFound(err_addr.clone());
     async move {
-      // Get the tunnel registry if it's still available
-      let tunnel_registry = tunnel_registry
-        .upgrade()
-        .ok_or_else(err_not_found.clone())?;
       // Lookup the tunnel or bail if it doesn't exist anymore
-      let tunnel = match local_address {
-        TunnelNameOrId::Id(id) => tunnel_registry.lookup_by_id(id).await,
-        TunnelNameOrId::Name(name) => tunnel_registry.lookup_by_name(name).await,
-      }
-      .map_err(RoutingError::RouterError)
-      .and_then(|t| t.ok_or_else(err_not_found.clone()))?;
-      let tunnel_id = tunnel.id;
+      let dest_name: TunnelName = local_address.into();
+      let tunnel = active_tunnels
+        .find_by_name_and_comparator(&dest_name, |r| r.registered_at.0)
+        .ok_or_else(err_not_found.clone())?;
       let link = tunnel
         .tunnel
-        .ok_or_else(|| {
-          tracing::warn!(
-            ?tunnel_id,
-            "Attempted to route to tunnel not available in the local registry"
-          );
-          err_not_found()
-        })?
         .open_link()
         .await
         .map_err(RoutingError::LinkOpenFailure)?;
@@ -136,11 +120,16 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     (shutdown, sigint_handler_task)
   };
 
-  let tunnel_registry = Arc::new(InMemoryTunnelRegistry::new());
+  let tunnel_registry = Arc::new(InMemoryTunnelRegistry::<(
+    TunnelId,
+    TunnelName,
+    Arc<AuthenticationAttributes>,
+  )>::new());
 
   let service_registry = Arc::new(PresetServiceRegistry::<anyhow::Error>::new());
 
-  let router = { Arc::new(SnocatServerRouter::new(Arc::downgrade(&tunnel_registry))) };
+  let peer_tracker = PeerTracker::default();
+  let router = { Arc::new(SnocatServerRouter::new(peer_tracker.view())) };
 
   let authentication_handler = Arc::new(SimpleAckAuthenticationHandler::new());
 
@@ -154,16 +143,29 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let modular = Arc::new(ModularDaemon::<Arc<QuinnTunnel<_>>, _, _, _, _>::new(
-    service_registry.clone(),
-    tunnel_registry.clone(),
-    router,
-    authentication_handler,
-    tunnel_id_generator,
-  ));
+  let modular =
+    Arc::new(ModularDaemon::new(
+      service_registry.clone(),
+      tunnel_registry.clone(),
+      peer_tracker.clone(),
+      router,
+      authentication_handler,
+      tunnel_id_generator,
+      Arc::new(
+        |id: TunnelId,
+         name: TunnelName,
+         attrs: Arc<AuthenticationAttributes>,
+         _tunnel: ArcTunnel<'static>|
+         -> BoxFuture<
+          'static,
+          Result<<InMemoryTunnelRegistry<_> as TunnelRegistry>::Record, _>,
+        > { futures::future::ready(Ok((id, name, attrs))).boxed() },
+      ),
+    ));
 
   {
     let demand_proxy_service = Arc::new(DemandProxyService::new(
+      peer_tracker.view(),
       Arc::downgrade(modular.router()),
       PortRangeAllocator::new(config.tcp_bind_port_range),
       vec![
@@ -175,8 +177,9 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     drop(service_registry);
   }
 
+  let endpoint = modular.assign_tunnel_ids::<QuinnTunnel, _, _>(endpoint);
   modular
-    .run(endpoint, shutdown)
+    .run(endpoint, shutdown.into())
     .map_err(|_| anyhow::Error::msg("Modular runtime panicked and lost context"))
     .await?;
 

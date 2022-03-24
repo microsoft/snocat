@@ -2,15 +2,18 @@
 // Licensed under the MIT license OR Apache 2.0
 
 use snocat::{
-  common::protocol::{
-    address::RouteAddressParseError,
-    proxy_tcp::TcpStreamTarget,
-    service::{
-      Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
-      RoutingError,
+  common::{
+    daemon::PeersView,
+    protocol::{
+      address::RouteAddressParseError,
+      proxy_tcp::TcpStreamTarget,
+      service::{
+        Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
+        RoutingError,
+      },
+      tunnel::{ArcTunnel, TunnelId, TunnelName},
+      RouteAddress, Service, ServiceError,
     },
-    tunnel::TunnelId,
-    RouteAddress, Service, ServiceError,
   },
   server::PortRangeAllocator,
 };
@@ -140,6 +143,7 @@ where
 
 // TODO: This service is obsolete- listen on the server side for connection events instead
 pub struct DemandProxyService<TRouter> {
+  peers: PeersView,
   router: Weak<TRouter>,
   port_range_allocator: PortRangeAllocator,
   bind_addrs: Arc<Vec<IpAddr>>,
@@ -159,15 +163,17 @@ where
   TRouter: Router + Send + Sync + 'static,
   TRouter::Stream: TunnelStream + Send,
   TRouter::Error: Send,
-  TRouter::LocalAddress: From<TunnelId>,
+  TRouter::LocalAddress: From<TunnelName>,
 {
   pub fn new(
+    peers: PeersView,
     router: Weak<TRouter>,
     port_range_allocator: PortRangeAllocator,
     mut bind_addrs: Vec<IpAddr>,
   ) -> Self {
     Self::handle_dual_stack_addrs(&mut bind_addrs);
     Self {
+      peers,
       router,
       port_range_allocator,
       bind_addrs: Arc::new(bind_addrs),
@@ -177,7 +183,7 @@ where
   async fn run_tcp_listener(
     target_addr: Arc<(Option<String>, u16)>,
     tcp_listener: TcpListener,
-    target_tunnel: TunnelId,
+    target_tunnel: TunnelName,
     router: Weak<TRouter>,
     stop_accepting: CancellationToken,
   ) -> Result<(), ServiceError<TRouter::Error>> {
@@ -193,6 +199,7 @@ where
       .try_for_each_concurrent(None, move |tcp_stream| {
         let target_addr = target_addr.clone();
         let router = router.clone();
+        let target_tunnel = target_tunnel.clone();
         async move {
           use snocat::common::protocol::proxy_tcp::{DnsTarget, TcpStreamClient};
           let (tcp_recv, tcp_send) = tokio::io::split(tcp_stream);
@@ -240,7 +247,7 @@ where
   async fn run_tcp_listeners(
     bindings: Vec<TcpListener>,
     target_addr: (Option<String>, u16),
-    target_tunnel: TunnelId,
+    target_tunnel: TunnelName,
     router: Weak<TRouter>,
     stop_accepting: CancellationToken,
   ) -> Result<(), ServiceError<TRouter::Error>> {
@@ -253,7 +260,7 @@ where
         Self::run_tcp_listener(
           target_addr.clone(),
           tcp_listener,
-          target_tunnel,
+          target_tunnel.clone(),
           router.clone(),
           stop_accepting.clone(),
         )
@@ -321,7 +328,7 @@ where
   TRouter: Router + Send + Sync + 'static,
   TRouter::Stream: TunnelStream + Send,
   TRouter::Error: Send,
-  TRouter::LocalAddress: From<TunnelId>,
+  TRouter::LocalAddress: From<TunnelName>,
 {
   type Error = TRouter::Error;
 
@@ -333,12 +340,18 @@ where
     &'_ self,
     addr: RouteAddress,
     mut stream: Box<dyn TunnelStream + Send + 'static>,
-    tunnel_id: TunnelId,
+    tunnel: ArcTunnel,
   ) -> BoxFuture<'_, Result<(), ServiceError<Self::Error>>> {
     tracing::debug!(
       "Demand proxy proxy connection request received with addr {}; building span...",
       addr
     );
+
+    let tunnel_name = if let Some(peer_record) = self.peers.get_by_id(tunnel.id()) {
+      peer_record.name.clone()
+    } else {
+      return futures::future::ready(Err(ServiceError::AddressError)).boxed();
+    };
     let port_range_allocator = self.port_range_allocator.clone();
     let bind_addrs = Arc::clone(&self.bind_addrs);
     let parsed_addr = {
@@ -439,7 +452,7 @@ where
       let tcp_listener_task = Self::run_tcp_listeners(
         bindings,
         parsed_addr,
-        tunnel_id,
+        tunnel_name,
         self.router.clone(),
         no_new_requests,
       );
