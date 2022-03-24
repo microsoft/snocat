@@ -34,7 +34,7 @@ use crate::{
 
 use super::{
   authentication::{AuthenticationAttributes, AuthenticationHandlingError},
-  protocol::tunnel::{TunnelControl, TunnelMonitoring},
+  protocol::tunnel::{ArcTunnel, TunnelControl, TunnelMonitoring},
 };
 
 #[derive(Clone)]
@@ -515,8 +515,10 @@ where
   TAuthenticationHandler: AuthenticationHandler + 'static,
   TAuthenticationHandler::Error: Debug + Display + Send + 'static,
   FConstructRecord: Fn(
+      TunnelId,
       TunnelName,
       Arc<AuthenticationAttributes>,
+      ArcTunnel<'static>,
     ) -> BoxFuture<'static, Result<TTunnelRegistry::Record, TTunnelRegistry::Error>>
     + Send
     + Sync
@@ -900,7 +902,13 @@ where
     TTunnel: Tunnel + 'static,
   {
     let registered_at = (Instant::now(), SystemTime::now());
-    let record = record_constructor(tunnel_name.clone(), Arc::clone(&attributes)).await?;
+    let record = record_constructor(
+      tunnel.id().clone(),
+      tunnel_name.clone(),
+      Arc::clone(&attributes),
+      tunnel.clone() as Arc<_>,
+    )
+    .await?;
     let identifier = tunnel_registry
       .register(tunnel_name.clone(), &record)
       .await?;
