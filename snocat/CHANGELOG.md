@@ -7,6 +7,69 @@ following the release of version 1.0.0.
 
 ## [Unreleased] - ReleaseDate
 
+### Hybrid Eventually-Consistent Tunnel Repositories (0.6.0-alpha.1)
+Tunnels are now considered "snocat tunnels" immediately after connection,
+and their metadata is now an immutable `HashMap<String, Vec<u8>>`.
+The "Baggage" trait still exists, but is deprecated for future removal.
+
+`ModularDaemon` now provides tokio::sync::Broadcast-based event subscriptions
+which can be used for monitoring of tunnel lifecycles.
+These are not guaranteed-reliable- any listeners that lag too far behind may
+miss a message if the buffer fills before they are processed; Such misses will
+notify with a "Lagged" error on the receiver-side. To avoid this, ensure that a
+task processes messages as soon as possible and pushes them into a work queue
+as-needed with minimal processing, and that work is handled on a separate task.
+
+Tunnels are now registered to the provided `TunnelRegistry` only after they have
+authenticated successfully.
+Tunnels which fail authentication are never considered "registered", and thus
+never enter the registry or process requests. This is a change from the prior
+model which allowed a tunnel's registry record to be mutated post-write.
+
+Mutation is allowed via the `SharedAttributeRegistry` trait but no provided
+reference registry implements this functionality. A CRDT-based table could
+feasibly allow distributed, eventually consistent mutability of attributes
+in the future, but the design is in flux.
+
+#### Reduction of Registry content
+Tunnel Registries now purely track externally-viewable tunnel state, instead of
+tracking a local-and-remote set of items; Stored entries are allowed to be out-of-date,
+which reduces consistency requirements to allow for use of non-transactional databases.
+
+A Redis implementation is provided which allows for "last-named-wins" semantics of tunnel
+registration.
+This may be placed behind caching layers to allow for reduced registrations, but the
+provided cache - recursively defined as a registry composing two others - lacks some
+ID semantics needed for proper, timely cleanup of cached resource instances.
+
+An in-memory implementation based upon DashMap is provided which has the same
+last-entry-wins semantics as the Redis implementation in order to facilitate
+database mocking in integration testing.
+
+#### Daemon Peer Tracking
+A new, guaranteed-locally-consistent in-memory store of tunnels now handles
+tunnels active within the current daemon context.
+This is exposed as a read-only view via the `ModularDaemon::peers(&self)` method,
+with the implementation mechanism hidden behind a set of accessors on `PeersView`.
+Tunnels are tracked only after name registration, and are inserted or removed
+prior to the asynchronous calls for Registry updates.
+Tunnels which fail authentication never reach a "registered" state and are
+thus never included in the peer tracker nor the `TunnelRegistry`.
+
+
+#### Inner Loop Simplification
+Tunnel lifecycle handling code within `ModularDaemon` has been dramatically simplified:
+Generic `TTunnel` on ModularDaemon has been moved to a generic parameter upon the
+`ModularDaemon::run` method, and internal functions are parameterized upon it.
+An RAII wrapper utilizing `DropKick` now provides deregistration and closure of tunnels
+instead of intercepting potential exit points, as
+[AsyncDrop](https://rust-lang.github.io/async-fundamentals-initiative/roadmap/async_drop.html)
+is still in the preliminary planning stages by the associated Rust initiative.
+This allows us to encode deregistration logic within the wrapper type, ensuring
+that the daemon does not miss a path so long as the compiler itself is correct.
+
+## [0.5.0-alpha.6] - 2022-03-04
+
 ### Generic Tunnel Registries and Services
 The majority of `ModularDaemon` module types have switched from dynamic to generic dispatch.
 
@@ -82,7 +145,8 @@ Add crate repository metadata
 Initial release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/Microsoft/snocat/compare/snocat-v0.1.2...HEAD
+[Unreleased]: https://github.com/Microsoft/snocat/compare/snocat-v0.5.0-alpha.6...HEAD
+[0.5.0-alpha.6]: https://github.com/Microsoft/snocat/compare/snocat-v0.1.2...snocat-v0.5.0-alpha.6
 [0.1.2]: https://github.com/Microsoft/snocat/compare/v0.1.1...snocat-v0.1.2
 [0.1.1]: https://github.com/microsoft/snocat/compare/855fc4beacf4f568a08e848193fba65e6e840fd1...v0.1.1
 [0.1.0]: https://github.com/microsoft/snocat/compare/b8d28e83c0bf7010d86eaddcdd212fe72848f6bb...855fc4beacf4f568a08e848193fba65e6e840fd1
