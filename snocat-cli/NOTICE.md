@@ -19,6 +19,7 @@ their own copyright notices and license terms:
 * [cc v1.0.73](https://github.com/alexcrichton/cc-rs) - MIT/Apache-2.0
 * [cfg-if v1.0.0](https://github.com/alexcrichton/cfg-if) - MIT/Apache-2.0
 * [clap v3.1.2](https://github.com/clap-rs/clap) - MIT OR Apache-2.0
+* [dashmap v5.1.0](https://github.com/xacrimon/dashmap) - MIT
 * [downcast-rs v1.2.0](https://github.com/marcianx/downcast-rs) - MIT/Apache-2.0
 * [futures-channel v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 * [futures-core v0.3.21](https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
@@ -37,6 +38,7 @@ their own copyright notices and license terms:
 * [itoa v1.0.1](https://github.com/dtolnay/itoa) - MIT OR Apache-2.0
 * [lazy_static v1.4.0](https://github.com/rust-lang-nursery/lazy-static.rs) - MIT/Apache-2.0
 * [libc v0.2.119](https://github.com/rust-lang/libc) - MIT OR Apache-2.0
+* [lock_api v0.4.6](https://github.com/Amanieu/parking_lot) - Apache-2.0/MIT
 * [log v0.4.14](https://github.com/rust-lang/log) - MIT OR Apache-2.0
 * [matchers v0.1.0](https://github.com/hawkw/matchers) - MIT
 * [memchr v2.4.1](https://github.com/BurntSushi/memchr) - Unlicense/MIT
@@ -47,6 +49,8 @@ their own copyright notices and license terms:
 * [once_cell v1.9.0](https://github.com/matklad/once_cell) - MIT OR Apache-2.0
 * [openssl-probe v0.1.5](https://github.com/alexcrichton/openssl-probe) - MIT/Apache-2.0
 * [os_str_bytes v6.0.0](https://github.com/dylni/os_str_bytes) - MIT OR Apache-2.0
+* [parking_lot_core v0.9.1](https://github.com/Amanieu/parking_lot) - Apache-2.0/MIT
+* [parking_lot v0.12.0](https://github.com/Amanieu/parking_lot) - Apache-2.0/MIT
 * [pem v1.0.2](https://github.com/jcreekmore/pem-rs.git) - MIT
 * [pin-project-internal v1.0.10](https://github.com/taiki-e/pin-project) - Apache-2.0 OR MIT
 * [pin-project-lite v0.2.8](https://github.com/taiki-e/pin-project-lite) - Apache-2.0 OR MIT
@@ -71,10 +75,13 @@ their own copyright notices and license terms:
 * [rustls-pemfile v0.3.0](https://github.com/rustls/pemfile) - Apache-2.0/ISC/MIT
 * [rustls v0.20.4](https://github.com/rustls/rustls) - Apache-2.0/ISC/MIT
 * [ryu v1.0.9](https://github.com/dtolnay/ryu) - Apache-2.0 OR BSL-1.0
+* [scopeguard v1.1.0](https://github.com/bluss/scopeguard) - MIT/Apache-2.0
 * [sct v0.7.0](https://github.com/ctz/sct.rs) - Apache-2.0/ISC/MIT
 * [serde_derive v1.0.136](https://github.com/serde-rs/serde) - MIT OR Apache-2.0
 * [serde_json v1.0.79](https://github.com/serde-rs/json) - MIT OR Apache-2.0
 * [serde v1.0.136](https://github.com/serde-rs/serde) - MIT OR Apache-2.0
+* [sha1_smol v1.0.0](https://github.com/mitsuhiko/sha1-smol) - BSD-3-Clause
+* [sha1 v0.6.1](https://github.com/mitsuhiko/sha1-smol) - BSD-3-Clause
 * [sharded-slab v0.1.4](https://github.com/hawkw/sharded-slab) - MIT
 * [signal-hook-registry v1.4.0](https://github.com/vorner/signal-hook) - Apache-2.0/MIT
 * [slab v0.4.5](https://github.com/tokio-rs/slab) - MIT
@@ -104,5 +111,6 @@ their own copyright notices and license terms:
 * [tracing v0.1.31](https://github.com/tokio-rs/tracing) - MIT
 * [unicode-xid v0.2.2](https://github.com/unicode-rs/unicode-xid) - MIT OR Apache-2.0
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
+* [uuid v0.8.2](https://github.com/uuid-rs/uuid) - Apache-2.0 OR MIT
 * [webpki v0.22.0](https://github.com/briansmith/webpki) - (**Nonstandard License**, see project link)
 * [yasna v0.5.0](https://github.com/qnighy/yasna.rs) - MIT OR Apache-2.0
