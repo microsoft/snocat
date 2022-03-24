@@ -12,7 +12,6 @@ use crate::common::protocol::tunnel::TunnelName;
 
 pub mod cache;
 pub mod memory;
-// pub mod serialized;
 #[cfg(feature = "redis-store")]
 pub mod redis;
 

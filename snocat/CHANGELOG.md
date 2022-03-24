@@ -37,10 +37,12 @@ tracking a local-and-remote set of items; Stored entries are allowed to be out-o
 which reduces consistency requirements to allow for use of non-transactional databases.
 
 A Redis implementation is provided which allows for "last-named-wins" semantics of tunnel
-registration.
+registration via feature flag `redis-store`.
 This may be placed behind caching layers to allow for reduced registrations, but the
 provided cache - recursively defined as a registry composing two others - lacks some
 ID semantics needed for proper, timely cleanup of cached resource instances.
+Integration tests can be run with `./.scripts/run-integration-tests.sh` or providing
+`integration-redis` as a feature flag during test execution.
 
 An in-memory implementation based upon DashMap is provided which has the same
 last-entry-wins semantics as the Redis implementation in order to facilitate
