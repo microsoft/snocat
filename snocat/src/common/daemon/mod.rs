@@ -38,7 +38,7 @@ use super::{
 };
 
 #[derive(Clone)]
-pub struct PeerTunnel {
+pub struct PeerRecord {
   pub id: TunnelId,
   pub name: TunnelName,
   pub registered_at: (Instant, std::time::SystemTime),
@@ -46,7 +46,7 @@ pub struct PeerTunnel {
   pub tunnel: Arc<dyn Tunnel + Send + Sync + 'static>,
 }
 
-impl Debug for PeerTunnel {
+impl Debug for PeerRecord {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("PeerTunnel")
       .field("id", &self.id)
@@ -55,15 +55,15 @@ impl Debug for PeerTunnel {
   }
 }
 
-impl PartialEq for PeerTunnel {
+impl PartialEq for PeerRecord {
   fn eq(&self, other: &Self) -> bool {
     self.id == other.id && self.name == other.name
   }
 }
-impl Eq for PeerTunnel {}
+impl Eq for PeerRecord {}
 
 /// [PeerTunnel] uses the ID and Name fields for hashing, skipping tunnel attributes
-impl Hash for PeerTunnel {
+impl Hash for PeerRecord {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.id.hash(state);
     self.name.hash(state);
@@ -71,22 +71,33 @@ impl Hash for PeerTunnel {
 }
 
 #[derive(Clone)]
-pub struct PeerTunnels {
-  peers_by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>>,
-  peers_by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>,
+pub struct PeersView {
+  by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerRecord>>>>>,
+  by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerRecord>>>>,
 }
 
-impl PeerTunnels {
-  pub fn get_by_id(&self, tunnel_id: &TunnelId) -> Option<Arc<PeerTunnel>> {
-    if let Some(peers_by_id) = self.peers_by_id.upgrade() {
+impl PeersView {
+  #[must_use]
+  pub fn new(
+    peers_by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerRecord>>>>>,
+    peers_by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerRecord>>>>,
+  ) -> Self {
+    Self {
+      by_name: peers_by_name,
+      by_id: peers_by_id,
+    }
+  }
+
+  pub fn get_by_id(&self, tunnel_id: &TunnelId) -> Option<Arc<PeerRecord>> {
+    if let Some(peers_by_id) = self.by_id.upgrade() {
       peers_by_id.get(tunnel_id).and_then(|x| x.upgrade())
     } else {
       None
     }
   }
 
-  pub fn get_by_name(&self, tunnel_name: &TunnelName) -> Vec<Arc<PeerTunnel>> {
-    if let Some(peers_by_name) = self.peers_by_name.upgrade() {
+  pub fn get_by_name(&self, tunnel_name: &TunnelName) -> Vec<Arc<PeerRecord>> {
+    if let Some(peers_by_name) = self.by_name.upgrade() {
       if let Some(subtable) = peers_by_name.get(tunnel_name) {
         subtable
           .iter()
@@ -100,12 +111,12 @@ impl PeerTunnels {
     }
   }
 
-  pub fn find_by_name_and_predicate<P: for<'a> Fn(&'a PeerTunnel) -> bool>(
+  pub fn find_by_name_and_predicate<P: for<'a> Fn(&'a PeerRecord) -> bool>(
     &self,
     tunnel_name: &TunnelName,
     predicate: P,
-  ) -> Option<Arc<PeerTunnel>> {
-    if let Some(peers_by_name) = self.peers_by_name.upgrade() {
+  ) -> Option<Arc<PeerRecord>> {
+    if let Some(peers_by_name) = self.by_name.upgrade() {
       if let Some(subtable) = peers_by_name.get(tunnel_name) {
         subtable.iter().find_map(|kv| {
           if let Some(upgraded) = kv.upgrade() {
@@ -127,11 +138,11 @@ impl PeerTunnels {
   }
 
   /// Allows fetching a tunnel by comparing its attributes with those of all others
-  pub fn find_by_comparator<Ordering: std::cmp::Ord, P: for<'a> Fn(&'a PeerTunnel) -> Ordering>(
+  pub fn find_by_comparator<Ordering: std::cmp::Ord, P: for<'a> Fn(&'a PeerRecord) -> Ordering>(
     &self,
     comparator_predicate: P,
-  ) -> Option<Arc<PeerTunnel>> {
-    if let Some(peers_by_id) = self.peers_by_id.upgrade() {
+  ) -> Option<Arc<PeerRecord>> {
+    if let Some(peers_by_id) = self.by_id.upgrade() {
       peers_by_id
         .iter()
         .filter_map(|kv| kv.upgrade())
@@ -144,13 +155,13 @@ impl PeerTunnels {
   /// Allows fetching a tunnel by comparing its attributes with those of others with the same name
   pub fn find_by_name_and_comparator<
     Ordering: std::cmp::Ord,
-    P: for<'a> Fn(&'a PeerTunnel) -> Ordering,
+    P: for<'a> Fn(&'a PeerRecord) -> Ordering,
   >(
     &self,
     tunnel_name: &TunnelName,
     comparator_predicate: P,
-  ) -> Option<Arc<PeerTunnel>> {
-    if let Some(peers_by_name) = self.peers_by_name.upgrade() {
+  ) -> Option<Arc<PeerRecord>> {
+    if let Some(peers_by_name) = self.by_name.upgrade() {
       if let Some(subtable) = peers_by_name.get(tunnel_name) {
         subtable
           .iter()
@@ -165,9 +176,9 @@ impl PeerTunnels {
   }
 
   /// Fetch a vector of all active tunnels
-  pub fn all(&self) -> Vec<Arc<PeerTunnel>> {
+  pub fn all(&self) -> Vec<Arc<PeerRecord>> {
     self
-      .peers_by_id
+      .by_id
       .upgrade()
       .iter()
       .flat_map(|by_id| by_id.iter().filter_map(|kv| kv.value().upgrade()))
@@ -175,25 +186,44 @@ impl PeerTunnels {
   }
 }
 
-impl PeerTunnels {
+#[derive(Clone, Default)]
+pub struct PeerTracker {
+  by_name: Arc<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerRecord>>>>>,
+  by_id: Arc<Arc<DashMap<TunnelId, Weak<PeerRecord>>>>,
+}
+
+impl PeerTracker {
   #[must_use]
-  pub fn new(
-    peers_by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>>,
-    peers_by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>,
-  ) -> Self {
+  pub fn new() -> Self {
     Self {
-      peers_by_name,
-      peers_by_id,
+      by_id: Default::default(),
+      by_name: Default::default(),
     }
+  }
+
+  #[must_use]
+  pub fn view(&self) -> PeersView {
+    PeersView {
+      by_name: Arc::downgrade(&self.by_name),
+      by_id: Arc::downgrade(&self.by_id),
+    }
+  }
+
+  fn insert(&self, record: &Arc<PeerRecord>) {
+    self.by_id.insert(record.id, Arc::downgrade(record));
+    self
+      .by_name
+      .entry(record.name.clone())
+      .or_insert_with(|| Default::default())
+      .insert(record.id, Arc::downgrade(record));
   }
 }
 
 struct RegisteredTunnelInner<TRegistry: ?Sized, TRecordIdent> {
   registry: Arc<TRegistry>,
   record_identifier: TRecordIdent,
-  peers_by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>>,
-  peers_by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>,
-  peer_record: Arc<PeerTunnel>,
+  peers: PeersView,
+  peer_record: Arc<PeerRecord>,
   disconnection_broadcaster: Arc<Broadcaster<TunnelDisconnectedEvent>>,
 }
 
@@ -220,8 +250,8 @@ where
     // These are held behind a weakref, because if they're already gone, we have no need to clear them
     // Because these map containers perform a lot of mutexing, we run them in a blocking thread and move on.
     tokio::task::spawn_blocking({
-      let peers_by_name = self.peers_by_name;
-      let peers_by_id = self.peers_by_id;
+      let peers_by_name = self.peers.by_name;
+      let peers_by_id = self.peers.by_id;
       let peer_record = self.peer_record;
       move || {
         if let Some(peers_by_id) = peers_by_id.upgrade() {
@@ -268,9 +298,8 @@ impl<TTunnel> RegisteredTunnel<TTunnel> {
     tunnel: Arc<TTunnel>,
     registry: Arc<TRegistry>,
     record_identifier: TRecordIdent,
-    peers_by_name: Weak<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>>,
-    peers_by_id: Weak<Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>,
-    peer_record: Arc<PeerTunnel>,
+    peers: PeersView,
+    peer_record: Arc<PeerRecord>,
     disconnection_broadcaster: Arc<Broadcaster<TunnelDisconnectedEvent>>,
   ) -> Self
   where
@@ -279,8 +308,7 @@ impl<TTunnel> RegisteredTunnel<TTunnel> {
     let inner = RegisteredTunnelInner {
       registry,
       record_identifier,
-      peers_by_name,
-      peers_by_id,
+      peers,
       peer_record,
       disconnection_broadcaster,
     };
@@ -369,8 +397,7 @@ pub struct ModularDaemon<
   authentication_handler: Arc<TAuthenticationHandler>,
   tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
   record_constructor: Arc<FConstructRecord>,
-  peers_by_name: Arc<DashMap<TunnelName, Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>>,
-  peers_by_id: Arc<Arc<DashMap<TunnelId, Weak<PeerTunnel>>>>,
+  peers: PeerTracker,
 
   // event hooks
   pub tunnel_connected: Arc<Broadcaster<TunnelConnectedEvent>>,
@@ -498,6 +525,7 @@ where
   pub fn new(
     service_registry: Arc<TServiceRegistry>,
     tunnel_registry: Arc<TTunnelRegistry>,
+    peer_tracker: PeerTracker,
     router: Arc<TRouter>,
     authentication_handler: Arc<TAuthenticationHandler>,
     tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
@@ -510,8 +538,7 @@ where
       authentication_handler,
       tunnel_id_generator,
       record_constructor,
-      peers_by_name: Default::default(),
-      peers_by_id: Default::default(),
+      peers: peer_tracker,
 
       // For event handlers, we simply drop the receive sides,
       // as new ones can be made with Sender::subscribe(&self)
@@ -522,10 +549,10 @@ where
     s
   }
 
-  pub fn peers(&self) -> PeerTunnels {
-    PeerTunnels {
-      peers_by_name: Arc::downgrade(&self.peers_by_name),
-      peers_by_id: Arc::downgrade(&self.peers_by_id),
+  pub fn peers(&self) -> PeersView {
+    PeersView {
+      by_name: Arc::downgrade(&self.peers.by_name),
+      by_id: Arc::downgrade(&self.peers.by_id),
     }
   }
 
@@ -879,22 +906,14 @@ where
       .await?;
 
     let tunnel_id = *tunnel.id();
-    let peer_record = Arc::new(PeerTunnel {
+    let peer_record = Arc::new(PeerRecord {
       id: tunnel_id,
       name: tunnel_name.clone(),
       registered_at,
       attributes: Arc::clone(&attributes),
       tunnel: tunnel.clone() as Arc<_>,
     });
-
-    self
-      .peers_by_id
-      .insert(tunnel_id, Arc::downgrade(&peer_record));
-    self
-      .peers_by_name
-      .entry(tunnel_name.clone())
-      .or_insert_with(|| Default::default())
-      .insert(tunnel_id, Arc::downgrade(&peer_record));
+    self.peers.insert(&peer_record);
 
     // Send tunnel_authenticated event for the newly-named tunnel, once the registry is aware of it
     self.fire_tunnel_authenticated(TunnelAuthenticatedEvent {
@@ -907,8 +926,7 @@ where
       tunnel,
       tunnel_registry,
       identifier,
-      Arc::downgrade(&self.peers_by_name),
-      Arc::downgrade(&self.peers_by_id),
+      self.peers(),
       peer_record,
       self.tunnel_disconnected.clone(),
     ))
