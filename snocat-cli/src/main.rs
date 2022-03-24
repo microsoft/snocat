@@ -98,21 +98,20 @@ fn main() {
         )
         .arg(
           Arg::new("tcp")
-            .long("bindip")
+            .long("tcp")
+            .alias("bindip")
             .short('i')
             .validator(validate_ipaddr)
             .default_value("127.0.0.1")
-            .takes_value(true)
-            .required(true),
+            .takes_value(true),
         )
         .arg(
           Arg::new("bind_range")
             .long("ports")
             .short('p')
             .validator(validate_port_range)
-            .default_value("8080")
-            .takes_value(true)
-            .required(true),
+            .default_value("8080:8090")
+            .takes_value(true),
         )
         .arg(
           Arg::new("quic")
@@ -121,8 +120,7 @@ fn main() {
             .short('q')
             .validator(validate_socketaddr)
             .default_value("127.0.0.1:9090")
-            .takes_value(true)
-            .required(true),
+            .takes_value(true),
         ),
     )
     .subcommand(
