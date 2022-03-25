@@ -70,6 +70,21 @@ is still in the preliminary planning stages by the associated Rust initiative.
 This allows us to encode deregistration logic within the wrapper type, ensuring
 that the daemon does not miss a path so long as the compiler itself is correct.
 
+#### Service and ServiceRegistry modifications
+
+`Service` and `ServiceRegistry` now work with instances of (or references to) `ArcTunnel` in lieu of `TunnelId`.
+
+`MappedService` is now a `struct` instead of a `trait`, and acts as a wrapper type which implements
+`Service` by mapping the result to a phantom type stored on the instance. Remapping from one mapped
+type to another can be performed with `MappedService::new(MappedService::into_inner(s))`.
+
+`Service` is now implemented for the following reference types:
+- `&S`
+- `&mut S`
+- `Box<S>`
+- `Rc<S>`
+- `Arc<S>`
+
 ## [0.5.0-alpha.6] - 2022-03-04
 
 ### Generic Tunnel Registries and Services
