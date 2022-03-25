@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
 use std::{
   fmt::{Debug, Display},
   hash::Hash,
