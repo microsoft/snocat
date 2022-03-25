@@ -16,7 +16,7 @@ use tracing_futures::Instrument;
 use super::{
   address::RouteAddressParseError,
   service::{Client, ClientResult, ProtocolInfo, RouteAddressBuilder},
-  tunnel::{ArcTunnel, TunnelId},
+  tunnel::ArcTunnel,
   RouteAddress, Service, ServiceError,
 };
 use crate::{
@@ -458,7 +458,7 @@ impl TcpStreamService {
 impl Service for TcpStreamService {
   type Error = anyhow::Error;
 
-  fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
+  fn accepts(&self, addr: &RouteAddress, _tunnel: &ArcTunnel) -> bool {
     TcpStreamTarget::try_from(addr).is_ok()
   }
 

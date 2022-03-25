@@ -866,7 +866,7 @@ where
         let route_addr: RouteAddress = route_addr;
         let service: negotiation::ArcService<_> = service;
         match service
-          .handle_mapped(route_addr.clone(), Box::new(link), Arc::new(tunnel) as _)
+          .handle(route_addr.clone(), Box::new(link), Arc::new(tunnel) as _)
           .await
         {
           // TODO: Figure out which of these should be considered fatal to the tunnel, if any

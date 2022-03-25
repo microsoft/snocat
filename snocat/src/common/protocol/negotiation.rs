@@ -11,11 +11,7 @@ use tracing_futures::Instrument;
 
 use crate::util::tunnel_stream::TunnelStream;
 
-use super::{
-  traits::{MappedService, ServiceRegistry},
-  tunnel::Tunnel,
-  RouteAddress, ServiceError,
-};
+use super::{traits::ServiceRegistry, tunnel::Tunnel, RouteAddress, Service, ServiceError};
 
 /// Identifies the SNOCAT protocol over a stream
 pub const SNOCAT_NEGOTIATION_MAGIC: &[u8; 4] = &[0x4e, 0x59, 0x41, 0x4e]; // UTF-8 "NYAN"
@@ -209,7 +205,8 @@ pub struct NegotiationService<ServiceRegistry: ?Sized> {
   service_registry: Arc<ServiceRegistry>,
 }
 
-pub type ArcService<TServiceError> = Arc<dyn MappedService<TServiceError> + Send + Sync + 'static>;
+pub type ArcService<TServiceError> =
+  Arc<dyn Service<Error = TServiceError> + Send + Sync + 'static>;
 
 impl<R: ?Sized> NegotiationService<R> {
   pub fn new(service_registry: Arc<R>) -> Self {
@@ -270,7 +267,7 @@ where
         .and_then(|raw| raw.parse().map_err(|_| NegotiationError::ProtocolViolation))?;
 
       tracing::trace!("searching service registry for address handlers");
-      let found = service_registry.find_service(&addr, &tunnel_id);
+      let found = service_registry.find_service(&addr, &(Arc::new(tunnel) as Arc<_>));
 
       match found {
         None => {
@@ -308,10 +305,9 @@ mod tests {
 
   use super::{ArcService, NegotiationClient, NegotiationError, NegotiationService};
   use crate::common::protocol::{
-    traits::{MappedService, ServiceRegistry},
+    traits::ServiceRegistry,
     tunnel::{
-      duplex::EntangledTunnels, ArcTunnel, Tunnel, TunnelDownlink, TunnelId, TunnelIncomingType,
-      TunnelUplink,
+      duplex::EntangledTunnels, ArcTunnel, Tunnel, TunnelDownlink, TunnelIncomingType, TunnelUplink,
     },
     Service,
   };
@@ -326,12 +322,12 @@ mod tests {
     fn find_service(
       self: std::sync::Arc<Self>,
       addr: &crate::common::protocol::RouteAddress,
-      tunnel_id: &TunnelId,
-    ) -> Option<std::sync::Arc<dyn MappedService<Self::Error> + Send + Sync + 'static>> {
+      tunnel: &ArcTunnel,
+    ) -> Option<std::sync::Arc<dyn Service<Error = Self::Error> + Send + Sync + 'static>> {
       self
         .services
         .iter()
-        .find(|s| s.accepts_mapped(addr, tunnel_id))
+        .find(|s| s.accepts(addr, tunnel))
         .map(Arc::clone)
     }
   }
@@ -341,11 +337,7 @@ mod tests {
   impl Service for NoOpServiceAcceptAll {
     type Error = anyhow::Error;
 
-    fn accepts(
-      &self,
-      _addr: &crate::common::protocol::RouteAddress,
-      _tunnel_id: &TunnelId,
-    ) -> bool {
+    fn accepts(&self, _addr: &crate::common::protocol::RouteAddress, _tunnel: &ArcTunnel) -> bool {
       true
     }
 

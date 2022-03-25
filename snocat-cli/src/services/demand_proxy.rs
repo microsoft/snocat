@@ -11,7 +11,7 @@ use snocat::{
         Client, ClientError, ClientResult, ProtocolInfo, Request, RouteAddressBuilder, Router,
         RoutingError,
       },
-      tunnel::{ArcTunnel, TunnelId, TunnelName},
+      tunnel::{ArcTunnel, TunnelName},
       RouteAddress, Service, ServiceError,
     },
   },
@@ -332,7 +332,7 @@ where
 {
   type Error = TRouter::Error;
 
-  fn accepts(&self, addr: &RouteAddress, _tunnel_id: &TunnelId) -> bool {
+  fn accepts(&self, addr: &RouteAddress, _tunnel: &ArcTunnel) -> bool {
     Self::parse_address(addr).is_ok()
   }
 
