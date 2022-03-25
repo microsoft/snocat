@@ -7,15 +7,16 @@ use quinn::{TransportConfig, VarInt};
 use snocat::{
   common::{
     authentication::{AuthenticationAttributes, SimpleAckAuthenticationHandler},
-    daemon::{ModularDaemon, PeerTracker, PeersView},
+    daemon::{
+      ModularDaemon, PeerTracker, PeersView, RecordConstructor, RecordConstructorArgs,
+      RecordConstructorResult,
+    },
     protocol::{
       negotiation::NegotiationClient,
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        id::MonotonicAtomicGenerator,
-        quinn_tunnel::QuinnTunnel,
-        registry::{memory::InMemoryTunnelRegistry, TunnelRegistry},
-        ArcTunnel, TunnelId, TunnelName,
+        id::MonotonicAtomicGenerator, quinn_tunnel::QuinnTunnel,
+        registry::memory::InMemoryTunnelRegistry, TunnelId, TunnelName,
       },
     },
     tunnel_source::QuinnListenEndpoint,
@@ -143,25 +144,21 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let modular =
-    Arc::new(ModularDaemon::new(
-      service_registry.clone(),
-      tunnel_registry.clone(),
-      peer_tracker.clone(),
-      router,
-      authentication_handler,
-      tunnel_id_generator,
-      Arc::new(
-        |id: TunnelId,
-         name: TunnelName,
-         attrs: Arc<AuthenticationAttributes>,
-         _tunnel: ArcTunnel<'static>|
-         -> BoxFuture<
-          'static,
-          Result<<InMemoryTunnelRegistry<_> as TunnelRegistry>::Record, _>,
-        > { futures::future::ready(Ok((id, name, attrs))).boxed() },
-      ),
-    ));
+  let record_constructor = Arc::new(
+    |args: RecordConstructorArgs| -> RecordConstructorResult<_, _> {
+      let attrs = Arc::new(args.attributes);
+      futures::future::ready(Ok(((args.id, args.name, attrs.clone()), attrs))).boxed()
+    },
+  ) as Arc<dyn RecordConstructor<_, _>>;
+  let modular = Arc::new(ModularDaemon::new(
+    service_registry.clone(),
+    tunnel_registry.clone(),
+    peer_tracker.clone(),
+    router,
+    authentication_handler,
+    tunnel_id_generator,
+    record_constructor,
+  ));
 
   {
     let demand_proxy_service = Arc::new(DemandProxyService::new(

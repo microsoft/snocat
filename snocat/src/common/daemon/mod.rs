@@ -453,6 +453,24 @@ enum RequestProcessingError<ApplicationError> {
   ),
 }
 
+#[non_exhaustive]
+pub struct RecordConstructorArgs {
+  pub id: TunnelId,
+  pub name: TunnelName,
+  pub attributes: AuthenticationAttributes,
+  pub tunnel: ArcTunnel<'static>,
+}
+
+pub type RecordConstructorResult<Record, Error> =
+  BoxFuture<'static, Result<(Record, Arc<AuthenticationAttributes>), Error>>;
+
+pub trait RecordConstructor<Record, Error> = Fn(
+    RecordConstructorArgs,
+  ) -> BoxFuture<'static, Result<(Record, Arc<AuthenticationAttributes>), Error>>
+  + Send
+  + Sync
+  + 'static;
+
 impl<
     ApplicationError: std::fmt::Debug + std::fmt::Display,
     AuthHandlingError: std::fmt::Debug + std::fmt::Display,
@@ -514,15 +532,7 @@ where
   TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + 'static,
   TAuthenticationHandler::Error: Debug + Display + Send + 'static,
-  FConstructRecord: Fn(
-      TunnelId,
-      TunnelName,
-      Arc<AuthenticationAttributes>,
-      ArcTunnel<'static>,
-    ) -> BoxFuture<'static, Result<TTunnelRegistry::Record, TTunnelRegistry::Error>>
-    + Send
-    + Sync
-    + 'static,
+  FConstructRecord: RecordConstructor<TTunnelRegistry::Record, TTunnelRegistry::Error>,
 {
   pub fn new(
     service_registry: Arc<TServiceRegistry>,
@@ -715,7 +725,7 @@ where
           tunnel,
           tunnel_name.clone(),
           self.tunnel_registry.clone(),
-          Arc::new(tunnel_attrs),
+          tunnel_attrs,
           self.record_constructor.clone(),
         )
         .instrument(tracing::debug_span!("naming"))
@@ -895,19 +905,19 @@ where
     tunnel: Arc<TTunnel>,
     tunnel_name: TunnelName,
     tunnel_registry: Arc<TTunnelRegistry>,
-    attributes: Arc<AuthenticationAttributes>,
+    attributes: AuthenticationAttributes,
     record_constructor: Arc<FConstructRecord>,
   ) -> Result<RegisteredTunnel<TTunnel>, TTunnelRegistry::Error>
   where
     TTunnel: Tunnel + 'static,
   {
     let registered_at = (Instant::now(), SystemTime::now());
-    let record = record_constructor(
-      tunnel.id().clone(),
-      tunnel_name.clone(),
-      Arc::clone(&attributes),
-      tunnel.clone() as Arc<_>,
-    )
+    let (record, attributes) = record_constructor(RecordConstructorArgs {
+      id: tunnel.id().clone(),
+      name: tunnel_name.clone(),
+      attributes: attributes,
+      tunnel: tunnel.clone() as Arc<_>,
+    })
     .await?;
     let identifier = tunnel_registry
       .register(tunnel_name.clone(), &record)

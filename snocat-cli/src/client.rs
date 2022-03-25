@@ -7,16 +7,17 @@ use futures::{future::*, *};
 use snocat::{
   common::{
     authentication::{AuthenticationAttributes, SimpleAckAuthenticationHandler},
-    daemon::{ModularDaemon, PeerTracker, PeersView},
+    daemon::{
+      ModularDaemon, PeerTracker, PeersView, RecordConstructor, RecordConstructorArgs,
+      RecordConstructorResult,
+    },
     protocol::{
       negotiation::NegotiationClient,
       proxy_tcp::{DnsTarget, TcpStreamService},
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        id::MonotonicAtomicGenerator,
-        quinn_tunnel::QuinnTunnel,
-        registry::{memory::InMemoryTunnelRegistry, TunnelRegistry},
-        ArcTunnel, TunnelId, TunnelName, TunnelSide, TunnelUplink,
+        id::MonotonicAtomicGenerator, quinn_tunnel::QuinnTunnel,
+        registry::memory::InMemoryTunnelRegistry, TunnelId, TunnelName, TunnelSide, TunnelUplink,
       },
     },
     tunnel_source::DynamicConnectionSet,
@@ -172,25 +173,21 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let modular =
-    Arc::new(ModularDaemon::new(
-      service_registry,
-      tunnel_registry,
-      peer_tracker,
-      router,
-      authentication_handler,
-      tunnel_id_generator,
-      Arc::new(
-        |id: TunnelId,
-         name: TunnelName,
-         attrs: Arc<AuthenticationAttributes>,
-         _tunnel: ArcTunnel<'static>|
-         -> BoxFuture<
-          'static,
-          Result<<InMemoryTunnelRegistry<_> as TunnelRegistry>::Record, _>,
-        > { futures::future::ready(Ok((id, name, attrs))).boxed() },
-      ),
-    ));
+  let record_constructor = Arc::new(
+    |args: RecordConstructorArgs| -> RecordConstructorResult<_, _> {
+      let attrs = Arc::new(args.attributes);
+      futures::future::ready(Ok(((args.id, args.name, attrs.clone()), attrs))).boxed()
+    },
+  ) as Arc<dyn RecordConstructor<_, _>>;
+  let modular = Arc::new(ModularDaemon::new(
+    service_registry,
+    tunnel_registry,
+    peer_tracker,
+    router,
+    authentication_handler,
+    tunnel_id_generator,
+    record_constructor,
+  ));
 
   let endpoint = quinn::Endpoint::client("[::]:0".parse()?)?; // Should this be IPv4 if the server is?
 
