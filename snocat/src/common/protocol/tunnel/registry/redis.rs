@@ -22,7 +22,6 @@ use crate::util::{cancellation::CancellationListener, dropkick::Dropkick};
 ///
 /// Use `..Default::default()` to initialize, as this is
 /// non-exhaustive for when new parameters are added.
-#[non_exhaustive]
 pub struct RedisRegistryConfig {
   /// Time before expiring tunnel name to redis-unique-key mappings
   ///
@@ -30,16 +29,16 @@ pub struct RedisRegistryConfig {
   /// it behaves as if it is null anyway.
   ///
   /// Only durations higher than seconds count
-  tunnel_id_ref_lifetime: Duration,
+  pub tunnel_id_ref_lifetime: Duration,
   /// Time before expiring tunnel entries at redis-unique-key locations
   ///
   /// Only durations higher than seconds count
-  tunnel_entry_lifetime: Duration,
+  pub tunnel_entry_lifetime: Duration,
   /// How often the background thread will attempt to refresh expiry of its items
   ///
   /// If a refresh is attempted and the target is missing, and no current target
   /// exists at the name mapping, it will attempt reregistration.
-  renewal_rate: Duration,
+  pub renewal_rate: Duration,
 }
 
 impl Default for RedisRegistryConfig {
@@ -484,7 +483,6 @@ mod integration_tests {
   }
 
   #[derive(Clone)]
-  #[non_exhaustive]
   struct TestReg<R> {
     pub registry: RedisRegistry<R>,
     pub pool: Arc<DynamicRedisPool>,

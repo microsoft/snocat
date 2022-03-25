@@ -453,7 +453,6 @@ enum RequestProcessingError<ApplicationError> {
   ),
 }
 
-#[non_exhaustive]
 pub struct RecordConstructorArgs {
   pub id: TunnelId,
   pub name: TunnelName,
