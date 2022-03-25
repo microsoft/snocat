@@ -11,6 +11,7 @@ use std::{
 use crate::common::protocol::tunnel::TunnelName;
 
 pub mod cache;
+pub mod mapped;
 pub mod memory;
 #[cfg(feature = "redis-store")]
 pub mod redis;
