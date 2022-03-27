@@ -3,11 +3,11 @@
 use futures::future::BoxFuture;
 use futures::FutureExt;
 
-use super::{AuthenticationAttributes, AuthenticationError, AuthenticationHandler, TunnelInfo};
-use crate::{
-  common::protocol::tunnel::TunnelName,
-  util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
+use super::{
+  AuthenticationAttributes, AuthenticationChannel, AuthenticationError, AuthenticationHandler,
+  TunnelInfo,
 };
+use crate::{common::protocol::tunnel::TunnelName, util::cancellation::CancellationListener};
 
 pub struct NoOpAuthenticationHandler {}
 
@@ -32,7 +32,7 @@ impl AuthenticationHandler for NoOpAuthenticationHandler {
 
   fn authenticate<'a>(
     &'a self,
-    _channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    _channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>

@@ -1,16 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use super::{AuthenticationAttributes, AuthenticationError, AuthenticationHandler, TunnelInfo};
+use super::{
+  AuthenticationAttributes, AuthenticationChannel, AuthenticationError, AuthenticationHandler,
+  TunnelInfo,
+};
 use crate::{
   common::{
     authentication::RemoteAuthenticationError,
     protocol::tunnel::{TunnelName, TunnelSide},
   },
-  util::{cancellation::CancellationListener, tunnel_stream::TunnelStream},
+  util::cancellation::CancellationListener,
 };
 use futures::FutureExt;
 use futures::{future::BoxFuture, TryFutureExt};
-use std::marker::Unpin;
 
 pub struct SimpleAckAuthenticationHandler {}
 
@@ -21,7 +23,7 @@ impl SimpleAckAuthenticationHandler {
 
   fn authenticate_listen_side<'a>(
     &'a self,
-    mut channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<
@@ -71,7 +73,7 @@ impl SimpleAckAuthenticationHandler {
 
   fn authenticate_connecting_side<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     _shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<
@@ -127,7 +129,7 @@ impl AuthenticationHandler for SimpleAckAuthenticationHandler {
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin + 'a>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>

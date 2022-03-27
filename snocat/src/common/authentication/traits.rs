@@ -144,12 +144,14 @@ impl<TInner> From<std::convert::Infallible> for AuthenticationError<TInner> {
 
 pub type AuthenticationAttributes = HashMap<String, Vec<u8>>;
 
+pub type AuthenticationChannel<'a> = dyn TunnelStream + Send + Unpin + 'a;
+
 pub trait AuthenticationHandler: std::fmt::Debug + Send + Sync {
   type Error: Send;
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>;
@@ -182,7 +184,7 @@ where
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
@@ -223,7 +225,7 @@ where
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
@@ -264,7 +266,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Box<T> {
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
@@ -280,7 +282,7 @@ impl<T: AuthenticationHandler + ?Sized> AuthenticationHandler for Arc<T> {
 
   fn authenticate<'a>(
     &'a self,
-    channel: Box<dyn TunnelStream + Send + Unpin>,
+    channel: &'a mut AuthenticationChannel<'a>,
     tunnel_info: TunnelInfo,
     shutdown_notifier: &'a CancellationListener,
   ) -> BoxFuture<'a, Result<(TunnelName, AuthenticationAttributes), AuthenticationError<Self::Error>>>
@@ -372,7 +374,7 @@ where
     let establishment: Result<_, AuthenticationError<_>> = establishment.await;
     let auth_channel = establishment?;
     handler
-      .authenticate(Box::new(auth_channel), tunnel_info, shutdown_notifier)
+      .authenticate(&mut Box::new(auth_channel), tunnel_info, shutdown_notifier)
       .instrument(debug_span!("authenticator"))
       .await
   }
