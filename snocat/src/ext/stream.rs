@@ -51,7 +51,7 @@ mod bound_counter {
     ) {
       let inner_ref: &Arc<()> = &*counter_holder;
       let current_count = Arc::strong_count(inner_ref) - BASELINE_COUNT;
-      let _ = notifier.send(current_count);
+      notifier.send_replace(current_count);
     }
   }
 
