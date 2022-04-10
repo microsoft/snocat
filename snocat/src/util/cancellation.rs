@@ -31,3 +31,11 @@ impl From<CancellationToken> for CancellationListener {
     Self { token }
   }
 }
+
+impl From<&CancellationToken> for CancellationListener {
+  fn from(token: &CancellationToken) -> Self {
+    Self {
+      token: token.clone(),
+    }
+  }
+}

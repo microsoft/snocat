@@ -11,6 +11,7 @@ categories = ["network-programming"]
 include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
+arc-swap = "1.5"
 anyhow = "~1.0.43"
 dashmap = "5.1"
 downcast-rs = "1.2"

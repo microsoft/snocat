@@ -168,7 +168,9 @@ impl<T> DropkickSync for (T, ::tokio::sync::watch::Sender<T>) {
 /// Changes the semantics of a [::tokio_util::sync::CancellationToken] to cancel on drop
 impl DropkickSync for ::tokio_util::sync::CancellationToken {
   fn dropkick(self) {
-    self.cancel()
+    if !self.is_cancelled() {
+      self.cancel()
+    }
   }
 }
 

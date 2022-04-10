@@ -615,14 +615,38 @@ where
         {
           Err(TunnelLifecycleError::AuthenticationRefused) => {
             tracing::info!(id=?tunnel_id, "Tunnel lifetime aborted due to authentication refusal");
+            if let Some(t) = close_handle.upgrade() {
+              // TODO: Determine if remote or local is responsible for the refusal
+              tokio::task::spawn(async move {
+                t.close(tunnel::TunnelCloseReason::AuthenticationFailure {
+                  remote_responsible: None,
+                })
+                .await
+              });
+            }
           }
           Err(e) => {
             tracing::info!(id=?tunnel_id, error=?e, "Tunnel lifetime aborted with error {}", e);
+            if let Some(t) = close_handle.upgrade() {
+              let error_message = e.to_string();
+              tokio::task::spawn(async move {
+                t.close(tunnel::TunnelCloseReason::ApplicationErrorMessage(
+                  Arc::new(error_message) as Arc<_>,
+                ))
+                .await
+              });
+            }
           }
-          Ok(()) => {}
-        }
-        if let Some(t) = close_handle.upgrade() {
-          tokio::task::spawn(async move { t.close().await });
+          Ok(()) => {
+            if let Some(t) = close_handle.upgrade() {
+              tokio::task::spawn(async move {
+                t.close(tunnel::TunnelCloseReason::GracefulExit {
+                  remote_initiated: false,
+                })
+                .await
+              });
+            }
+          }
         }
       }
     });

@@ -24,6 +24,13 @@ pub use self::id::TunnelId;
 pub type BoxedTunnel<'a> = Box<dyn Tunnel + Send + Sync + Unpin + 'a>;
 pub type ArcTunnel<'a> = Arc<dyn Tunnel + Send + Sync + Unpin + 'a>;
 
+pub mod prelude {
+  pub use super::{
+    ArcTunnel, BoxedTunnel, Sided, Tunnel, TunnelActivityMonitoring, TunnelDownlink, TunnelId,
+    TunnelIncoming, TunnelMonitoring, TunnelMonitoringPerChannel, TunnelUplink,
+  };
+}
+
 /// A name for an Snocat tunnel, used to identify its connection in [`TunnelServerEvent`]s.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 #[repr(transparent)]
@@ -106,12 +113,75 @@ impl std::string::ToString for TunnelAddressInfo {
   }
 }
 
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum TunnelCloseReason {
+  #[error(
+    "Tunnel closed gracefully - initiator: {}",
+    if *(.remote_initiated) { "remote" } else { "local" },
+  )]
+  GracefulExit {
+    /// Marks that the remote was or was not the initiator for the exit
+    remote_initiated: bool,
+  },
+  #[error(
+    "Tunnel failed authentication - responsibility: {}",
+    match .remote_responsible {
+      Some(true) => "remote",
+      Some(false) => "local",
+      None => "unknown"
+    },
+  )]
+  AuthenticationFailure {
+    /// Marks that the remote was or was not responsible; None indicates unspecified or unknown.
+    remote_responsible: Option<bool>,
+  },
+  #[error("Tunnel closed due to error: {0}")]
+  Error(
+    #[from]
+    #[source]
+    #[backtrace]
+    TunnelError,
+  ),
+  #[error("Tunnel closed due to application error: {0}")]
+  ApplicationError(
+    #[from]
+    #[source]
+    #[backtrace]
+    Arc<dyn std::error::Error + Send + Sync + 'static>,
+  ),
+  #[error("Tunnel closed due to application error message: {0}")]
+  ApplicationErrorMessage(Arc<String>),
+  #[error("Tunnel closed without indication of reason")]
+  Unspecified,
+}
+
+impl TunnelCloseReason {
+  /// Returns `true` if the tunnel close reason is [`Unspecified`].
+  ///
+  /// [`Unspecified`]: TunnelCloseReason::Unspecified
+  #[must_use]
+  pub fn is_unspecified(&self) -> bool {
+    matches!(self, Self::Unspecified)
+  }
+
+  /// Returns `true` if the tunnel close reason is [`GracefulExit`].
+  ///
+  /// [`GracefulExit`]: TunnelCloseReason::GracefulExit
+  #[must_use]
+  pub fn is_graceful_exit(&self) -> bool {
+    matches!(self, Self::GracefulExit { .. })
+  }
+}
+
 pub trait TunnelMonitoring {
   /// If the tunnel is currently closed on uplink and downlink
-  fn is_closed(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
+  fn is_closed(&self) -> bool;
 
   /// Notifies when the tunnel is closed both in uplink and downlink, and if it was due to an error
-  fn on_closed(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
+  fn on_closed(&'_ self) -> BoxFuture<'static, Arc<TunnelCloseReason>>;
+
+  /// Notifies when authentication has completed, or when the tunnel has been closed
+  fn on_authenticated(&'_ self) -> BoxFuture<'static, Result<TunnelName, Arc<TunnelCloseReason>>>;
 }
 
 pub trait TunnelMonitoringPerChannel: TunnelMonitoring {
@@ -119,13 +189,13 @@ pub trait TunnelMonitoringPerChannel: TunnelMonitoring {
   fn is_closed_uplink(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
 
   /// Notifies when the uplink is closed, and if it was due to an error
-  fn on_closed_uplink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
+  fn on_closed_uplink(&'_ self) -> BoxFuture<'static, Arc<TunnelCloseReason>>;
 
   /// If the tunnel is currently closed on its downlink
   fn is_closed_downlink(&self) -> bool; // May need to be async for implementation practicality and to avoid blocking
 
   /// Notifies when the downlink is closed, and if it was due to an error
-  fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Result<(), TunnelError>>;
+  fn on_closed_downlink(&'_ self) -> BoxFuture<'static, Arc<TunnelCloseReason>>;
 }
 
 pub trait TunnelActivityMonitoring {
@@ -179,12 +249,17 @@ pub trait TunnelActivityMonitoring {
 }
 
 pub trait TunnelControl {
-  fn close<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
-}
+  /// Fails if the tunnel was already marked as closed with a specified reason- returning the reason for that closure,
+  fn close<'a>(
+    &'a self,
+    reason: TunnelCloseReason,
+  ) -> BoxFuture<'a, Result<Arc<TunnelCloseReason>, Arc<TunnelCloseReason>>>;
 
-pub trait TunnelControlPerChannel: TunnelControl {
-  fn close_uplink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
-  fn close_downlink<'a>(&'a self) -> BoxFuture<'a, Result<(), TunnelError>>;
+  /// Marks the tunnel as authenticated; Fails if the tunnel was already closed or marked as authenticated.
+  fn report_authentication_success<'a>(
+    &self,
+    tunnel_name: TunnelName,
+  ) -> BoxFuture<'a, Result<(), Option<Arc<TunnelCloseReason>>>>;
 }
 
 /// Provides access to a shared data structure bound to the object
