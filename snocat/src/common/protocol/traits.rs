@@ -84,6 +84,10 @@ impl<S, E> MappedService<S, E> {
   pub fn into_inner(self) -> S {
     self.inner_service
   }
+
+  pub fn get_inner(&self) -> &S {
+    &self.inner_service
+  }
 }
 
 impl<S, E> Service for MappedService<S, E>
@@ -94,7 +98,7 @@ where
   type Error = E;
 
   fn accepts(&self, addr: &RouteAddress, tunnel: &ArcTunnel) -> bool {
-    Service::accepts(&self.inner_service, addr, tunnel)
+    Service::accepts(self.get_inner(), addr, tunnel)
   }
 
   fn handle<'a>(
@@ -103,7 +107,7 @@ where
     stream: Box<dyn TunnelStream + Send + 'static>,
     tunnel: ArcTunnel,
   ) -> BoxFuture<'a, Result<(), ServiceError<Self::Error>>> {
-    Service::handle(self, addr, stream, tunnel)
+    Service::handle(self.get_inner(), addr, stream, tunnel)
       .map_err(|e| ServiceError::err_into(e))
       .boxed()
   }
