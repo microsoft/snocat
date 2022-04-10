@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-#![forbid(dead_code, unused_imports)]
+#![deny(dead_code, unused_imports)]
+
+use std::sync::{Arc, Mutex};
 
 /// A trait describing the concept of "dropkicking", in an allusion to percusive maintenance.
 ///
@@ -55,6 +57,20 @@ where
       .expect("Dropkick dropped before countered?");
     drop(self);
     value
+  }
+}
+
+impl<T> Dropkick<Arc<Mutex<Option<T>>>>
+where
+  T: DropkickSync,
+{
+  /// Takes the content out of the mutex, preventing [DropkickSync::drop_kick] from being called on its content within an Arc
+  pub fn counter_take_mutex(&self) -> Option<T> {
+    self
+      .inner
+      .as_ref()
+      .and_then(|inner| inner.lock().ok())
+      .and_then(|mut inner| inner.take())
   }
 }
 
@@ -181,6 +197,42 @@ where
 {
   fn dropkick(self) {
     (self)();
+  }
+}
+
+/// Options drop when set, and clear their contents
+impl<T> DropkickSync for Option<T>
+where
+  T: DropkickSync,
+{
+  fn dropkick(mut self) {
+    if let Some(inner) = self.take() {
+      DropkickSync::dropkick(inner);
+    }
+  }
+}
+
+/// Mutexes drop their contents by locking
+impl<T> DropkickSync for std::sync::Mutex<T>
+where
+  T: DropkickSync,
+{
+  fn dropkick(self) {
+    if let Ok(lock) = self.into_inner() {
+      DropkickSync::dropkick(lock);
+    }
+  }
+}
+
+/// Arc-Mut-Opts drop their contents by locking, emptying the Option, and dropping it
+impl<T> DropkickSync for std::sync::Arc<std::sync::Mutex<Option<T>>>
+where
+  T: DropkickSync,
+{
+  fn dropkick(self) {
+    if let Some(inner) = self.lock().ok().map(|mut x| x.take()) {
+      DropkickSync::dropkick(inner);
+    }
   }
 }
 
