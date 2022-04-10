@@ -262,6 +262,26 @@ pub trait TunnelControl {
   ) -> BoxFuture<'a, Result<(), Option<Arc<TunnelCloseReason>>>>;
 }
 
+impl<T> TunnelControl for T
+where
+  T: Deref + Send + Sync + Unpin,
+  <T as Deref>::Target: TunnelControl,
+{
+  fn close<'a>(
+    &'a self,
+    reason: TunnelCloseReason,
+  ) -> BoxFuture<'a, Result<Arc<TunnelCloseReason>, Arc<TunnelCloseReason>>> {
+    self.deref().close(reason)
+  }
+
+  fn report_authentication_success<'a>(
+    &self,
+    tunnel_name: TunnelName,
+  ) -> BoxFuture<'a, Result<(), Option<Arc<TunnelCloseReason>>>> {
+    self.deref().report_authentication_success(tunnel_name)
+  }
+}
+
 /// Provides access to a shared data structure bound to the object
 ///
 /// Lifetimes of the baggage and its children are bound to that of the parent

@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-
 use authentication::perform_authentication;
 use dashmap::DashMap;
 use futures::{
@@ -10,7 +9,7 @@ use futures::{
 use std::{
   fmt::{Debug, Display},
   hash::Hash,
-  sync::{Arc, Weak},
+  sync::{Arc, Mutex, Weak},
   time::{Instant, SystemTime},
 };
 use tokio::sync::broadcast::{channel as event_channel, Sender as Broadcaster};
@@ -219,7 +218,7 @@ impl PeerTracker {
   }
 }
 
-struct RegisteredTunnelInner<TRegistry: ?Sized, TRecordIdent> {
+struct DeregisteringTunnelWrapper<TRegistry: ?Sized, TRecordIdent> {
   registry: Arc<TRegistry>,
   record_identifier: TRecordIdent,
   peers: PeersView,
@@ -227,16 +226,19 @@ struct RegisteredTunnelInner<TRegistry: ?Sized, TRecordIdent> {
   disconnection_broadcaster: Arc<Broadcaster<TunnelDisconnectedEvent>>,
 }
 
-impl<TRegistry: ?Sized> RegisteredTunnelInner<TRegistry, <TRegistry as TunnelRegistry>::Identifier>
+impl<TRegistry: ?Sized>
+  DeregisteringTunnelWrapper<TRegistry, <TRegistry as TunnelRegistry>::Identifier>
 where
   TRegistry: TunnelRegistry,
 {
-  pub fn into_deregistration_dropkick(self) -> Dropkick<Box<dyn FnOnce() + Send + Sync + 'static>> {
-    Dropkick::callback(Box::new(move || {
+  pub fn into_deregistration_dropkick(
+    self,
+  ) -> Dropkick<Arc<Mutex<Option<Box<dyn FnOnce() + Send + Sync + 'static>>>>> {
+    Dropkick::new(Arc::new(Mutex::new(Some(Box::new(move || {
       tokio::task::spawn(async move {
         self.deregister_identifier().await;
       });
-    }))
+    })))))
   }
 
   async fn deregister_identifier(self) {
@@ -279,22 +281,22 @@ where
   }
 }
 
-struct RegisteredTunnel<TTunnel> {
+struct WrappedTunnel<TTunnel> {
   tunnel: Arc<TTunnel>,
-  deregistration_callback: Arc<Dropkick<Box<dyn FnOnce() + Send + Sync + 'static>>>,
+  drop_callback: Arc<Dropkick<Arc<Mutex<Option<Box<dyn FnOnce() + Send + Sync + 'static>>>>>>,
 }
 
-impl<TTunnel> Clone for RegisteredTunnel<TTunnel> {
+impl<TTunnel> Clone for WrappedTunnel<TTunnel> {
   fn clone(&self) -> Self {
     Self {
       tunnel: Arc::clone(&self.tunnel),
-      deregistration_callback: Arc::clone(&self.deregistration_callback),
+      drop_callback: Arc::clone(&self.drop_callback),
     }
   }
 }
 
-impl<TTunnel> RegisteredTunnel<TTunnel> {
-  pub fn new<TRegistry: ?Sized, TRecordIdent>(
+impl<TTunnel> WrappedTunnel<TTunnel> {
+  pub fn new_deregistering<TRegistry: ?Sized, TRecordIdent>(
     tunnel: Arc<TTunnel>,
     registry: Arc<TRegistry>,
     record_identifier: TRecordIdent,
@@ -305,7 +307,7 @@ impl<TTunnel> RegisteredTunnel<TTunnel> {
   where
     TRegistry: TunnelRegistry<Identifier = TRecordIdent>,
   {
-    let inner = RegisteredTunnelInner {
+    let inner = DeregisteringTunnelWrapper {
       registry,
       record_identifier,
       peers,
@@ -314,18 +316,51 @@ impl<TTunnel> RegisteredTunnel<TTunnel> {
     };
     Self {
       tunnel: tunnel,
-      deregistration_callback: Arc::new(inner.into_deregistration_dropkick()),
+      drop_callback: Arc::new(inner.into_deregistration_dropkick()),
     }
+  }
+
+  pub fn new_registration_failure_closing(tunnel: Arc<TTunnel>) -> Self
+  where
+    TTunnel: Send + Sync + TunnelControl + 'static,
+  {
+    let target = tunnel.clone();
+    Self {
+      tunnel,
+      drop_callback: Arc::new(Dropkick::new(Arc::new(Mutex::new(Some(Box::new(
+        move || {
+          tokio::task::spawn(async move {
+            TunnelControl::close(
+              &target,
+              tunnel::TunnelCloseReason::AuthenticationFailure {
+                remote_responsible: None,
+              },
+            )
+            .await
+          });
+        },
+      )))))),
+    }
+  }
+
+  /// Removes the tunnel from the wrapper and prevents the drop callback from executing
+  pub fn extract_inner(self) -> Arc<TTunnel> {
+    self.drop_callback.counter_take_mutex();
+    self.tunnel
+  }
+
+  pub fn as_inner(&self) -> &Arc<TTunnel> {
+    &self.tunnel
   }
 }
 
-impl<TTunnel> From<RegisteredTunnel<TTunnel>> for Arc<TTunnel> {
-  fn from(v: RegisteredTunnel<TTunnel>) -> Self {
+impl<TTunnel> From<WrappedTunnel<TTunnel>> for Arc<TTunnel> {
+  fn from(v: WrappedTunnel<TTunnel>) -> Self {
     v.tunnel
   }
 }
 
-impl<TTunnel> Debug for RegisteredTunnel<TTunnel>
+impl<TTunnel> Debug for WrappedTunnel<TTunnel>
 where
   TTunnel: Debug,
 {
@@ -334,7 +369,7 @@ where
   }
 }
 
-impl<TTunnel> std::ops::Deref for RegisteredTunnel<TTunnel> {
+impl<TTunnel> std::ops::Deref for WrappedTunnel<TTunnel> {
   type Target = TTunnel;
 
   fn deref(&self) -> &Self::Target {
@@ -724,11 +759,12 @@ where
     TunnelLifecycleError<anyhow::Error, TAuthenticationHandler::Error, TTunnelRegistry::Error>,
   >
   where
-    TTunnel: Tunnel + 'static,
+    TTunnel: Tunnel + TunnelControl + 'static,
   {
+    let tunnel = WrappedTunnel::new_registration_failure_closing(tunnel);
     // Send tunnel_connected event once the tunnel is successfully registered to its ID
     self.fire_tunnel_connected(TunnelConnectedEvent {
-      tunnel: tunnel.clone() as Arc<_>,
+      tunnel: tunnel.tunnel.clone() as Arc<_>,
     });
 
     // Authenticate connections - Each connection will be piped into the authenticator,
@@ -742,7 +778,7 @@ where
     }?;
 
     // Tunnel naming - The tunnel registry is notified of the authenticator-provided tunnel name
-    let tunnel: RegisteredTunnel<TTunnel> = {
+    let tunnel: WrappedTunnel<TTunnel> = {
       self
         .register_tunnel(
           tunnel,
@@ -767,7 +803,7 @@ where
   #[tracing::instrument(err, skip(self, tunnel, shutdown), fields(name=?tunnel_name, id=?tunnel.id()))]
   async fn registered_tunnel_lifecycle<TTunnel>(
     self: Arc<Self>,
-    tunnel: RegisteredTunnel<TTunnel>,
+    tunnel: WrappedTunnel<TTunnel>,
     tunnel_name: TunnelName,
     shutdown: CancellationListener,
   ) -> Result<
@@ -925,21 +961,21 @@ where
 
   async fn register_tunnel<TTunnel>(
     &self,
-    tunnel: Arc<TTunnel>,
+    tunnel: WrappedTunnel<TTunnel>,
     tunnel_name: TunnelName,
     tunnel_registry: Arc<TTunnelRegistry>,
     attributes: AuthenticationAttributes,
     record_constructor: Arc<FConstructRecord>,
-  ) -> Result<RegisteredTunnel<TTunnel>, TTunnelRegistry::Error>
+  ) -> Result<WrappedTunnel<TTunnel>, TTunnelRegistry::Error>
   where
-    TTunnel: Tunnel + 'static,
+    TTunnel: Tunnel + TunnelControl + 'static,
   {
     let registered_at = (Instant::now(), SystemTime::now());
     let (record, attributes) = record_constructor(RecordConstructorArgs {
       id: tunnel.id().clone(),
       name: tunnel_name.clone(),
       attributes: attributes,
-      tunnel: tunnel.clone() as Arc<_>,
+      tunnel: tunnel.as_inner().clone() as Arc<_>,
     })
     .await?;
     let identifier = tunnel_registry
@@ -952,19 +988,26 @@ where
       name: tunnel_name.clone(),
       registered_at,
       attributes: Arc::clone(&attributes),
-      tunnel: tunnel.clone() as Arc<_>,
+      tunnel: tunnel.as_inner().clone() as Arc<_>,
     });
     self.peers.insert(&peer_record);
 
-    // Send tunnel_authenticated event for the newly-named tunnel, once the registry is aware of it
-    self.fire_tunnel_authenticated(TunnelAuthenticatedEvent {
-      tunnel: tunnel.clone() as Arc<_>,
-      name: tunnel_name,
-      attributes: attributes,
-    });
+    // Inform the tunnel of its new registration status, once the registry is aware of it
+    if TunnelControl::report_authentication_success(&tunnel, tunnel_name.clone())
+      .await
+      .is_ok()
+    {
+      // Send Daemon-level tunnel_authenticated event for the newly-named tunnel,
+      // but only if the tunnel was not reported as closed during the authentication event firing.
+      self.fire_tunnel_authenticated(TunnelAuthenticatedEvent {
+        tunnel: tunnel.as_inner().clone() as Arc<_>,
+        name: tunnel_name,
+        attributes: attributes,
+      });
+    }
 
-    Ok(RegisteredTunnel::new(
-      tunnel,
+    Ok(WrappedTunnel::new_deregistering(
+      tunnel.extract_inner().clone(),
       tunnel_registry,
       identifier,
       self.peers(),
