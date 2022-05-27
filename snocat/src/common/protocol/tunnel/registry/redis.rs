@@ -105,7 +105,12 @@ where
 {
   let key = key.into();
   match client.getdel(&key).await {
-    Err(e) if e.kind() == &fred::error::RedisErrorKind::InvalidCommand => {
+    Err(e)
+      if e.kind() == &fred::error::RedisErrorKind::InvalidCommand
+        || (e.kind() == &fred::error::RedisErrorKind::Unknown
+          && e.details().contains("GETDEL")
+          && e.details().contains("unknown command")) =>
+    {
       let res = client.get(&key).await?;
       client.del(key).await?;
       Ok(res)
