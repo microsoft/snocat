@@ -93,6 +93,27 @@ impl<R> RedisRegistry<R> {
   }
 }
 
+/// Runs GETDEL if the command is valid, and falls back to GET then DEL otherwise.
+/// Only invokes DEL upon successful GET.
+async fn getdel_or_get_del<R, K>(
+  client: &fred::client::RedisClient,
+  key: K,
+) -> Result<R, RedisError>
+where
+  R: RedisResponse,
+  K: Into<RedisKey>,
+{
+  let key = key.into();
+  match client.getdel(&key).await {
+    Err(e) if e.kind() == &fred::error::RedisErrorKind::InvalidCommand => {
+      let res = client.get(&key).await?;
+      client.del(key).await?;
+      Ok(res)
+    }
+    other => other,
+  }
+}
+
 impl<R> RedisRegistry<R>
 where
   R: 'static,
@@ -214,7 +235,7 @@ where
         // Cancel the renewer if it is still allocated
         owned_renewer.upgrade().map(|v| v.cancel());
         // The remote key is ours; delete it while getting it, if it's there at all
-        conn.getdel(Self::tunnel_rid_key(rid.as_str())).await?
+        getdel_or_get_del(&conn, Self::tunnel_rid_key(rid.as_str())).await?
       } else {
         // Read the value at the RID, if present, otherwise act as if the ref-key didn't exist
         conn.get(Self::tunnel_rid_key(rid.as_str())).await?
@@ -427,7 +448,8 @@ where
     async move {
       let conn = Self::get_pool_connection(pool).await?;
       // Read the reference key, if present, mapping tunnel-name to its RID
-      let rid: Option<String> = conn.getdel(Self::tunnel_key_for(&tunnel_name)).await?;
+      let rid: Option<String> =
+        getdel_or_get_del(&conn, Self::tunnel_key_for(&tunnel_name)).await?;
       // `let-else` can't come soon enough
       // https://rust-lang.github.io/rfcs/3137-let-else.html
       let rid: String = if let Some(rid) = rid {
