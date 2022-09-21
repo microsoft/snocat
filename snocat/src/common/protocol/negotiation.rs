@@ -238,7 +238,7 @@ where
   where
     R: 'stream,
     S: TunnelStream + Send + 'stream,
-    for<'a> &'a mut S: TunnelStream + Send + 'a,
+    for<'a> &'a mut S: TunnelStream + Send,
     TTunnel: Tunnel + 'static,
   {
     const CURRENT_PROTOCOL_VERSION: u8 = 0u8;
