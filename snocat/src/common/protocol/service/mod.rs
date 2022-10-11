@@ -405,19 +405,19 @@ pub enum RoutingError<RouterError> {
   #[error("The tunnel failed to provide a link")]
   LinkOpenFailure(
     #[from]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     super::tunnel::TunnelError,
   ),
   #[error("{0}")]
   NegotiationError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     NegotiationError<RouterError>,
   ),
   #[error("Routing error: {0:?}")]
   RouterError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     RouterError,
   ),
 }

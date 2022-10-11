@@ -134,8 +134,9 @@ enum TcpConnectError {
 pub enum TargetResolutionError {
   #[error("DNS resolution failure")]
   IOError(
-    #[from] std::io::Error,
-    #[backtrace] std::backtrace::Backtrace,
+    #[from]
+    #[cfg_attr(feature = "backtrace", backtrace)]
+    std::io::Error,
   ),
 }
 
@@ -339,9 +340,21 @@ pub enum TcpStreamTargetFormatError {
   #[error("No supported address type matches the provided format")]
   NoMatchingFormat,
   #[error("Port specification invalid")]
-  InvalidPort(#[from] std::num::ParseIntError, std::backtrace::Backtrace),
+  InvalidPort {
+    #[from]
+    inner: std::num::ParseIntError,
+    #[cfg(feature = "backtrace")]
+    #[cfg_attr(feature = "backtrace", backtrace)]
+    backtrace: std::backtrace::Backtrace,
+  },
   #[error("IP format invalid")]
-  InvalidIP(#[from] std::net::AddrParseError, std::backtrace::Backtrace),
+  InvalidIP {
+    #[from]
+    inner: std::net::AddrParseError,
+    #[cfg(feature = "backtrace")]
+    #[cfg_attr(feature = "backtrace", backtrace)]
+    backtrace: std::backtrace::Backtrace,
+  },
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -5,7 +5,7 @@ use futures::{
   future::{BoxFuture, FutureExt},
   TryFutureExt,
 };
-use std::{backtrace::Backtrace, fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use super::{tunnel::ArcTunnel, RouteAddress};
 
@@ -21,8 +21,9 @@ pub enum ServiceError<InternalError> {
   AddressError,
   #[error("An internal dependency failed")]
   DependencyFailure,
+  #[cfg(feature = "backtrace")]
   #[error("An internal dependency failed with a backtrace")]
-  BacktraceDependencyFailure(Backtrace),
+  BacktraceDependencyFailure(std::backtrace::Backtrace),
   #[error("Internal service error")]
   InternalError(InternalError),
   #[error(transparent)]
@@ -40,6 +41,7 @@ impl<InternalError> ServiceError<InternalError> {
       ServiceError::IllegalResponse => ServiceError::IllegalResponse,
       ServiceError::AddressError => ServiceError::AddressError,
       ServiceError::DependencyFailure => ServiceError::DependencyFailure,
+      #[cfg(feature = "backtrace")]
       ServiceError::BacktraceDependencyFailure(e) => ServiceError::BacktraceDependencyFailure(e),
       ServiceError::InternalError(e) => ServiceError::InternalError(f(e)),
       ServiceError::InternalFailure(e) => ServiceError::InternalFailure(e),

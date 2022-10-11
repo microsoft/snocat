@@ -43,6 +43,7 @@ crate-type = ["rlib", "cdylib"]
 default = ["core"]
 core = []
 redis-store = ["fred"]
+backtrace = ["default", "core"]
 
 full = ["core", "redis-store"]
 

@@ -139,14 +139,14 @@ pub enum TunnelCloseReason {
   Error(
     #[from]
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     TunnelError,
   ),
   #[error("Tunnel closed due to application error: {0}")]
   ApplicationError(
     #[from]
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     Arc<dyn std::error::Error + Send + Sync + 'static>,
   ),
   #[error("Tunnel closed due to application error message: {0}")]

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 #![cfg_attr(test, feature(assert_matches))]
-#![feature(backtrace)]
+#![cfg_attr(feature = "backtrace", feature(backtrace))]
 #![feature(generic_associated_types)]
 #![feature(trait_alias)]
 #![feature(try_blocks)]

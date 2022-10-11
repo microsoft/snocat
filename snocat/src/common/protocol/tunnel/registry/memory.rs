@@ -32,7 +32,7 @@ pub enum InMemoryTunnelRegistryError {
   #[error("Registry task failed to rejoin to async pool")]
   JoinError(
     #[from]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     JoinError,
   ),
 }

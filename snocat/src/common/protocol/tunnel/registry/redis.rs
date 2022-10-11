@@ -267,13 +267,13 @@ pub enum RedisRegistryError {
   #[error("Registry redis error: {0}")]
   Redis(
     #[from]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     RedisError,
   ),
   #[error("Registry serialization error: {0}")]
   SerializationError(
     #[from]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     serde_json::Error,
   ),
   #[error("Could not find a non-conflicting key after {num_attempts} attempts")]

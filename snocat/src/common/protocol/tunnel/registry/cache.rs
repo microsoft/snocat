@@ -37,13 +37,13 @@ pub enum WriteThroughCacheError<A, B> {
   #[error("Cache error: {0}")]
   CacheError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     A,
   ),
   #[error("Cached target error: {0}")]
   TargetError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     B,
   ),
 }

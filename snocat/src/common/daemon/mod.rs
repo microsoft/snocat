@@ -445,13 +445,13 @@ enum TunnelLifecycleError<ApplicationError, AuthHandlingError, RegistryError> {
   #[error("Tunnel registration error")]
   RegistrationError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     RegistryError,
   ),
   #[error("Request Processing Error: {0}")]
   RequestProcessingError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     RequestProcessingError<ApplicationError>,
   ),
   #[error("Authentication refused to remote by either breach of protocol or invalid/inadequate credentials")]
@@ -459,13 +459,13 @@ enum TunnelLifecycleError<ApplicationError, AuthHandlingError, RegistryError> {
   #[error("Authentication Handling Error: {0}")]
   AuthenticationHandlingError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     AuthenticationHandlingError<AuthHandlingError>,
   ),
   #[error("Application error encountered in tunnel lifecycle: {0:?}")]
   ApplicationError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     ApplicationError,
   ),
 }
@@ -477,13 +477,13 @@ enum RequestProcessingError<ApplicationError> {
   #[error("Tunnel error encountered: {0}")]
   TunnelError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     TunnelError,
   ),
   #[error("Fatal application error")]
   ApplicationError(
     #[source]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     ApplicationError,
   ),
 }

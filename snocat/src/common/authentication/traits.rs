@@ -33,7 +33,7 @@ pub enum AuthenticationHandlingError<TInner> {
   #[error("Authentication thread join failed")]
   JoinError(
     #[from]
-    #[backtrace]
+    #[cfg_attr(feature = "backtrace", backtrace)]
     tokio::task::JoinError,
   ),
 }
