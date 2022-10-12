@@ -1328,7 +1328,7 @@ checksum = "f2dd574626839106c320a323308629dcb1acfc96e32a8cba364ddc61ac23ee83"
 
 [[package]]
 name = "snocat"
-version = "0.6.0-alpha.11"
+version = "0.6.0-alpha.12"
 dependencies = [
  "anyhow",
  "arc-swap",
