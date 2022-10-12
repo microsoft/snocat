@@ -408,10 +408,7 @@ impl From<quinn::ConnectionError> for TunnelError {
 /// any tunnel (including itself) beyond the scope of a live Request. Module
 /// handles (`TunnelRegistry`, `ServiceRegistry`, etc) must all be WeakRefs.
 impl<B> Baggage for QuinnTunnel<B> {
-  type Bag<'a>
-  where
-    B: 'a,
-  = Arc<B>;
+  type Bag<'a> = Arc<B> where B: 'a;
 
   fn bag<'a>(&'a self) -> Self::Bag<'a> {
     self.baggage.clone()

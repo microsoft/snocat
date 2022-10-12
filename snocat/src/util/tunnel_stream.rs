@@ -67,19 +67,19 @@ impl AsyncWrite for QuinnTunnelStream {
   ) -> Poll<Result<usize, IOError>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
-    AsyncWrite::poll_write(Pin::new(&mut ref_stream), cx, buf)
+    AsyncWrite::poll_write(Pin::new(&mut ref_stream.0), cx, buf)
   }
 
   fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
-    AsyncWrite::poll_flush(Pin::new(&mut ref_stream), cx)
+    AsyncWrite::poll_flush(Pin::new(&mut ref_stream.0), cx)
   }
 
   fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
-    AsyncWrite::poll_shutdown(Pin::new(&mut ref_stream), cx)
+    AsyncWrite::poll_shutdown(Pin::new(&mut ref_stream.0), cx)
   }
 }
 
@@ -91,7 +91,7 @@ impl AsyncRead for QuinnTunnelRefStream<'_> {
   ) -> Poll<futures::io::Result<()>> {
     let parent_ref = Pin::into_inner(self);
     let mut ref_stream = QuinnTunnelRefStream::new(&mut parent_ref.0, &mut parent_ref.1);
-    AsyncRead::poll_read(Pin::new(&mut ref_stream), cx, buf)
+    AsyncRead::poll_read(Pin::new(&mut ref_stream.1), cx, buf)
   }
 }
 
