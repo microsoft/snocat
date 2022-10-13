@@ -11,22 +11,22 @@ categories = ["network-programming", "command-line-utilities"]
 include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 
 [dependencies]
-snocat = { version= "^0.6.0-alpha.12" }
+snocat = { version = "^0.6.0-alpha.12", path = "../snocat" }
 anyhow = "~1.0.43"
 downcast-rs = "1.2"
 clap = "3.1"
 futures = "0.3.21"
 gen-z = "0.1"
 log = "0.4"
-quinn = "0.8"
+quinn = "~0.8.5"
 rustls = "0.20"
-rustls-native-certs = "0.6.1"
-rustls-pemfile = "0.3"
-rcgen = "0.9"
-thiserror = "1.0.30"
-tracing = "0.1.31"
+rustls-native-certs = "~0.6.2"
+rustls-pemfile = "~1.0.1"
+rcgen = "0.10.0"
+thiserror = "~1.0.37"
+tracing = "0.1.37"
 tracing-futures = "0.2.5"
-tracing-subscriber = { version = "0.3.9", features=["env-filter"] }
-tokio = { version = "1.17", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3.16", features=["env-filter"] }
+tokio = { version = "~1.21", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }

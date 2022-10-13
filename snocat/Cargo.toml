@@ -13,28 +13,28 @@ include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*", "*.md"]
 [dependencies]
 arc-swap = "1.5"
 anyhow = "~1.0.43"
-dashmap = "5.1"
+dashmap = "5.4"
 downcast-rs = "1.2"
 fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
 futures = "0.3.21"
 gen-z = "0.1"
 log = "0.4"
-quinn = "0.8"
+quinn = "~0.8.5"
 rustls = "0.20"
-rustls-pemfile = "0.3"
+rustls-pemfile = "~1.0.1"
 serde = { version = "1.0.128", features=["derive"] }
 serde_json = "~1.0.66"
 thiserror = "1.0.37"
-tracing = "0.1.31"
+tracing = "0.1.37"
 tracing-futures = "0.2.5"
-tracing-subscriber = { version = "0.3.9", features=["env-filter"] }
-tokio = { version = "1.17", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tokio = { version = "~1.21", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
-uuid = { version = "0.8", features=["v4", "v5", "serde"] }
+uuid = { version = "~1.2.1", features=["v4", "v5", "serde"] }
 
 [dev-dependencies]
 mockall = { version = "0.11", features=["nightly"] }
+tracing-subscriber = { version = "0.3.16", features=["env-filter"] }
 
 [lib]
 crate-type = ["rlib", "cdylib"]
