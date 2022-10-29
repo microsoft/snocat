@@ -7,6 +7,8 @@ following the release of version 1.0.0.
 
 ## [Unreleased] - ReleaseDate
 
+## [0.7.0] - 2022-10-29
+
 ### Hybrid Eventually-Consistent Tunnel Repositories (0.6.0-alpha.1)
 Tunnels are now considered "snocat tunnels" immediately after connection,
 and their metadata is now an immutable `HashMap<String, Vec<u8>>`.
@@ -162,7 +164,8 @@ Add crate repository metadata
 Initial release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/Microsoft/snocat/compare/snocat-v0.5.0-alpha.6...HEAD
+[Unreleased]: https://github.com/Microsoft/snocat/compare/snocat-v0.7.0...HEAD
+[0.7.0]: https://github.com/Microsoft/snocat/compare/snocat-v0.5.0-alpha.6...snocat-v0.7.0
 [0.5.0-alpha.6]: https://github.com/Microsoft/snocat/compare/snocat-v0.1.2...snocat-v0.5.0-alpha.6
 [0.1.2]: https://github.com/Microsoft/snocat/compare/v0.1.1...snocat-v0.1.2
 [0.1.1]: https://github.com/microsoft/snocat/compare/855fc4beacf4f568a08e848193fba65e6e840fd1...v0.1.1
