@@ -27,7 +27,7 @@ serde_json = "~1.0.66"
 thiserror = "1.0.37"
 tracing = "0.1.37"
 tracing-futures = "0.2.5"
-tokio = { version = "~1.21", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tokio = { version = "~1.23", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
 uuid = { version = "~1.2.1", features=["v4", "v5", "serde"] }
