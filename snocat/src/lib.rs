@@ -4,6 +4,7 @@
 #![feature(generic_associated_types)]
 #![feature(trait_alias)]
 #![feature(try_blocks)]
+#![feature(type_alias_impl_trait)]
 #![feature(type_ascription)]
 // Only enable backtrace support when the feature is specified
 // All usages of backtrace functionality are gated behind this.
