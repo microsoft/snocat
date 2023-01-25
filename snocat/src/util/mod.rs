@@ -208,7 +208,6 @@ mod tests {
   /// Use this only for near-instantaneous behaviours. This helper gives
   /// extra time for cases of a CPU-overloaded build/test machine,
   /// but tests should not contain a time component.
-  #[track_caller]
   async fn async_test_timeout_panic<Fut: TryFuture>(fut: Fut) -> Fut::Ok
   where
     Fut::Error: std::fmt::Debug + 'static,
