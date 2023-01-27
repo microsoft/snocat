@@ -1,11 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
-use std::sync::Arc;
-
-use futures::{
-  future::{BoxFuture, Future, FutureExt},
-  stream::{StreamExt, TryForEachConcurrent, TryStream, TryStreamExt},
-};
 
 mod bound_counter {
   use crate::util::dropkick::{Dropkick, DropkickSync};
@@ -63,46 +57,80 @@ mod bound_counter {
   }
 }
 
-pub trait StreamExtExt: StreamExt {
-  /// Monitors the number of outstanding futures being run concurrently
-  fn try_for_each_concurrent_monitored<'f, Fut, F>(
-    self,
-    limit: impl Into<Option<usize>>,
-    updater: tokio::sync::watch::Sender<usize>,
-    f: F,
-  ) -> TryForEachConcurrent<
-    Self,
-    BoxFuture<'f, Result<(), Self::Error>>,
-    Box<dyn (FnMut(Self::Ok) -> BoxFuture<'f, Result<(), Self::Error>>) + Send + Sync + 'f>,
-  >
-  where
-    Self: TryStreamExt + Send,
-    <Self as TryStream>::Ok: Send + 'f,
-    <Self as TryStream>::Error: Send + 'f,
-    F: (FnMut(Self::Ok) -> Fut) + Send + Sync + 'f,
-    Fut: Future<Output = Result<(), Self::Error>> + Send + 'f,
-    Self: Sized,
-  {
-    let mut f = f;
-    let (updater, counter_holder) = (Arc::new(updater), Arc::new(Arc::new(())));
-    self.try_for_each_concurrent(
-      limit,
-      Box::new(move |ok| {
-        let bound_counter = bound_counter::BoundCounter::new(&updater, &counter_holder);
-        let fut = f(ok);
-        async move {
-          let bound_counter = bound_counter;
-          let res = fut.await;
-          drop(bound_counter);
-          res
-        }
-        .boxed()
-      }),
-    )
+mod stream_ext_ext {
+  use std::sync::Arc;
+
+  use ::futures::{
+    future::{BoxFuture, Future, FutureExt},
+    stream::{StreamExt, TryForEachConcurrent, TryStream, TryStreamExt},
+  };
+  pub trait StreamExtExt: StreamExt + private::Sealed {
+    // TODO: Replace with https://docs.rs/futures/latest/futures/stream/struct.FuturesUnordered.html#method.len
+    // TODO: Notify subscribers of changes when `push` or `next` return; "pull" by polling on Next or the upstream future.
+    // TODO: The above eliminates the need for needlessly-complex [BoundCounter] trackers
+    /// Monitors the number of outstanding futures being run concurrently
+    fn try_for_each_concurrent_monitored<'f, Fut, F>(
+      self,
+      limit: impl Into<Option<usize>>,
+      updater: tokio::sync::watch::Sender<usize>,
+      f: F,
+    ) -> TryForEachConcurrent<
+      Self,
+      BoxFuture<'f, Result<(), Self::Error>>,
+      Box<dyn (FnMut(Self::Ok) -> BoxFuture<'f, Result<(), Self::Error>>) + Send + Sync + 'f>,
+    >
+    where
+      Self: TryStreamExt + Send,
+      <Self as TryStream>::Ok: Send + 'f,
+      <Self as TryStream>::Error: Send + 'f,
+      F: (FnMut(Self::Ok) -> Fut) + Send + Sync + 'f,
+      Fut: Future<Output = Result<(), Self::Error>> + Send + 'f,
+      Self: Sized,
+    {
+      let mut f = f;
+      let (updater, counter_holder) = (Arc::new(updater), Arc::new(Arc::new(())));
+      self.try_for_each_concurrent(
+        limit,
+        Box::new(move |ok| {
+          let bound_counter = super::bound_counter::BoundCounter::new(&updater, &counter_holder);
+          let fut = f(ok);
+          async move {
+            let bound_counter = bound_counter;
+            let res = fut.await;
+            drop(bound_counter);
+            res
+          }
+          .boxed()
+        }),
+      )
+    }
+  }
+
+  impl<S: ?Sized + StreamExt> StreamExtExt for S {}
+
+  mod private {
+    pub trait Sealed {}
+
+    impl<S: ?Sized + ::futures::stream::StreamExt> Sealed for S {}
   }
 }
 
-impl<Fut: ?Sized + StreamExt> StreamExtExt for Fut {}
+pub use stream_ext_ext::StreamExtExt;
+
+mod try_stream_ext_ext {
+  use ::futures::stream::TryStreamExt;
+  pub trait TryStreamExtExt: TryStreamExt + private::Sealed {}
+  impl<S: ?Sized + TryStreamExt> TryStreamExtExt for S {}
+
+  mod private {
+    use super::TryStreamExt;
+    pub trait Sealed {}
+
+    impl<S: ?Sized + TryStreamExt> Sealed for S {}
+  }
+}
+
+pub use try_stream_ext_ext::TryStreamExtExt;
 
 #[cfg(test)]
 mod tests {
