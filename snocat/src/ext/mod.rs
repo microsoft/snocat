@@ -3,4 +3,9 @@
 pub mod future;
 pub mod option;
 pub mod result;
+
 pub mod stream;
+pub use stream::StreamExtExt;
+
+pub mod try_stream;
+pub use try_stream::TryStreamExtExt;

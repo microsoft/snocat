@@ -117,21 +117,6 @@ mod stream_ext_ext {
 
 pub use stream_ext_ext::StreamExtExt;
 
-mod try_stream_ext_ext {
-  use ::futures::stream::TryStreamExt;
-  pub trait TryStreamExtExt: TryStreamExt + private::Sealed {}
-  impl<S: ?Sized + TryStreamExt> TryStreamExtExt for S {}
-
-  mod private {
-    use super::TryStreamExt;
-    pub trait Sealed {}
-
-    impl<S: ?Sized + TryStreamExt> Sealed for S {}
-  }
-}
-
-pub use try_stream_ext_ext::TryStreamExtExt;
-
 #[cfg(test)]
 mod tests {
   use futures::{
