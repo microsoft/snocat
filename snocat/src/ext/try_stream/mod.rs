@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license OR Apache 2.0
+
 mod try_stream_ext_ext {
   use ::futures::stream::TryStreamExt;
   pub trait TryStreamExtExt: TryStreamExt + private::Sealed {}
