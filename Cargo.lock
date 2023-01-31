@@ -1320,6 +1320,7 @@ dependencies = [
  "gen-z",
  "log",
  "mockall",
+ "pin-project-lite",
  "quinn",
  "rustls",
  "rustls-pemfile 1.0.1",

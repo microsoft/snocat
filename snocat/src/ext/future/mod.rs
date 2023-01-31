@@ -1,15 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
 
-use std::{pin::Pin, time::Duration};
+use std::{future::IntoFuture, pin::Pin, time::Duration};
 
-use futures::{future::Either, Future, FutureExt, TryFuture, TryFutureExt};
+use futures::{
+  future::{Either, FusedFuture},
+  Future, FutureExt, TryFuture, TryFutureExt,
+};
 
 mod delayed;
 pub use delayed::{Delayed, DelayedValue, TryDelayed};
 
 mod poll_until;
 pub use poll_until::{PollUntil, TryPollUntil, TryPollUntilOrElse};
+
+mod tracked;
+pub use tracked::{TaskTracker, Tracked};
 
 pub trait FutureExtExt: FutureExt {
   fn delay(self, duration: Duration) -> Delayed<Self>
@@ -32,6 +38,29 @@ pub trait FutureExtExt: FutureExt {
       canceller: Some(Box::pin(cancellation)),
       task: Box::pin(self),
     }
+  }
+
+  fn track<Tracker>(
+    self,
+    tracker: Tracker,
+  ) -> Tracked<Self::IntoFuture, Tracker, Tracker::RegistrationFuture>
+  where
+    Tracker: TaskTracker,
+    Self: IntoFuture + Sized,
+  {
+    Tracked::new(self.into_future(), tracker)
+  }
+
+  fn track_fused<Tracker>(
+    self,
+    tracker: Tracker,
+  ) -> Tracked<Self::IntoFuture, Tracker, Tracker::RegistrationFuture>
+  where
+    Tracker: TaskTracker,
+    Self: IntoFuture + Sized,
+    <Self as IntoFuture>::IntoFuture: FusedFuture,
+  {
+    Tracked::new_fused(self.into_future(), tracker)
   }
 }
 

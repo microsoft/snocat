@@ -19,6 +19,7 @@ fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
 futures = "0.3.21"
 gen-z = "0.1"
 log = "0.4"
+pin-project-lite = "0.2"
 quinn = "~0.8.5"
 rustls = "0.20"
 rustls-pemfile = "~1.0.1"
