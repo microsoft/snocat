@@ -282,18 +282,6 @@ where
   }
 }
 
-/// Provides access to a shared data structure bound to the object
-///
-/// Lifetimes of the baggage and its children are bound to that of the parent
-// TODO: Get rid of this, now that tunnels will be handle-tracking-based
-pub trait Baggage {
-  type Bag<'a>
-  where
-    Self: 'a;
-
-  fn bag<'a>(&'a self) -> Self::Bag<'a>;
-}
-
 pub trait WithTunnelId {
   fn id(&self) -> &TunnelId;
 }

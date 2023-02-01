@@ -2,7 +2,12 @@
 // Licensed under the MIT license OR Apache 2.0
 //! Sources both listen- and connection-based tunnels
 
-use futures::stream::{BoxStream, Stream, StreamExt};
+use futures::{
+  future::BoxFuture,
+  stream::{BoxStream, Stream, StreamExt},
+  Future, FutureExt,
+};
+use quinn::Connecting;
 use std::{
   fmt::Debug,
   hash::Hash,
@@ -16,68 +21,69 @@ use tokio_stream::StreamMap;
 
 use crate::common::protocol::tunnel::{BoxedTunnel, TunnelSide};
 
-pub struct QuinnListenEndpoint<Baggage> {
-  bind_address: SocketAddr,
-  _quinn_config: quinn::ServerConfig,
-  _endpoint: quinn::Endpoint,
-  incoming: BoxStream<'static, quinn::NewConnection>,
-  baggage_constructor: Box<dyn (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync>,
+pub struct QuinnListenEndpoint {
+  bind_addr: SocketAddr,
+  endpoint: Pin<Box<quinn::Endpoint>>,
+  accepting: Option<BoxFuture<'static, Option<Connecting>>>,
+  is_terminated: bool,
 }
 
-impl QuinnListenEndpoint<()> {
+impl QuinnListenEndpoint {
   pub fn bind(
     bind_addr: SocketAddr,
     quinn_config: quinn::ServerConfig,
   ) -> Result<Self, std::io::Error> {
-    Self::bind_with_baggage(bind_addr, quinn_config, |_| ())
+    let endpoint = quinn::Endpoint::server(quinn_config, bind_addr)?;
+    Ok(Self {
+      bind_addr,
+      endpoint: Box::pin(endpoint),
+      accepting: None,
+      is_terminated: false,
+    })
   }
 
   /// Get the quinn listen endpoint's bind address.
   pub fn bind_address(&self) -> SocketAddr {
-    self.bind_address
+    self.bind_addr
   }
 }
 
-impl<Baggage> QuinnListenEndpoint<Baggage> {
-  pub fn bind_with_baggage<F>(
-    bind_address: SocketAddr,
-    quinn_config: quinn::ServerConfig,
-    create_baggage: F,
-  ) -> Result<Self, std::io::Error>
-  where
-    F: (Fn(&quinn::NewConnection) -> Baggage) + Send + Sync + 'static,
-  {
-    let (endpoint, incoming) = quinn::Endpoint::server(quinn_config.clone(), bind_address)?;
-    let incoming = incoming
-      .filter_map(|connecting| async move { connecting.await.ok() })
-      .boxed();
-    Ok(Self {
-      bind_address,
-      _quinn_config: quinn_config,
-      _endpoint: endpoint,
-      incoming,
-      baggage_constructor: Box::new(create_baggage),
-    })
-  }
-}
-
-impl<Baggage> Stream for QuinnListenEndpoint<Baggage>
+impl Stream for QuinnListenEndpoint
 where
   Self: Send + Unpin,
 {
-  type Item = (quinn::NewConnection, TunnelSide, Baggage);
+  type Item = (quinn::Connecting, TunnelSide);
 
   fn poll_next(
     mut self: std::pin::Pin<&mut Self>,
     cx: &mut std::task::Context<'_>,
   ) -> std::task::Poll<Option<Self::Item>> {
-    let res = futures::ready!(Stream::poll_next(Pin::new(&mut self.incoming), cx));
-    match res {
-      None => Poll::Ready(None),
-      Some(new_connection) => {
-        let baggage = (self.baggage_constructor)(&new_connection);
-        Poll::Ready(Some((new_connection, TunnelSide::Listen, baggage)))
+    // If the endpoint has returned None at any point, we've closed; stop accepting
+    if self.is_terminated {
+      if self.accepting.is_some() {
+        self.accepting = None;
       }
+      return Poll::Ready(None);
+    }
+
+    let endpoint = self.endpoint.clone();
+    let accepting = match &mut self.accepting {
+      None => self
+        .accepting
+        .insert(async move { endpoint.accept().await }.boxed()),
+      Some(accepting) => accepting,
+    };
+    if let Some(connecting) = futures::ready!(Future::poll(accepting.as_mut(), cx)) {
+      drop(accepting);
+      self.accepting = None;
+      // Here is where we'd do the check for stream subtype if we want to split on ALPN,
+      // which is stored in the [Connecting::handshake_data] which is the active Session.
+      // (https://docs.rs/quinn/0.9.3/quinn/struct.Connecting.html#method.handshake_data)
+      Poll::Ready(Some((connecting, TunnelSide::Listen)))
+    } else {
+      self.accepting = None;
+      self.is_terminated = true;
+      Poll::Ready(None)
     }
   }
 }
@@ -270,14 +276,12 @@ mod tests {
   /// Enforce that the content of the endpoint is a valid tunnel assignment content stream
   #[allow(dead_code)]
   // Static tests are type assertions, and only need compiled
-  fn static_test_endpoint_items_assign_tunnel_id<Baggage>(
-    mut endpoint: QuinnListenEndpoint<Baggage>,
-  ) -> Option<impl AssignTunnelId<QuinnTunnel<Baggage>>>
-  where
-    Baggage: Send + Sync + 'static,
-    QuinnListenEndpoint<Baggage>: Send + Unpin + 'static,
-  {
-    endpoint.next().now_or_never().flatten()
+  fn static_test_endpoint_items_assign_tunnel_id(
+    mut endpoint: QuinnListenEndpoint,
+  ) -> Option<impl AssignTunnelId<QuinnTunnel>> {
+    let (connecting, side) = endpoint.next().now_or_never().flatten()?;
+    let connection = connecting.now_or_never()?.ok()?;
+    Some((connection, side))
   }
 
   #[tokio::test]

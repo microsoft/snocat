@@ -2,7 +2,10 @@
 // Licensed under the MIT license OR Apache 2.0
 use crate::services::{demand_proxy::DemandProxyService, PresetServiceRegistry};
 use anyhow::{Context as AnyhowContext, Result};
-use futures::future::{BoxFuture, FutureExt, TryFutureExt};
+use futures::{
+  future::{BoxFuture, FutureExt, TryFutureExt},
+  StreamExt,
+};
 use quinn::{TransportConfig, VarInt};
 use snocat::{
   common::{
@@ -108,7 +111,11 @@ err
 )]
 pub async fn server_main(config: self::ServerArgs) -> Result<()> {
   let quinn_config = build_quinn_config(&config)?;
-  let endpoint = QuinnListenEndpoint::bind(config.quinn_bind_addr, quinn_config)?;
+  let endpoint = QuinnListenEndpoint::bind(config.quinn_bind_addr, quinn_config)?.filter_map(
+    |(connecting, side)| {
+      connecting.map(move |res| res.ok().map(move |connection| (connection, side)))
+    },
+  );
 
   let (shutdown, sigint_handler_task) = {
     let shutdown = CancellationToken::new();

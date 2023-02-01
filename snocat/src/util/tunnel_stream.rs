@@ -114,7 +114,6 @@ impl TunnelStream for QuinnTunnelStream {}
 mod futures_traits {
   use super::QuinnTunnelStream;
   use crate::util::tunnel_stream::TunnelStream;
-  use futures::AsyncWrite;
   use std::io::Error as IOError;
   use std::pin::Pin;
   use std::task::{Context, Poll};
@@ -125,15 +124,15 @@ mod futures_traits {
       cx: &mut Context<'_>,
       buf: &[u8],
     ) -> Poll<Result<usize, IOError>> {
-      AsyncWrite::poll_write(Pin::new(&mut (*self).0), cx, buf)
+      tokio::io::AsyncWrite::poll_write(Pin::new(&mut (*self).0), cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
-      AsyncWrite::poll_flush(Pin::new(&mut (*self).0), cx)
+      tokio::io::AsyncWrite::poll_flush(Pin::new(&mut (*self).0), cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IOError>> {
-      AsyncWrite::poll_close(Pin::new(&mut (*self).0), cx)
+      tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut (*self).0), cx)
     }
   }
 

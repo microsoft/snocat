@@ -17,10 +17,9 @@ dashmap = "5.4"
 downcast-rs = "1.2"
 fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
 futures = "0.3.21"
-gen-z = "0.1"
 log = "0.4"
 pin-project-lite = "0.2"
-quinn = "~0.8.5"
+quinn = "0.9.3"
 rustls = "0.20"
 rustls-pemfile = "~1.0.1"
 serde = { version = "1.0.128", features=["derive"] }
@@ -28,7 +27,7 @@ serde_json = "~1.0.66"
 thiserror = "1.0.37"
 tracing = "0.1.37"
 tracing-futures = "0.2.5"
-tokio = { version = "~1.21", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
+tokio = { version = "1.25", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
 uuid = { version = "~1.2.1", features=["v4", "v5", "serde"] }

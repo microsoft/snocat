@@ -195,7 +195,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
     let mut current_connection_id = 0u32;
     let connections = DynamicConnectionSet::<u32, _>::new();
     let connections_handle = connections.handle();
-    let add_new_connection = move |tunnel: (quinn::NewConnection, _, _)| -> u32 {
+    let add_new_connection = move |tunnel: (quinn::Connection, _)| -> u32 {
       let connection_id = current_connection_id;
       current_connection_id += 1;
       assert!(
@@ -210,13 +210,13 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   };
 
   {
-    let connecting: Result<_, _> = endpoint
+    let connection = endpoint
       .connect_with(quinn_config, config.driver_host, &config.driver_san)
       .context("Connecting to server")?
-      .await;
-    let connection = connecting.context("Finalizing connection to server...")?;
-    let addr = connection.connection.remote_address();
-    let conn_id = add_new_connection((connection, TunnelSide::Connect, ()));
+      .await
+      .context("Finalizing connection to server...")?;
+    let addr = connection.remote_address();
+    let conn_id = add_new_connection((connection, TunnelSide::Connect));
     tracing::info!(remote = ?addr, connection_id = conn_id, "connected");
   }
 

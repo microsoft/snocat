@@ -22,11 +22,11 @@ use crate::{
 };
 
 use super::{
-  AssignTunnelId, Baggage, TunnelCloseReason, TunnelControl, TunnelId, TunnelMonitoring,
+  AssignTunnelId, TunnelCloseReason, TunnelControl, TunnelId, TunnelMonitoring,
   TunnelMonitoringPerChannel, TunnelName, WithTunnelId,
 };
 
-pub struct QuinnTunnel<B = ()> {
+pub struct QuinnTunnel {
   id: TunnelId,
   connection: quinn::Connection,
   side: TunnelSide,
@@ -38,11 +38,9 @@ pub struct QuinnTunnel<B = ()> {
   authenticated: Arc<tokio::sync::RwLock<Option<TunnelName>>>,
   authenticated_notifier: Arc<watch::Sender<Option<TunnelName>>>,
   close_reason: Arc<ArcSwap<TunnelCloseReason>>,
-
-  baggage: Arc<B>,
 }
 
-impl<Baggage> std::fmt::Debug for QuinnTunnel<Baggage> {
+impl std::fmt::Debug for QuinnTunnel {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("QuinnTunnel")
       .field("id", &self.id)
@@ -54,7 +52,7 @@ impl<Baggage> std::fmt::Debug for QuinnTunnel<Baggage> {
   }
 }
 
-impl<B> QuinnTunnel<B> {
+impl QuinnTunnel {
   pub fn into_inner(
     self,
   ) -> (
@@ -66,18 +64,11 @@ impl<B> QuinnTunnel<B> {
     (self.id, self.connection, self.side, self.incoming)
   }
 
-  pub fn from_quinn_connection_with_baggage(
+  pub fn from_quinn_connection(
     id: TunnelId,
-    new_connection: quinn::NewConnection,
+    connection: quinn::Connection,
     side: TunnelSide,
-    baggage: B,
-  ) -> QuinnTunnel<B> {
-    let quinn::NewConnection {
-      connection,
-      bi_streams,
-      ..
-    } = new_connection;
-
+  ) -> QuinnTunnel {
     let overall_cancellation: Arc<Dropkick<CancellationToken>> =
       Arc::new(CancellationToken::new().into());
     // Single-stream cancellations are derived from the full-cancellation token,
@@ -107,42 +98,48 @@ impl<B> QuinnTunnel<B> {
       });
     }
     let close_reason = Arc::new(ArcSwap::new(Arc::new(TunnelCloseReason::Unspecified)));
-    let stream_tunnels = bi_streams
-      .map_ok(|(send, recv)| {
-        // TODO: make incoming streams exit when close() is called
-        TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
-      })
-      .map_err(Into::into)
-      // Only take new streams until incoming is cancelled
-      .take_until({
-        // Copy a cancellation token instance which is used to cut the incoming channel
-        // We only need one clone of it because downlinks are exclusively held via lock
-        // We clone the dropkick arc to ensure that it is not marked closed
-        // until the [Tunnel], its downlink, and all of its uplinks are dropped.
-        let incoming_cancellation = incoming_cancellation.clone();
-        // Run in a separate task to ensure that we drop the arc on cancellation even if
-        // nobody awaits the downlink's cancellation event.
-        async move {
-          // Cut the channel when the cancellation token is invoked
-          incoming_cancellation.cancelled().await;
+    let stream_tunnels = futures::stream::try_unfold((), {
+      let connection = connection.clone();
+      move |()| {
+        let connection = connection.clone();
+        async move { connection.accept_bi().await }.map_ok(move |res| Some((res, ())))
+      }
+    })
+    .map_ok(|(send, recv)| {
+      // TODO: make the incoming streams exit when close() is called (make a failing test first)
+      TunnelIncomingType::BiStream(WrappedStream::Boxed(Box::new(recv), Box::new(send)))
+    })
+    .map_err(Into::into)
+    // Only take new streams until incoming is cancelled
+    .take_until({
+      // Copy a cancellation token instance which is used to cut the incoming channel
+      // We only need one clone of it because downlinks are exclusively held via lock
+      // We clone the dropkick arc to ensure that it is not marked closed
+      // until the [Tunnel], its downlink, and all of its uplinks are dropped.
+      let incoming_cancellation = incoming_cancellation.clone();
+      // Run in a separate task to ensure that we drop the arc on cancellation even if
+      // nobody awaits the downlink's cancellation event.
+      async move {
+        // Cut the channel when the cancellation token is invoked
+        incoming_cancellation.cancelled().await;
+      }
+    })
+    .inspect_err({
+      let incoming_cancellation = CancellationToken::clone(&incoming_cancellation);
+      let close_reason_store = Arc::clone(&close_reason);
+      move |_tunnel_error| {
+        let close_reason = TunnelCloseReason::Error(TunnelError::ConnectionClosed);
+        {
+          let close_reason_store = &close_reason_store;
+          close_reason_store.store(Arc::new(close_reason));
+        };
+        if !incoming_cancellation.is_cancelled() {
+          incoming_cancellation.cancel();
         }
-      })
-      .inspect_err({
-        let incoming_cancellation = CancellationToken::clone(&incoming_cancellation);
-        let close_reason_store = Arc::clone(&close_reason);
-        move |_tunnel_error| {
-          let close_reason = TunnelCloseReason::Error(TunnelError::ConnectionClosed);
-          {
-            let close_reason_store = &close_reason_store;
-            close_reason_store.store(Arc::new(close_reason));
-          };
-          if !incoming_cancellation.is_cancelled() {
-            incoming_cancellation.cancel();
-          }
-        }
-      })
-      .fuse()
-      .boxed();
+      }
+    })
+    .fuse()
+    .boxed();
     QuinnTunnel {
       connection,
       id,
@@ -158,23 +155,11 @@ impl<B> QuinnTunnel<B> {
       outgoing_closed: Arc::new(overall_cancellation.child_token().into()),
       incoming_closed: incoming_cancellation,
       closed: overall_cancellation,
-      baggage: Arc::new(baggage),
     }
-  }
-
-  pub fn from_quinn_connection(
-    id: TunnelId,
-    new_connection: quinn::NewConnection,
-    side: TunnelSide,
-  ) -> QuinnTunnel<B>
-  where
-    B: Default,
-  {
-    Self::from_quinn_connection_with_baggage(id, new_connection, side, Default::default())
   }
 }
 
-impl<B> TunnelControl for QuinnTunnel<B> {
+impl TunnelControl for QuinnTunnel {
   fn close<'a>(
     &'a self,
     reason: TunnelCloseReason,
@@ -229,7 +214,7 @@ impl<B> TunnelControl for QuinnTunnel<B> {
   }
 }
 
-impl<B> TunnelMonitoring for QuinnTunnel<B> {
+impl TunnelMonitoring for QuinnTunnel {
   fn is_closed(&self) -> bool {
     self.closed.is_cancelled()
   }
@@ -281,7 +266,7 @@ impl<B> TunnelMonitoring for QuinnTunnel<B> {
   }
 }
 
-impl<B> TunnelMonitoringPerChannel for QuinnTunnel<B> {
+impl TunnelMonitoringPerChannel for QuinnTunnel {
   fn is_closed_uplink(&self) -> bool {
     self.outgoing_closed.is_cancelled()
   }
@@ -315,27 +300,26 @@ impl<B> TunnelMonitoringPerChannel for QuinnTunnel<B> {
   }
 }
 
-impl<B> WithTunnelId for QuinnTunnel<B> {
+impl WithTunnelId for QuinnTunnel {
   fn id(&self) -> &TunnelId {
     &self.id
   }
 }
 
-impl<B> Sided for QuinnTunnel<B> {
+impl Sided for QuinnTunnel {
   fn side(&self) -> TunnelSide {
     self.side
   }
 }
 
-impl<B> TunnelUplink for QuinnTunnel<B> {
+impl TunnelUplink for QuinnTunnel {
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
     if self.is_closed_uplink() {
       return future::ready(Err(TunnelError::ConnectionClosed)).boxed();
     }
     // TODO: make individual sub-streams exit when close() is called, using `quinn::Connection::close()`
-    self
-      .connection
-      .open_bi()
+    let connection = self.connection.clone();
+    async move { connection.open_bi().await }
       .map(|result| match result {
         Ok((send, recv)) => Ok(WrappedStream::Boxed(Box::new(recv), Box::new(send))),
         Err(e) => Err(e.into()),
@@ -364,10 +348,7 @@ impl<B> TunnelUplink for QuinnTunnel<B> {
   }
 }
 
-impl<B> Tunnel for QuinnTunnel<B>
-where
-  B: Send + Sync + 'static,
-{
+impl Tunnel for QuinnTunnel {
   fn downlink<'a>(&'a self) -> BoxFuture<'a, Option<Box<dyn TunnelDownlink + Send + Unpin>>> {
     if self.is_closed_downlink() {
       return future::ready(None).boxed();
@@ -398,54 +379,9 @@ impl From<quinn::ConnectionError> for TunnelError {
   }
 }
 
-/// Allows attachment of arbitrary data to the lifetime of the tunnel object
-///
-/// If a value is only required until disconnection, perform cleanup with an
-/// `on_closed` handle, and use a Mutex<Option<T>> to represent removed bags
-///
-/// It is strictly illegal to store a reference to a tunnel in a bag. Memory
-/// leaks cannot be reasoned about if any tunnel can extend the lifetimes of
-/// any tunnel (including itself) beyond the scope of a live Request. Module
-/// handles (`TunnelRegistry`, `ServiceRegistry`, etc) must all be WeakRefs.
-impl<B> Baggage for QuinnTunnel<B> {
-  type Bag<'a> = Arc<B> where B: 'a;
-
-  fn bag<'a>(&'a self) -> Self::Bag<'a> {
-    self.baggage.clone()
-  }
-}
-
-#[deprecated(
-  since = "0.6.0-alpha.7",
-  note = "Use `QuinnTunnel::from_quinn_connection` instead"
-)]
-pub fn from_quinn_connection(
-  id: TunnelId,
-  new_connection: quinn::NewConnection,
-  side: TunnelSide,
-) -> QuinnTunnel<()> {
-  QuinnTunnel::<()>::from_quinn_connection(id, new_connection, side)
-}
-
-#[deprecated(
-  since = "0.6.0-alpha.7",
-  note = "Use `QuinnTunnel::from_quinn_connection_with_baggage` instead"
-)]
-pub fn from_quinn_connection_with_baggage<B>(
-  id: TunnelId,
-  new_connection: quinn::NewConnection,
-  side: TunnelSide,
-  baggage: B,
-) -> QuinnTunnel<B> {
-  QuinnTunnel::from_quinn_connection_with_baggage(id, new_connection, side, baggage)
-}
-
-impl<Baggage> AssignTunnelId<QuinnTunnel<Baggage>> for (quinn::NewConnection, TunnelSide, Baggage)
-where
-  Baggage: Send + Sync + 'static,
-{
-  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> QuinnTunnel<Baggage> {
-    let (new_connection, side, baggage) = self;
-    QuinnTunnel::from_quinn_connection_with_baggage(tunnel_id, new_connection, side, baggage)
+impl AssignTunnelId<QuinnTunnel> for (quinn::Connection, TunnelSide) {
+  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> QuinnTunnel {
+    let (connection, side) = self;
+    QuinnTunnel::from_quinn_connection(tunnel_id, connection, side)
   }
 }
