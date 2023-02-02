@@ -15,7 +15,7 @@ arc-swap = "1.5"
 anyhow = "~1.0.43"
 dashmap = "5.4"
 downcast-rs = "1.2"
-fred = { version = "4.3", features=["enable-tls", "tracing"], optional = true }
+fred = { version = "6.0.0-beta.2", git = "https://github.com/aembke/fred.rs.git", default-features = false, features = [], optional = true }
 futures = "0.3.21"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -30,7 +30,7 @@ tracing-futures = "0.2.5"
 tokio = { version = "1.25", features=["net", "io-util", "signal", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features=["net", "io-util", "sync"] }
 tokio-util = { version = "0.7", features=["default", "io", "time"] }
-uuid = { version = "~1.2.1", features=["v4", "v5", "serde"] }
+uuid = { version = "1.3", features=["v4", "v5", "serde"] }
 
 [dev-dependencies]
 mockall = { version = "0.11", features=["nightly"] }

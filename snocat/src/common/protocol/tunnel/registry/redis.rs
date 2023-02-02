@@ -12,8 +12,8 @@ use dashmap::DashMap;
 use futures::future::{BoxFuture, FutureExt};
 use tokio_util::sync::CancellationToken;
 
-use fred::pool::DynamicRedisPool;
 use fred::prelude::*;
+use fred::{pool::RedisPool, types::RedisKey};
 
 use super::super::{registry::TunnelRegistry, TunnelName};
 use crate::util::{cancellation::CancellationListener, dropkick::Dropkick};
@@ -62,7 +62,7 @@ pub type RegistrationMap = DashMap<String, Weak<Registration>>;
 #[derive(Clone)]
 pub struct RedisRegistry<R> {
   config: Arc<RedisRegistryConfig>,
-  pool: Arc<DynamicRedisPool>,
+  pool: Arc<RedisPool>,
   active_registration_map: Arc<RegistrationMap>,
   phantom_item: PhantomData<R>,
   // Cancels all renewal jobs if the registry itself is dropped; is parent to all renewal task tokens
@@ -82,7 +82,7 @@ where
 
 impl<R> RedisRegistry<R> {
   #[must_use]
-  pub fn new<Pool: Into<Arc<DynamicRedisPool>>>(config: RedisRegistryConfig, pool: Pool) -> Self {
+  pub fn new<Pool: Into<Arc<RedisPool>>>(config: RedisRegistryConfig, pool: Pool) -> Self {
     Self {
       config: Arc::new(config),
       pool: pool.into(),
@@ -96,11 +96,11 @@ impl<R> RedisRegistry<R> {
 /// Runs GETDEL if the command is valid, and falls back to GET then DEL otherwise.
 /// Only invokes DEL upon successful GET.
 async fn getdel_or_get_del<R, K>(
-  client: &fred::client::RedisClient,
+  client: &fred::clients::RedisClient,
   key: K,
 ) -> Result<R, RedisError>
 where
-  R: RedisResponse,
+  R: FromRedis,
   K: Into<RedisKey>,
 {
   let key = key.into();
@@ -133,7 +133,7 @@ where
 
   fn register_for_renewals(
     registration_map: Arc<RegistrationMap>,
-    pool: Arc<DynamicRedisPool>,
+    pool: Arc<RedisPool>,
     canceller: &CancellationToken,
     config: &RedisRegistryConfig,
     tunnel_name: &TunnelName,
@@ -161,7 +161,7 @@ where
   }
 
   async fn run_renewal(
-    pool: Arc<DynamicRedisPool>,
+    pool: Arc<RedisPool>,
     canceller: CancellationListener,
     tunnel_name: TunnelName,
     rid: String,
@@ -195,7 +195,7 @@ where
       if canceller.is_cancelled() {
         break;
       }
-      let conn = Self::get_pool_connection(pool.clone()).await?;
+      let conn = Self::get_pool_connection(&*pool).await?;
       let _ = conn
         .expire::<bool, _>(
           &tunnel_ref_key,
@@ -228,7 +228,7 @@ where
 
   async fn deregister_by_rid(
     registration_map: Arc<RegistrationMap>,
-    conn: RedisClient,
+    conn: &RedisClient,
     rid: String,
   ) -> Result<Option<R>, RedisRegistryError>
   where
@@ -251,13 +251,14 @@ where
     })
   }
 
-  async fn get_pool_connection(
-    pool: Arc<DynamicRedisPool>,
-  ) -> Result<RedisClient, RedisRegistryError> {
+  async fn get_pool_connection(pool: &RedisPool) -> Result<&RedisClient, RedisRegistryError> {
     // Get a connection from the pool
-    let conn = pool.next_connect(false).await;
+    let conn = pool.next();
     // Wait for it to connect if it isn't already connected; error if failed
-    conn.wait_for_connect().await?;
+    if !conn.is_connected() {
+      conn.connect();
+      conn.wait_for_connect().await?;
+    }
     Ok(conn)
   }
 }
@@ -330,7 +331,7 @@ where
     let tunnel_name = tunnel_name.clone();
     let pool = self.pool.clone();
     async move {
-      let conn = Self::get_pool_connection(pool).await?;
+      let conn = Self::get_pool_connection(&*pool).await?;
       // Read the reference key, if present, mapping tunnel-name to its RID
       let rid: Option<String> = conn.get(Self::tunnel_key_for(&tunnel_name)).await?;
       // `let-else` can't come soon enough
@@ -380,7 +381,7 @@ where
     async move {
       // Encode and save the record for use in redis calls below
       let encoded = serde_json::to_vec(&record)?;
-      let conn = Self::get_pool_connection(pool.clone()).await?;
+      let conn = Self::get_pool_connection(&*pool).await?;
       // Create-associated entry by repeating SETNX until the key is newly created, in a
       // transaction with EXPIRE to ensure that any created keys are marked for cleanup.
       let rid = {
@@ -451,7 +452,7 @@ where
     let tunnel_name = tunnel_name.clone();
     let pool = self.pool.clone();
     async move {
-      let conn = Self::get_pool_connection(pool).await?;
+      let conn = Self::get_pool_connection(&*pool).await?;
       // Read the reference key, if present, mapping tunnel-name to its RID
       let rid: Option<String> =
         getdel_or_get_del(&conn, Self::tunnel_key_for(&tunnel_name)).await?;
@@ -476,7 +477,7 @@ where
     let registration_map = Arc::clone(&self.active_registration_map);
     let pool = self.pool.clone();
     async move {
-      let conn = Self::get_pool_connection(pool).await?;
+      let conn = Self::get_pool_connection(&*pool).await?;
       let mut identifier = identifier;
       // Drop the identifier after getting the ID from it, in order to decrement our hold on the registration
       let rid = std::mem::replace(&mut identifier.rid, String::new());
@@ -493,7 +494,8 @@ mod integration_tests {
   use std::{fmt::Debug, sync::Arc, time::Duration};
 
   use fred::{
-    pool::DynamicRedisPool,
+    pool::RedisPool,
+    prelude::*,
     types::{ReconnectPolicy, RedisConfig, ServerConfig},
   };
   use uuid::Uuid;
@@ -512,7 +514,7 @@ mod integration_tests {
   #[derive(Clone)]
   struct TestReg<R> {
     pub registry: RedisRegistry<R>,
-    pub pool: Arc<DynamicRedisPool>,
+    pub pool: Arc<RedisPool>,
     pub config: Arc<RedisRegistryConfig>,
   }
 
@@ -525,40 +527,49 @@ mod integration_tests {
         .field("registry", &self.registry)
         .field(
           "pool",
-          &format!("{{{}}}", std::any::type_name::<DynamicRedisPool>()),
+          &format!("{{{}}}", std::any::type_name::<RedisPool>()),
         )
         .finish_non_exhaustive()
     }
   }
 
-  async fn create_test_pool() -> DynamicRedisPool {
+  async fn create_test_pool() -> RedisPool {
     let policy = ReconnectPolicy::Constant {
       attempts: 1,
       max_attempts: 2,
       delay: 25,
+      jitter: 5,
     };
-    let pool = DynamicRedisPool::new(
+    println!("Initializing test redis pool...");
+    let pool = RedisPool::new(
       RedisConfig {
-        server: ServerConfig::Centralized {
-          host: "127.0.0.1".to_owned(),
-          port: 6379,
-        },
+        server: ServerConfig::new_centralized("127.0.0.1", 6379),
         fail_fast: true,
         ..Default::default()
       },
+      None,
       Some(policy),
-      1,
       2,
-    );
-    pool.connect().await;
+    )
+    .expect("Failed to init redis pool");
+    println!("Waiting for redis pool connection...");
+    pool.connect();
+    pool
+      .wait_for_connect()
+      .await
+      .expect("Failed to connect test pool");
     {
-      let conn = pool.next_connect(false).await;
-      conn
-        .wait_for_connect()
-        .poll_until(tokio::time::sleep(Duration::from_secs(5)))
-        .await
-        .expect("Timeout connecting to Redis for integration tests")
-        .expect("Must successfully connect to redis to run integration tests on 127.0.0.1:6379");
+      println!("Performing test query to verify pool connectivity...");
+      let conn = pool.next();
+      if !conn.is_connected() {
+        conn.connect();
+        conn
+          .wait_for_connect()
+          .poll_until(tokio::time::sleep(Duration::from_secs(5)))
+          .await
+          .expect("Timeout connecting to Redis for integration tests")
+          .expect("Must successfully connect to redis to run integration tests on 127.0.0.1:6379");
+      }
       let _: () = conn.info(None).await.expect(
         "Must fetch redis info prior to performing integration tests to confirm connectivity",
       );
@@ -566,7 +577,7 @@ mod integration_tests {
     pool
   }
 
-  async fn create_test_registry<R>(pool: Arc<DynamicRedisPool>) -> RedisRegistry<R> {
+  async fn create_test_registry<R>(pool: Arc<RedisPool>) -> RedisRegistry<R> {
     RedisRegistry::<R>::new(
       RedisRegistryConfig {
         renewal_rate: Duration::from_millis(500),
@@ -656,7 +667,15 @@ mod integration_tests {
 
     {
       let rid_key = RedisRegistry::<TestEntry>::tunnel_rid_key(&ident.rid);
-      let conn = pool.next_connect(true).await;
+      let conn = pool.next();
+      if !conn.is_connected() {
+        conn.connect();
+        conn
+          .wait_for_connect()
+          .await
+          .expect("Must successfully connect test client");
+      }
+
       let deleted_count: usize = conn
         .del(rid_key)
         .await
