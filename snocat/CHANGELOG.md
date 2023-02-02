@@ -7,6 +7,16 @@ following the release of version 1.0.0.
 
 ## [Unreleased] - ReleaseDate
 
+Eliminated the Baggage API- store associated metadata some other way.
+If it's really necessary, `provide_any` will be implemented atop Tunnel.
+
+Upgraded Fred to 6.0.0-beta.2 for support of clustered TLS Redis.
+This will be changed to 6.0 when a non-prerelease build is available.
+
+Upgraded Quinn to 9.3 for UDP GSO and UDP GRO support; this update broke
+several internal API assumptions and may lead to further simplifications
+around incoming connection and (bi/uni)stream handling.
+
 ## [0.7.0] - 2022-10-29
 
 ### Hybrid Eventually-Consistent Tunnel Repositories (0.6.0-alpha.1)

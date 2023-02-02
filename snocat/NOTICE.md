@@ -109,5 +109,5 @@ their own copyright notices and license terms:
 * [tracing-subscriber v0.3.16](https://github.com/tokio-rs/tracing) - MIT
 * [unicode-ident v1.0.5](https://github.com/dtolnay/unicode-ident) - (MIT OR Apache-2.0) AND Unicode-DFS-2016
 * [untrusted v0.7.1](https://github.com/briansmith/untrusted) - ISC
-* [uuid v1.2.1](https://github.com/uuid-rs/uuid) - Apache-2.0 OR MIT
+* [uuid v1.3.0](https://github.com/uuid-rs/uuid) - Apache-2.0 OR MIT
 * [webpki v0.22.0](https://github.com/briansmith/webpki) - (**Nonstandard License**, see project link)
