@@ -11,15 +11,16 @@ use snocat::{
   common::{
     authentication::{AuthenticationAttributes, SimpleAckAuthenticationHandler},
     daemon::{
-      ModularDaemon, PeerTracker, PeersView, RecordConstructor, RecordConstructorArgs,
+      ArcRecordConstructor, ModularDaemon, PeerTracker, PeersView, RecordConstructorArgs,
       RecordConstructorResult,
     },
     protocol::{
       negotiation::NegotiationClient,
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        id::MonotonicAtomicGenerator, registry::memory::InMemoryTunnelRegistry, TunnelId,
-        TunnelName,
+        id::MonotonicAtomicGenerator,
+        registry::{memory::InMemoryTunnelRegistry, TunnelRegistry},
+        TunnelId, TunnelName,
       },
     },
     tunnel_source::QuinnListenEndpoint,
@@ -128,11 +129,9 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     (shutdown, sigint_handler_task)
   };
 
-  let tunnel_registry = Arc::new(InMemoryTunnelRegistry::<(
-    TunnelId,
-    TunnelName,
-    Arc<AuthenticationAttributes>,
-  )>::new());
+  type InMemoryRegistryRecord = (TunnelId, TunnelName, Arc<AuthenticationAttributes>);
+
+  let tunnel_registry = Arc::new(InMemoryTunnelRegistry::<InMemoryRegistryRecord>::new());
 
   let service_registry = Arc::new(PresetServiceRegistry::<anyhow::Error>::new());
 
@@ -151,12 +150,17 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let record_constructor = Arc::new(
+  let record_constructor: Arc<
+    ArcRecordConstructor<
+      <InMemoryTunnelRegistry<InMemoryRegistryRecord> as TunnelRegistry>::Record,
+      <InMemoryTunnelRegistry<InMemoryRegistryRecord> as TunnelRegistry>::Error,
+    >,
+  > = Arc::new(ArcRecordConstructor::new(
     |args: RecordConstructorArgs| -> RecordConstructorResult<_, _> {
       let attrs = Arc::new(args.attributes);
       futures::future::ready(Ok(((args.id, args.name, attrs.clone()), attrs))).boxed()
     },
-  ) as Arc<dyn RecordConstructor<_, _>>;
+  ));
   let modular = Arc::new(ModularDaemon::new(
     service_registry.clone(),
     tunnel_registry.clone(),

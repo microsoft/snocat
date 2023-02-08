@@ -8,7 +8,7 @@ use snocat::{
   common::{
     authentication::{AuthenticationAttributes, SimpleAckAuthenticationHandler},
     daemon::{
-      ModularDaemon, PeerTracker, PeersView, RecordConstructor, RecordConstructorArgs,
+      ArcRecordConstructor, ModularDaemon, PeerTracker, PeersView, RecordConstructorArgs,
       RecordConstructorResult,
     },
     protocol::{
@@ -173,12 +173,12 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       .as_millis() as u64,
   ));
 
-  let record_constructor = Arc::new(
+  let record_constructor: Arc<ArcRecordConstructor<_, _>> = Arc::new(ArcRecordConstructor::new(
     |args: RecordConstructorArgs| -> RecordConstructorResult<_, _> {
       let attrs = Arc::new(args.attributes);
       futures::future::ready(Ok(((args.id, args.name, attrs.clone()), attrs))).boxed()
     },
-  ) as Arc<dyn RecordConstructor<_, _>>;
+  ));
   let modular = Arc::new(ModularDaemon::new(
     service_registry,
     tunnel_registry,

@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license OR Apache 2.0
+
 use authentication::perform_authentication;
 use dashmap::DashMap;
 use futures::{
-  future::{self, BoxFuture, TryFutureExt},
+  future::{self, TryFutureExt},
   Future, Stream, StreamExt, TryStream, TryStreamExt,
 };
 use std::{
@@ -36,7 +37,7 @@ use crate::{
 
 use super::{
   authentication::{AuthenticationAttributes, AuthenticationHandlingError},
-  protocol::tunnel::{ArcTunnel, TunnelControl, TunnelMonitoring},
+  protocol::tunnel::{TunnelControl, TunnelMonitoring},
 };
 
 #[derive(Clone)]
@@ -426,7 +427,7 @@ pub struct ModularDaemon<
   TServiceRegistry: ?Sized,
   TRouter: ?Sized,
   TAuthenticationHandler: ?Sized,
-  FConstructRecord: ?Sized,
+  TRecordConstructor: ?Sized,
 > {
   service_registry: Arc<TServiceRegistry>,
   tunnel_registry: Arc<TTunnelRegistry>,
@@ -434,7 +435,7 @@ pub struct ModularDaemon<
   // request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
   authentication_handler: Arc<TAuthenticationHandler>,
   tunnel_id_generator: Arc<dyn TunnelIdGenerator + Send + Sync + 'static>,
-  record_constructor: Arc<FConstructRecord>,
+  record_constructor: Arc<TRecordConstructor>,
   peers: PeerTracker,
 
   // event hooks
@@ -491,22 +492,183 @@ enum RequestProcessingError<ApplicationError> {
   ),
 }
 
-pub struct RecordConstructorArgs {
-  pub id: TunnelId,
-  pub name: TunnelName,
-  pub attributes: AuthenticationAttributes,
-  pub tunnel: ArcTunnel<'static>,
+mod record_constructor {
+  use crate::common::{
+    authentication::AuthenticationAttributes,
+    protocol::tunnel::{ArcTunnel, TunnelId, TunnelName},
+  };
+  use futures::{future::BoxFuture, Future};
+  use std::{marker::PhantomData, ops::Deref, sync::Arc};
+
+  pub struct RecordConstructorArgs {
+    pub id: TunnelId,
+    pub name: TunnelName,
+    pub attributes: AuthenticationAttributes,
+    pub tunnel: ArcTunnel<'static>,
+  }
+
+  pub type RecordConstructorResult<Record, Error> =
+    BoxFuture<'static, Result<(Record, Arc<AuthenticationAttributes>), Error>>;
+
+  pub type RecordConstructorSuccess<Record> = (Record, Arc<AuthenticationAttributes>);
+
+  pub trait RecordConstructor: private::Sealed {
+    type Record;
+    type Error;
+    type Future: Future<Output = Result<RecordConstructorSuccess<Self::Record>, Self::Error>>;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future;
+  }
+
+  pub struct BoxedRecordConstructor<'fut, Record, Error> {
+    inner: Box<
+      dyn RecordConstructor<
+          Record = Record,
+          Error = Error,
+          Future = BoxFuture<'fut, Result<RecordConstructorSuccess<Record>, Error>>,
+        > + Send
+        + Sync
+        + 'fut,
+    >,
+  }
+
+  impl<'fut, Record, Error> BoxedRecordConstructor<'fut, Record, Error> {
+    pub fn new<R>(inner: R) -> Self
+    where
+      R: RecordConstructor<Record = Record, Error = Error> + Send + Sync + 'fut,
+      <R as RecordConstructor>::Future: Send + 'fut,
+    {
+      let wrapped: BoxingRecordConstructor<'fut, R> = BoxingRecordConstructor {
+        inner: inner,
+        phantom_fut: PhantomData,
+      };
+      Self {
+        inner: Box::new(wrapped),
+      }
+    }
+  }
+
+  pub struct ArcRecordConstructor<'fut, Record, Error> {
+    inner: Arc<
+      dyn RecordConstructor<
+          Record = Record,
+          Error = Error,
+          Future = BoxFuture<'fut, Result<RecordConstructorSuccess<Record>, Error>>,
+        > + Send
+        + Sync
+        + 'fut,
+    >,
+  }
+
+  impl<'fut, Record, Error> ArcRecordConstructor<'fut, Record, Error> {
+    pub fn new<R>(inner: R) -> Self
+    where
+      R: RecordConstructor<Record = Record, Error = Error> + Send + Sync + 'fut,
+      <R as RecordConstructor>::Future: Send + 'fut,
+    {
+      let wrapped: BoxingRecordConstructor<'fut, R> = BoxingRecordConstructor {
+        inner: inner,
+        phantom_fut: PhantomData,
+      };
+      Self {
+        inner: Arc::new(wrapped),
+      }
+    }
+  }
+
+  // TODO: Lifetimes are welded to static on these; consider blog "The Better Alternative to Lifetime GATs" for possible solution
+  impl<Record, Error> RecordConstructor for BoxedRecordConstructor<'static, Record, Error>
+  where
+    // No clue why this one is required; I miss Haskell and Scala
+    dyn RecordConstructor<
+        Record = Record,
+        Error = Error,
+        Future = BoxFuture<'static, Result<RecordConstructorSuccess<Record>, Error>>,
+      > + Send
+      + Sync
+      + 'static: RecordConstructor,
+  {
+    type Record = Record;
+    type Error = Error;
+    type Future = BoxFuture<'static, Result<RecordConstructorSuccess<Self::Record>, Self::Error>>;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future {
+      self.inner.as_ref().construct_record(args)
+    }
+  }
+
+  impl<Record, Error> RecordConstructor for ArcRecordConstructor<'static, Record, Error>
+  where
+    dyn RecordConstructor<
+        Record = Record,
+        Error = Error,
+        Future = BoxFuture<'static, Result<RecordConstructorSuccess<Record>, Error>>,
+      > + Send
+      + Sync
+      + 'static: RecordConstructor,
+  {
+    type Record = Record;
+    type Error = Error;
+    type Future = BoxFuture<'static, Result<RecordConstructorSuccess<Self::Record>, Self::Error>>;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future {
+      self.inner.as_ref().construct_record(args)
+    }
+  }
+
+  struct BoxingRecordConstructor<'fut, Wrapped> {
+    inner: Wrapped,
+    phantom_fut: PhantomData<&'fut ()>,
+  }
+
+  impl<'fut, Wrapped> RecordConstructor for BoxingRecordConstructor<'fut, Wrapped>
+  where
+    Wrapped: RecordConstructor + Send + Sync,
+    <Wrapped as RecordConstructor>::Future: Send + 'fut,
+  {
+    type Record = <Wrapped as RecordConstructor>::Record;
+    type Error = <Wrapped as RecordConstructor>::Error;
+    type Future = BoxFuture<'fut, Result<RecordConstructorSuccess<Self::Record>, Self::Error>>;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future {
+      use futures::future::FutureExt;
+      self.inner.construct_record(args).boxed()
+    }
+  }
+
+  impl<Record, Error, F, Fut> RecordConstructor for F
+  where
+    F: Fn(RecordConstructorArgs) -> Fut,
+    Fut: Future<Output = Result<RecordConstructorSuccess<Record>, Error>>,
+  {
+    type Record = Record;
+    type Error = Error;
+    type Future = Fut;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future {
+      (self)(args)
+    }
+  }
+
+  impl<T> RecordConstructor for Arc<T>
+  where
+    T: RecordConstructor,
+  {
+    type Record = T::Record;
+    type Error = T::Error;
+    type Future = T::Future;
+    fn construct_record(&self, args: RecordConstructorArgs) -> Self::Future {
+      <Arc<T> as Deref>::deref(self).construct_record(args)
+    }
+  }
+
+  mod private {
+    use super::RecordConstructor;
+    pub trait Sealed {}
+
+    impl<R: ?Sized + RecordConstructor> Sealed for R {}
+  }
 }
 
-pub type RecordConstructorResult<Record, Error> =
-  BoxFuture<'static, Result<(Record, Arc<AuthenticationAttributes>), Error>>;
-
-pub trait RecordConstructor<Record, Error> = Fn(
-    RecordConstructorArgs,
-  ) -> BoxFuture<'static, Result<(Record, Arc<AuthenticationAttributes>), Error>>
-  + Send
-  + Sync
-  + 'static;
+pub use record_constructor::{
+  ArcRecordConstructor, BoxedRecordConstructor, RecordConstructor, RecordConstructorArgs,
+  RecordConstructorResult, RecordConstructorSuccess,
+};
 
 impl<
     ApplicationError: std::fmt::Debug + std::fmt::Display,
@@ -531,14 +693,14 @@ impl<
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-    FConstructRecord: ?Sized,
+    TRecordConstructor: ?Sized,
   >
   ModularDaemon<
     TTunnelRegistry,
     TServiceRegistry,
     TRouter,
     TAuthenticationHandler,
-    FConstructRecord,
+    TRecordConstructor,
   >
 {
   pub fn router<'a>(&'a self) -> &Arc<TRouter> {
@@ -551,14 +713,14 @@ impl<
     TServiceRegistry: ?Sized,
     TRouter: ?Sized,
     TAuthenticationHandler: ?Sized,
-    FConstructRecord: ?Sized,
+    TRecordConstructor: ?Sized,
   >
   ModularDaemon<
     TTunnelRegistry,
     TServiceRegistry,
     TRouter,
     TAuthenticationHandler,
-    FConstructRecord,
+    TRecordConstructor,
   >
 where
   Self: 'static,
@@ -569,7 +731,11 @@ where
   TRouter: Router + Send + Sync + 'static,
   TAuthenticationHandler: AuthenticationHandler + 'static,
   TAuthenticationHandler::Error: Debug + Display + Send + 'static,
-  FConstructRecord: RecordConstructor<TTunnelRegistry::Record, TTunnelRegistry::Error>,
+  TRecordConstructor: RecordConstructor<Record = TTunnelRegistry::Record, Error = TTunnelRegistry::Error>
+    + Send
+    + Sync
+    + 'static,
+  <TRecordConstructor as RecordConstructor>::Future: Send,
 {
   pub fn new(
     service_registry: Arc<TServiceRegistry>,
@@ -578,7 +744,7 @@ where
     router: Arc<TRouter>,
     authentication_handler: Arc<TAuthenticationHandler>,
     tunnel_id_generator: Arc<dyn TunnelIdGenerator + Send + Sync + 'static>,
-    record_constructor: Arc<FConstructRecord>,
+    record_constructor: Arc<TRecordConstructor>,
   ) -> Self {
     let s = Self {
       service_registry,
@@ -988,19 +1154,20 @@ where
     tunnel_name: TunnelName,
     tunnel_registry: Arc<TTunnelRegistry>,
     attributes: AuthenticationAttributes,
-    record_constructor: Arc<FConstructRecord>,
+    record_constructor: Arc<TRecordConstructor>,
   ) -> Result<WrappedTunnel<TTunnel>, TTunnelRegistry::Error>
   where
     TTunnel: Tunnel + TunnelControl + 'static,
   {
     let registered_at = (Instant::now(), SystemTime::now());
-    let (record, attributes) = record_constructor(RecordConstructorArgs {
-      id: tunnel.id().clone(),
-      name: tunnel_name.clone(),
-      attributes: attributes,
-      tunnel: tunnel.as_inner().clone() as Arc<_>,
-    })
-    .await?;
+    let (record, attributes) = record_constructor
+      .construct_record(RecordConstructorArgs {
+        id: tunnel.id().clone(),
+        name: tunnel_name.clone(),
+        attributes: attributes,
+        tunnel: tunnel.as_inner().clone() as Arc<_>,
+      })
+      .await?;
     let identifier = tunnel_registry
       .register(tunnel_name.clone(), &record)
       .await?;
