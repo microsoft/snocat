@@ -4,7 +4,7 @@ use authentication::perform_authentication;
 use dashmap::DashMap;
 use futures::{
   future::{self, BoxFuture, TryFutureExt},
-  Future, Stream, StreamExt, TryStreamExt,
+  Future, Stream, StreamExt, TryStream, TryStreamExt,
 };
 use std::{
   fmt::{Debug, Display},
@@ -22,8 +22,11 @@ use crate::{
       negotiation::{self, NegotiationError, NegotiationService},
       service::Router,
       tunnel::{
-        self, id::TunnelIDGenerator, registry::TunnelRegistry, AssignTunnelId, Tunnel,
-        TunnelDownlink, TunnelError, TunnelId, TunnelIncomingType, TunnelName, WithTunnelId,
+        self,
+        id::{TunnelIdGenerator, TunnelIdGeneratorExt},
+        registry::TunnelRegistry,
+        IntoTunnel, Tunnel, TunnelDownlink, TunnelError, TunnelId, TunnelIncomingType, TunnelName,
+        WithTunnelId,
       },
       RouteAddress, ServiceRegistry,
     },
@@ -430,7 +433,7 @@ pub struct ModularDaemon<
   router: Arc<TRouter>,
   // request_handler: Arc<RequestClientHandler<TTunnel, TTunnelRegistry, TServiceRegistry, TRouter>>,
   authentication_handler: Arc<TAuthenticationHandler>,
-  tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
+  tunnel_id_generator: Arc<dyn TunnelIdGenerator + Send + Sync + 'static>,
   record_constructor: Arc<FConstructRecord>,
   peers: PeerTracker,
 
@@ -574,7 +577,7 @@ where
     peer_tracker: PeerTracker,
     router: Arc<TRouter>,
     authentication_handler: Arc<TAuthenticationHandler>,
-    tunnel_id_generator: Arc<dyn TunnelIDGenerator + Send + Sync + 'static>,
+    tunnel_id_generator: Arc<dyn TunnelIdGenerator + Send + Sync + 'static>,
     record_constructor: Arc<FConstructRecord>,
   ) -> Self {
     let s = Self {
@@ -602,18 +605,38 @@ where
     }
   }
 
-  /// Convert a source of tunnel progenitors into tunnels by assigning IDs from the daemon's ID generator
-  pub fn assign_tunnel_ids<TTunnel, TunnelSource, TIntoTunnel>(
+  /// Convert a source of tunnel progenitors into tunnels by assigning IDs from the
+  /// daemon's ID generator, stopping and returning the first error that is is provided.
+  pub fn try_construct_tunnels<TunnelSource>(
     &self,
     tunnel_source: TunnelSource,
-  ) -> impl Stream<Item = TTunnel> + Send + 'static
+  ) -> impl TryStream<
+    Ok = <<TunnelSource as TryStream>::Ok as IntoTunnel>::Tunnel,
+    Error = TunnelSource::Error,
+  >
   where
-    TTunnel: Tunnel + 'static,
-    TunnelSource: Stream<Item = TIntoTunnel> + Send + 'static,
-    TIntoTunnel: AssignTunnelId<TTunnel> + 'static,
+    TunnelSource: TryStream,
+    <TunnelSource as TryStream>::Ok: IntoTunnel,
   {
-    let tunnel_id_generator = self.tunnel_id_generator.clone();
-    tunnel_source.map(move |pretunnel| pretunnel.assign_tunnel_id(tunnel_id_generator.next()))
+    self
+      .tunnel_id_generator
+      .clone()
+      .try_construct_tunnels(tunnel_source)
+  }
+
+  /// Convert a source of tunnel progenitors into tunnels by assigning IDs from the daemon's ID generator
+  pub fn construct_tunnels<TunnelSource>(
+    &self,
+    tunnel_source: TunnelSource,
+  ) -> impl Stream<Item = <<TunnelSource as Stream>::Item as IntoTunnel>::Tunnel>
+  where
+    TunnelSource: Stream,
+    <TunnelSource as Stream>::Item: IntoTunnel,
+  {
+    self
+      .tunnel_id_generator
+      .clone()
+      .construct_tunnels(tunnel_source)
   }
 
   /// Run the server against a tunnel_source.

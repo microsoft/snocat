@@ -266,8 +266,7 @@ where
 #[cfg(test)]
 mod tests {
   use super::{DynamicStreamSet, QuinnListenEndpoint};
-  use crate::common::protocol::tunnel::quinn_tunnel::QuinnTunnel;
-  use crate::common::protocol::tunnel::AssignTunnelId;
+  use crate::common::protocol::tunnel::{quinn_tunnel::QuinnTunnel, IntoTunnel};
 
   use futures::{stream, FutureExt, StreamExt};
   use std::collections::HashSet;
@@ -278,7 +277,7 @@ mod tests {
   // Static tests are type assertions, and only need compiled
   fn static_test_endpoint_items_assign_tunnel_id(
     mut endpoint: QuinnListenEndpoint,
-  ) -> Option<impl AssignTunnelId<QuinnTunnel>> {
+  ) -> Option<impl IntoTunnel<Tunnel = QuinnTunnel>> {
     let (connecting, side) = endpoint.next().now_or_never().flatten()?;
     let connection = connecting.now_or_never()?.ok()?;
     Some((connection, side))

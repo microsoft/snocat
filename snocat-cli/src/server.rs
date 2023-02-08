@@ -18,8 +18,8 @@ use snocat::{
       negotiation::NegotiationClient,
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        id::MonotonicAtomicGenerator, quinn_tunnel::QuinnTunnel,
-        registry::memory::InMemoryTunnelRegistry, TunnelId, TunnelName,
+        id::MonotonicAtomicGenerator, registry::memory::InMemoryTunnelRegistry, TunnelId,
+        TunnelName,
       },
     },
     tunnel_source::QuinnListenEndpoint,
@@ -181,7 +181,7 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
     drop(service_registry);
   }
 
-  let endpoint = modular.assign_tunnel_ids::<QuinnTunnel, _, _>(endpoint);
+  let endpoint = modular.construct_tunnels(endpoint);
   modular
     .run(endpoint, shutdown.into())
     .map_err(|_| anyhow::Error::msg("Modular runtime panicked and lost context"))

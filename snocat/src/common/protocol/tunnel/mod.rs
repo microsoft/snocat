@@ -354,36 +354,145 @@ where
   }
 }
 
-/// Creates a tunnel with the provided ID
+/// Shows that a type may be converted into a [Tunnel] when given a [TunnelId].
 ///
-/// Compliant implementations must use the provided ID, and must remain
-/// stable throughout the lifetime of the resulting tunnel instance
-pub trait AssignTunnelId<TTunnel>
-where
-  TTunnel: WithTunnelId,
-{
-  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> TTunnel;
+/// Compliant implementations must use the provided ID, which must remain
+/// stable throughout the lifetime of the resulting tunnel instance.
+pub trait IntoTunnel {
+  type Tunnel: WithTunnelId;
+  fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel;
 }
 
-impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Box<TTunnel>>
-  for TAssignTunnelId
+impl<Params> IntoTunnel for Box<Params>
 where
-  TTunnel: WithTunnelId,
+  Params: IntoTunnel,
 {
-  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Box<TTunnel> {
-    Box::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+  type Tunnel = Params::Tunnel;
+  fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel {
+    <Params as IntoTunnel>::into_tunnel(*self, tunnel_id)
   }
 }
 
-impl<TTunnel, TAssignTunnelId: AssignTunnelId<TTunnel>> AssignTunnelId<Arc<TTunnel>>
-  for TAssignTunnelId
-where
-  TTunnel: WithTunnelId,
-{
-  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> Arc<TTunnel> {
-    Arc::new(TAssignTunnelId::assign_tunnel_id(self, tunnel_id))
+mod transforming_tunnel_constructors {
+  use ::std::{rc::Rc, sync::Arc};
+  use std::ops::{Deref, DerefMut};
+
+  use super::{IntoTunnel, TunnelId};
+
+  /// Transforms the constructed tunnel into a box of that tunnel
+  #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+  #[repr(transparent)]
+  pub struct IntoBoxedTunnel<Params>(pub Params);
+  /// Transforms the constructed tunnel into an Rc of that tunnel
+  #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+  #[repr(transparent)]
+  pub struct IntoRcTunnel<Params>(pub Params);
+  /// Transforms the constructed tunnel into an Arc of that tunnel
+  #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+  #[repr(transparent)]
+  pub struct IntoArcTunnel<Params>(pub Params);
+
+  impl<Params> IntoBoxedTunnel<Params> {
+    fn into_inner(self) -> Params {
+      self.0
+    }
+  }
+
+  impl<Params> Deref for IntoBoxedTunnel<Params> {
+    type Target = Params;
+
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
+  }
+
+  impl<Params> DerefMut for IntoBoxedTunnel<Params> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
+    }
+  }
+
+  impl<Params> IntoRcTunnel<Params> {
+    fn into_inner(self) -> Params {
+      self.0
+    }
+  }
+
+  impl<Params> Deref for IntoRcTunnel<Params> {
+    type Target = Params;
+
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
+  }
+
+  impl<Params> DerefMut for IntoRcTunnel<Params> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
+    }
+  }
+
+  impl<Params> IntoArcTunnel<Params> {
+    fn into_inner(self) -> Params {
+      self.0
+    }
+  }
+
+  impl<Params> Deref for IntoArcTunnel<Params> {
+    type Target = Params;
+
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
+  }
+
+  impl<Params> DerefMut for IntoArcTunnel<Params> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
+    }
+  }
+
+  impl<Params> IntoTunnel for IntoBoxedTunnel<Params>
+  where
+    Params: IntoTunnel,
+  {
+    type Tunnel = Box<Params::Tunnel>;
+    fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel {
+      Box::new(<Params as IntoTunnel>::into_tunnel(
+        self.into_inner(),
+        tunnel_id,
+      ))
+    }
+  }
+
+  impl<Params> IntoTunnel for IntoRcTunnel<Params>
+  where
+    Params: IntoTunnel,
+  {
+    type Tunnel = Rc<Params::Tunnel>;
+    fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel {
+      Rc::new(<Params as IntoTunnel>::into_tunnel(
+        self.into_inner(),
+        tunnel_id,
+      ))
+    }
+  }
+
+  impl<Params> IntoTunnel for IntoArcTunnel<Params>
+  where
+    Params: IntoTunnel,
+  {
+    type Tunnel = Arc<Params::Tunnel>;
+    fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel {
+      Arc::new(<Params as IntoTunnel>::into_tunnel(
+        self.into_inner(),
+        tunnel_id,
+      ))
+    }
   }
 }
+
+pub use transforming_tunnel_constructors::{IntoArcTunnel, IntoBoxedTunnel, IntoRcTunnel};
 
 pub enum TunnelIncomingType {
   BiStream(WrappedStream),

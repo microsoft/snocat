@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-  AssignTunnelId, TunnelCloseReason, TunnelControl, TunnelId, TunnelMonitoring,
+  IntoTunnel, TunnelCloseReason, TunnelControl, TunnelId, TunnelMonitoring,
   TunnelMonitoringPerChannel, TunnelName, WithTunnelId,
 };
 
@@ -379,8 +379,9 @@ impl From<quinn::ConnectionError> for TunnelError {
   }
 }
 
-impl AssignTunnelId<QuinnTunnel> for (quinn::Connection, TunnelSide) {
-  fn assign_tunnel_id(self, tunnel_id: TunnelId) -> QuinnTunnel {
+impl IntoTunnel for (quinn::Connection, TunnelSide) {
+  type Tunnel = QuinnTunnel;
+  fn into_tunnel(self, tunnel_id: TunnelId) -> Self::Tunnel {
     let (connection, side) = self;
     QuinnTunnel::from_quinn_connection(tunnel_id, connection, side)
   }

@@ -16,8 +16,8 @@ use snocat::{
       proxy_tcp::{DnsTarget, TcpStreamService},
       service::{Client, Request, Router, RouterResult, RoutingError},
       tunnel::{
-        id::MonotonicAtomicGenerator, quinn_tunnel::QuinnTunnel,
-        registry::memory::InMemoryTunnelRegistry, TunnelId, TunnelName, TunnelSide, TunnelUplink,
+        id::MonotonicAtomicGenerator, registry::memory::InMemoryTunnelRegistry, TunnelId,
+        TunnelName, TunnelSide, TunnelUplink,
       },
     },
     tunnel_source::DynamicConnectionSet,
@@ -223,8 +223,7 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
   tracing::debug!("Setting up stream handling...");
   let request_handler = Arc::clone(modular.router());
 
-  let connections =
-    modular.assign_tunnel_ids::<QuinnTunnel, _, _>(connections_handle.map(|(_k, v)| v));
+  let connections = modular.construct_tunnels(connections_handle.map(|(_k, v)| v));
   let daemon = modular
     .run(connections, shutdown.clone().into())
     .map_err(|_| anyhow::Error::msg("Daemon panicked and lost context"))
