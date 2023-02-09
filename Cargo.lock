@@ -1125,7 +1125,7 @@ checksum = "a507befe795404456341dfab10cef66ead4c041f62b8b11bbb92bffe5d0953e0"
 
 [[package]]
 name = "snocat"
-version = "0.8.0-alpha.3"
+version = "0.8.0-alpha.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "snocat-cli"
-version = "0.8.0-alpha.3"
+version = "0.8.0-alpha.4"
 dependencies = [
  "anyhow",
  "clap",
