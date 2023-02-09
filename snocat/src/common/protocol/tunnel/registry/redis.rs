@@ -254,11 +254,7 @@ where
   async fn get_pool_connection(pool: &RedisPool) -> Result<&RedisClient, RedisRegistryError> {
     // Get a connection from the pool
     let conn = pool.next();
-    // Wait for it to connect if it isn't already connected; error if failed
-    if !conn.is_connected() {
-      conn.connect();
-      conn.wait_for_connect().await?;
-    }
+    // The pool is already connected, so we can simply return the client
     Ok(conn)
   }
 }
@@ -556,20 +552,13 @@ mod integration_tests {
     pool.connect();
     pool
       .wait_for_connect()
+      .poll_until(tokio::time::sleep(Duration::from_secs(5)))
       .await
-      .expect("Failed to connect test pool");
+      .expect("Timeout connecting to Redis for integration tests")
+      .expect("Must successfully connect to redis to run integration tests on 127.0.0.1:6379");
     {
       println!("Performing test query to verify pool connectivity...");
       let conn = pool.next();
-      if !conn.is_connected() {
-        conn.connect();
-        conn
-          .wait_for_connect()
-          .poll_until(tokio::time::sleep(Duration::from_secs(5)))
-          .await
-          .expect("Timeout connecting to Redis for integration tests")
-          .expect("Must successfully connect to redis to run integration tests on 127.0.0.1:6379");
-      }
       let _: () = conn.info(None).await.expect(
         "Must fetch redis info prior to performing integration tests to confirm connectivity",
       );
@@ -668,14 +657,6 @@ mod integration_tests {
     {
       let rid_key = RedisRegistry::<TestEntry>::tunnel_rid_key(&ident.rid);
       let conn = pool.next();
-      if !conn.is_connected() {
-        conn.connect();
-        conn
-          .wait_for_connect()
-          .await
-          .expect("Must successfully connect test client");
-      }
-
       let deleted_count: usize = conn
         .del(rid_key)
         .await
