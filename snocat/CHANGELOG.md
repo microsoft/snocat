@@ -17,6 +17,10 @@ Upgraded Quinn to 9.3 for UDP GSO and UDP GRO support; this update broke
 several internal API assumptions and may lead to further simplifications
 around incoming connection and (bi/uni)stream handling.
 
+- Fixed pointer-based accesses to `TunnelUplink::addr()` so authentication now
+	captures the underlying tunnel's real `TunnelAddressInfo` instead of always
+	reporting `Unidentified`. (PR #7)
+
 ## [0.7.0] - 2022-10-29
 
 ### Hybrid Eventually-Consistent Tunnel Repositories (0.6.0-alpha.1)
