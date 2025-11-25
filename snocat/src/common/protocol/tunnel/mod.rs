@@ -321,6 +321,10 @@ where
   T: Deref + Send + Sync + Unpin,
   <T as Deref>::Target: TunnelUplink + Sided,
 {
+  fn addr(&self) -> TunnelAddressInfo {
+    self.deref().addr()
+  }
+
   fn open_link(&self) -> BoxFuture<'static, Result<WrappedStream, TunnelError>> {
     self.deref().open_link()
   }
