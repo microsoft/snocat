@@ -216,32 +216,20 @@ pub async fn server_main(config: self::ServerArgs) -> Result<()> {
 fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   let cert_pem = std::fs::read(&config.cert).context("Failed reading cert file")?;
   let priv_pem = std::fs::read(&config.key).context("Failed reading private key file")?;
-  let priv_key = {
-    let priv_key = rustls_pemfile::pkcs8_private_keys(&mut std::io::Cursor::new(&priv_pem))
-      .context("Quinn .pem parsing of private key failed")?;
-
-    // TODO: We check at least one private key; check at most one as well
-    let priv_key = priv_key
-      .into_iter()
-      .next()
-      .context("Quinn private key .pem must contain exactly one private key")?;
-
-    // Encapsulate the parsed key into rustls's wrapper type
-    rustls::PrivateKey(priv_key)
-  };
-  let cert_chain: Vec<rustls::Certificate> = {
-    let cert_chain = rustls_pemfile::certs(&mut std::io::Cursor::new(&cert_pem))
+  let priv_key = rustls_pemfile::private_key(&mut std::io::Cursor::new(&priv_pem))
+    .context("Quinn .pem parsing of private key failed")?
+    .context("Quinn private key .pem must contain exactly one private key")?;
+  let cert_chain: Vec<rustls::pki_types::CertificateDer<'static>> =
+    rustls_pemfile::certs(&mut std::io::Cursor::new(&cert_pem))
+      .collect::<Result<Vec<_>, _>>()
       .context("Quinn .pem parsing of certificates failed")?;
-
-    // Map all certificates in the chain to rustls's wrapper type and construct a vector
-    cert_chain.into_iter().map(rustls::Certificate).collect()
-  };
-  let mut crypto_config = rustls::ServerConfig::builder()
-    .with_safe_default_cipher_suites()
-    .with_safe_default_kx_groups()
-    .with_protocol_versions(&[&rustls::version::TLS13])?
-    .with_no_client_auth()
-    .with_single_cert(cert_chain, priv_key)?;
+  let mut crypto_config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+    rustls::crypto::ring::default_provider(),
+  ))
+  .with_protocol_versions(&[&rustls::version::TLS13])
+  .context("Failed to select TLS1.3 protocol version")?
+  .with_no_client_auth()
+  .with_single_cert(cert_chain, priv_key)?;
   crypto_config.alpn_protocols = vec![crate::util::ALPN_MS_SNOCAT_1.to_vec()];
   crypto_config.key_log = Arc::new(rustls::KeyLogFile::new());
   let mut transport_config = TransportConfig::default();
@@ -250,8 +238,12 @@ fn build_quinn_config(config: &ServerArgs) -> Result<quinn::ServerConfig> {
   transport_config.send_window(512 * 1024 * 1024);
   transport_config.stream_receive_window(VarInt::from_u32(512 * 1024 * 1024 / 8));
   transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
-  let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto_config));
-  server_config.use_retry(true);
+  let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+    quinn::crypto::rustls::QuicServerConfig::try_from(crypto_config)
+      .context("Failed to build QUIC server crypto config")?,
+  ));
+  // quinn 0.11 removed ServerConfig::use_retry; address-validation retry is now a
+  // per-`Incoming` decision made in the accept loop, so it is no longer set here.
   server_config.transport = Arc::new(transport_config);
   server_config.migration(true);
   Ok(server_config)

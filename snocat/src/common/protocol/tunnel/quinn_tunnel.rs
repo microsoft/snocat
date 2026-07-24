@@ -639,6 +639,14 @@ impl From<quinn::ConnectionError> for TunnelError {
         }
         Self::LocallyClosed
       }
+      quinn::ConnectionError::CidsExhausted => {
+        if logging {
+          tracing::warn!(
+            "QUIC connection dropped: connection IDs exhausted (unable to issue a new connection ID)"
+          );
+        }
+        Self::TransportError
+      }
     }
   }
 }

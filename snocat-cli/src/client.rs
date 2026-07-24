@@ -105,35 +105,34 @@ pub async fn client_main(config: ClientArgs) -> Result<()> {
       std::fs::read(authority_cert_path).context("Failed reading authority cert file")?;
     let authority_cert_chain =
       rustls_pemfile::certs(&mut std::io::Cursor::new(&authority_cert_pem))
+        .collect::<Result<Vec<_>, _>>()
         .context("Quinn .pem parsing of authority certificate(s) failed")?;
 
     // Register all authority certificates with Rustls' root store
     for authority in authority_cert_chain {
       root_authorities
-        .add(&rustls::Certificate(authority))
+        .add(authority)
         .context("Failed to add root authority")?;
     }
   };
 
-  let native_root_certs =
-    rustls_native_certs::load_native_certs().context("Failed loading native certs")?;
-  root_authorities.add_parsable_certificates(
-    &native_root_certs
-      .into_iter()
-      .map(|c| c.0)
-      .collect::<Vec<_>>(),
-  );
-  let mut crypto_config = rustls::ClientConfig::builder()
-    .with_safe_default_cipher_suites()
-    .with_safe_default_kx_groups()
-    .with_protocol_versions(&[&rustls::version::TLS13])?
-    .with_root_certificates(root_authorities)
-    .with_no_client_auth();
+  let native_root_certs = rustls_native_certs::load_native_certs();
+  root_authorities.add_parsable_certificates(native_root_certs.certs);
+  let mut crypto_config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+    rustls::crypto::ring::default_provider(),
+  ))
+  .with_protocol_versions(&[&rustls::version::TLS13])
+  .context("Failed to select TLS1.3 protocol version")?
+  .with_root_certificates(root_authorities)
+  .with_no_client_auth();
 
   crypto_config.alpn_protocols = vec![crate::util::ALPN_MS_SNOCAT_1.to_vec()];
   crypto_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-  let quinn_config = quinn::ClientConfig::new(Arc::new(crypto_config));
+  let quinn_config = quinn::ClientConfig::new(Arc::new(
+    quinn::crypto::rustls::QuicClientConfig::try_from(crypto_config)
+      .context("Failed to build QUIC client crypto config")?,
+  ));
 
   let (shutdown, sigint_handler_task) = {
     let shutdown = CancellationToken::new();

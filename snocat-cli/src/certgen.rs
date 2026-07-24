@@ -11,10 +11,10 @@ pub async fn certgen_main(output_base_path: String, host_san: String) -> Result<
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent).context("Directory creation must succeed for certs")?;
   }
-  let cert =
+  let rcgen::CertifiedKey { cert, signing_key } =
     rcgen::generate_simple_self_signed(vec![host_san]).context("Certificate generation failed")?;
-  let public_pem = cert.serialize_pem()?;
-  let private_pem = cert.serialize_private_key_pem();
+  let public_pem = cert.pem();
+  let private_pem = signing_key.serialize_pem();
   fs::write(
     path.with_file_name(path.file_name().unwrap().to_str().unwrap().to_string() + ".pub.pem"),
     &public_pem,
