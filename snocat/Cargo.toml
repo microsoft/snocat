@@ -19,9 +19,9 @@ fred = { version = "6", default-features = false, features = [], optional = true
 futures = "0.3.21"
 log = "0.4"
 pin-project-lite = "0.2"
-quinn = "0.10.2"
-rustls = "0.21"
-rustls-pemfile = "~1.0.1"
+quinn = "0.11"
+rustls = "0.23"
+rustls-pemfile = "2"
 serde = { version = "1.0.128", features=["derive"] }
 serde_json = "~1.0.66"
 thiserror = "1.0.37"

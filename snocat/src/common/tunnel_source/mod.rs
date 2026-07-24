@@ -116,9 +116,28 @@ where
 
     let endpoint = self.endpoint.clone();
     let accepting = match &mut self.accepting {
-      None => self
-        .accepting
-        .insert(async move { endpoint.accept().await }.boxed()),
+      None => self.accepting.insert(
+        async move {
+          // quinn 0.11: `accept()` yields an `Incoming` that must be `accept()`ed to
+          // begin the handshake and produce a `Connecting`. Loop past connections that
+          // fail to start so a single bad peer never terminates the endpoint.
+          loop {
+            match endpoint.accept().await {
+              None => break None,
+              Some(incoming) => match incoming.accept() {
+                Ok(connecting) => break Some(connecting),
+                Err(error) => {
+                  if crate::quic_logging::is_enabled() {
+                    tracing::warn!(?error, "QUIC incoming connection rejected during accept");
+                  }
+                  continue;
+                }
+              },
+            }
+          }
+        }
+        .boxed(),
+      ),
       Some(accepting) => accepting,
     };
     if let Some(connecting) = futures::ready!(Future::poll(accepting.as_mut(), cx)) {
