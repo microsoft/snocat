@@ -3,3 +3,7 @@
 /target
 /certs
 /.idea
+/.vscode
+
+# Local trace-log artifacts
+broker-logs-*.tsv
