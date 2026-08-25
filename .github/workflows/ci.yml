@@ -8,7 +8,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2.8.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: codota/toolchain@00a8bf2bdcfe93aefd70422d3dec07337959d3a4 # v1
         with:
           profile: minimal
@@ -22,7 +22,7 @@ jobs:
     name: Test Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2.8.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: codota/toolchain@00a8bf2bdcfe93aefd70422d3dec07337959d3a4 # v1
         with:
           profile: minimal
@@ -36,7 +36,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2.8.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: codota/toolchain@00a8bf2bdcfe93aefd70422d3dec07337959d3a4 # v1
         with:
           profile: minimal
